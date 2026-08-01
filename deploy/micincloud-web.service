@@ -1,0 +1,38 @@
+[Unit]
+Description=Micincloud dashboard (read-only console over the bot's logs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=micincloud
+WorkingDirectory=/opt/micincloud-bot
+EnvironmentFile=/opt/micincloud-bot/.env
+ExecStart=/usr/bin/npx tsx src/server.ts
+
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The dashboard only READS the logs, but positions.json/control.json are written by the trader in
+# the same directory, and control.json is written by the dashboard when you use the control panel.
+ReadWritePaths=/opt/micincloud-bot/logs
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=micincloud-web
+
+[Install]
+WantedBy=multi-user.target

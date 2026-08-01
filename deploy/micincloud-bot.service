@@ -1,0 +1,48 @@
+[Unit]
+Description=Micincloud trading bot (scanner + paper trader)
+Documentation=https://github.com/
+# Only start once the network is genuinely routable — the bot opens a WebSocket immediately, and
+# starting before DNS works produces a pointless crash-restart cycle at every boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=micincloud
+WorkingDirectory=/opt/micincloud-bot
+EnvironmentFile=/opt/micincloud-bot/.env
+ExecStart=/usr/bin/npx tsx src/index.ts
+
+# ── RESTART POLICY ──
+# The bot deliberately exits non-zero on an uncaught exception and on watchdog stall, because a
+# clean restart is safer than continuing from inconsistent state. `always` is therefore correct.
+# StartLimit stops a genuinely broken build (bad config, missing key) from spinning forever: after
+# 5 failures in 10 minutes systemd gives up and leaves the unit failed, which is visible.
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Give the bot time to persist open positions + flush actor memory before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── HARDENING ── the bot holds a wallet key; limit what a compromise can reach.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Only these paths are writable — logs and the transient state files.
+ReadWritePaths=/opt/micincloud-bot/logs
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Journald handles rotation for stdout; the JSONL files rotate themselves (util/log.ts).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=micincloud-bot
+
+[Install]
+WantedBy=multi-user.target

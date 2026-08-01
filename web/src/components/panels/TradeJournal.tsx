@@ -1,0 +1,55 @@
+import type { StatsResponse } from "@/types/stats";
+
+function fmtAgo(ts: string): string {
+  const sec = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const min = sec / 60;
+  if (min < 60) return `${Math.round(min)}m`;
+  return `${Math.round(min / 60)}h`;
+}
+
+/**
+ * Merges BOTH strategies' closed trades into one feed, each row tagged S1/S2 (owner, 2026-07-30:
+ * "otomatis ini posisi buat sniper ini buat scout, kan lebih enak liatnya" — no shared gate/scanner
+ * needed for this, both strategies already log closes independently; this just combines the two
+ * existing feeds client-side instead of showing Strategy 2 only).
+ */
+export function TradeJournal({ data }: { data: StatsResponse }) {
+  const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, tag: "S2" as const }));
+  const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, tag: "S1" as const }));
+  const trades = [...s1, ...s2].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, 30);
+
+  if (!trades.length) {
+    return <p className="font-mono text-[11px] text-muted-foreground">Belum ada trade closed.</p>;
+  }
+
+  // TWO BANKROLLS, ONE LIST — say so explicitly.
+  //
+  // The panel beside this one reads "TOTAL P&L · STRATEGY 2" and its equity curve tracks Strategy
+  // 2's USD float alone, while this feed also carries Strategy 1 rows. Owner spotted the result:
+  // the journal was showing +94.5%, +95.4%, +31.8% wins while the headline balance never moved,
+  // which reads as a broken dashboard. It was not — those wins belong to a DIFFERENT wallet
+  // (Strategy 1, denominated in SOL). Measured at the time: the 30 visible S1 rows summed to
+  // +30.1%, while Strategy 1's actual balance was -22% from float, because the newest 30 rows
+  // happened to hold the big winners. A percentage in this list is a move on its own strategy's
+  // stake; the two are not additive and never feed the same equity line.
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+      {trades.map((t, i) => {
+        const up = t.pnlPct >= 0;
+        return (
+          <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
+            <span className={`rounded px-1 text-[8px] font-semibold ${t.tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{t.tag}</span>
+            <span className="truncate text-foreground">{t.symbol}</span>
+            <span className="text-muted-foreground">{t.reason}</span>
+            <span className="text-muted-foreground/70">{fmtAgo(t.ts)}</span>
+            <b className={up ? "text-up" : "text-down"}>{up ? "+" : ""}{t.pnlPct.toFixed(1)}%</b>
+          </div>
+        );
+      })}
+    </div>
+    </div>
+  );
+}

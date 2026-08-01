@@ -1,0 +1,381 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * HUD/terminal palette — carried over 1:1 from the old public/app.html so the React
+ * rebuild feels like the same product, not a generic shadcn template. Source values:
+ * public/app.html's :root{--bg,--tile,--fg,--up,--down,...} block.
+ */
+:root {
+  --hud-bg: #06070a;
+  --hud-tile: #0b0d12;
+  --hud-tile2: #090a0e;
+  --hud-line: #1a1d24;
+  --hud-line2: #14161c;
+  --hud-fg: #e9ebee;
+  --hud-dim: #7c828d;
+  --hud-dimmer: #40444d;
+  --hud-faint: #20232a;
+  --hud-up: #4bd07f;
+  --hud-down: #ff5f5f;
+  --hud-gold: #e8c56a;
+  --hud-acid: #c9f04a;
+  --hud-scout: #a78bfa;
+
+  --radius: 0.625rem;
+  --background: var(--hud-bg);
+  --foreground: var(--hud-fg);
+  --card: var(--hud-tile);
+  --card-foreground: var(--hud-fg);
+  --popover: var(--hud-tile);
+  --popover-foreground: var(--hud-fg);
+  --primary: var(--hud-fg);
+  --primary-foreground: var(--hud-bg);
+  --secondary: var(--hud-tile2);
+  --secondary-foreground: var(--hud-fg);
+  --muted: var(--hud-tile2);
+  --muted-foreground: var(--hud-dim);
+  --accent: var(--hud-faint);
+  --accent-foreground: var(--hud-fg);
+  --destructive: var(--hud-down);
+  --border: var(--hud-line);
+  --input: var(--hud-line);
+  --ring: var(--hud-dimmer);
+  --chart-1: var(--hud-up);
+  --chart-2: var(--hud-gold);
+  --chart-3: var(--hud-scout);
+  --chart-4: var(--hud-acid);
+  --chart-5: var(--hud-down);
+  --sidebar: var(--hud-tile);
+  --sidebar-foreground: var(--hud-fg);
+  --sidebar-primary: var(--hud-fg);
+  --sidebar-primary-foreground: var(--hud-bg);
+  --sidebar-accent: var(--hud-faint);
+  --sidebar-accent-foreground: var(--hud-fg);
+  --sidebar-border: var(--hud-line);
+  --sidebar-ring: var(--hud-dimmer);
+}
+
+/* This project is dark-only by design (matches the old dashboard) — .dark is applied
+   on <html> unconditionally in main*.tsx rather than following the OS theme, since a
+   trading console's palette (up=green/down=red) is a fixed brand choice, not a
+   light/dark preference. */
+.dark {
+  --background: var(--hud-bg);
+  --foreground: var(--hud-fg);
+  --card: var(--hud-tile);
+  --card-foreground: var(--hud-fg);
+  --popover: var(--hud-tile);
+  --popover-foreground: var(--hud-fg);
+  --primary: var(--hud-fg);
+  --primary-foreground: var(--hud-bg);
+  --secondary: var(--hud-tile2);
+  --secondary-foreground: var(--hud-fg);
+  --muted: var(--hud-tile2);
+  --muted-foreground: var(--hud-dim);
+  --accent: var(--hud-faint);
+  --accent-foreground: var(--hud-fg);
+  --destructive: var(--hud-down);
+  --border: var(--hud-line);
+  --input: var(--hud-line);
+  --ring: var(--hud-dimmer);
+  --chart-1: var(--hud-up);
+  --chart-2: var(--hud-gold);
+  --chart-3: var(--hud-scout);
+  --chart-4: var(--hud-acid);
+  --chart-5: var(--hud-down);
+  --sidebar: var(--hud-tile);
+  --sidebar-foreground: var(--hud-fg);
+  --sidebar-primary: var(--hud-fg);
+  --sidebar-primary-foreground: var(--hud-bg);
+  --sidebar-accent: var(--hud-faint);
+  --sidebar-accent-foreground: var(--hud-fg);
+  --sidebar-border: var(--hud-line);
+  --sidebar-ring: var(--hud-dimmer);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-up: var(--hud-up);
+  --color-down: var(--hud-down);
+  --color-gold: var(--hud-gold);
+  --color-acid: var(--hud-acid);
+  --color-scout: var(--hud-scout);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply font-mono bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/*
+ * GateStrip signature animation (landing page) — a pill travels left→right and is resolved
+ * PASS (glows up-green, continues to the far edge) or REJECT (flashes down-red, dissolves right
+ * at the GATE line) partway through its own travel keyframes. `left` is animated as a percentage
+ * of the (absolutely positioned, full-width) parent, so 0%→108% is a full off-screen traversal.
+ */
+@keyframes gate-pass {
+  0% { left: -8%; opacity: 0; color: var(--hud-dimmer); text-shadow: none; }
+  8% { opacity: 1; }
+  60% { color: var(--hud-dim); text-shadow: none; }
+  64% { color: var(--hud-up); text-shadow: 0 0 10px rgba(75, 208, 127, 0.55); }
+  94% { opacity: 1; }
+  100% { left: 108%; opacity: 0; color: var(--hud-up); text-shadow: 0 0 10px rgba(75, 208, 127, 0.55); }
+}
+@keyframes gate-reject {
+  0% { left: -8%; opacity: 0; color: var(--hud-dimmer); text-shadow: none; }
+  8% { opacity: 1; }
+  59% { color: var(--hud-dim); text-shadow: none; }
+  62% { color: var(--hud-down); text-shadow: 0 0 10px rgba(255, 95, 95, 0.6); }
+  72% { opacity: 0; left: 63%; filter: blur(2px); }
+  100% { opacity: 0; left: 63%; }
+}
+.gate-pill {
+  left: -8%;
+  color: var(--hud-dimmer);
+  animation-duration: var(--duration);
+  animation-delay: var(--delay);
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+  white-space: nowrap;
+}
+.gate-pill[data-outcome="pass"] {
+  animation-name: gate-pass;
+}
+.gate-pill[data-outcome="reject"] {
+  animation-name: gate-reject;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gate-pill {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/*
+ * Dashboard bento grid — mirrors the old app.html's #grid layout 1:1 (same named areas, same
+ * proportions) so the panel arrangement stays familiar. Collapses to a single stacked column
+ * below the `lg` breakpoint, same as the old dashboard's own mobile fallback.
+ */
+.dash-grid {
+  display: grid;
+  gap: 11px;
+  grid-template-columns: repeat(12, 1fr);
+  /* Row heights scale a little with viewport width via clamp() (owner found live, 2026-07-29:
+     fixed px rows + a max-width-capped container still looked visibly cramped/dead-space-y on a
+     large monitor — columns had room to breathe, rows didn't) — capped so a normal laptop screen
+     still gets the original, familiar proportions, only wide monitors get noticeably taller rows. */
+  grid-template-rows:
+    clamp(64px, 4vw, 84px)
+    clamp(150px, 9vw, 210px)
+    clamp(150px, 9vw, 210px)
+    clamp(130px, 8vw, 180px)
+    clamp(200px, 12vw, 280px)
+    clamp(200px, 12vw, 280px)
+    clamp(120px, 7vw, 160px)
+    clamp(90px, 5vw, 120px)
+    /* Run ledger — needs real width for its table, so it gets a full row of its own rather than
+       being squeezed beside `post`. It is the only panel showing history ACROSS autoReset
+       refills, so burying it defeats its purpose. Tall enough for the headline, the reset
+       warning, and several run rows at once — at 150px the rows were clipped away entirely. */
+    clamp(210px, 12vw, 260px);
+  grid-template-areas:
+    "s1 s1 s1 s1 s1 s1 s1 s1 s1 s1 s1 s1"
+    "hero hero hero hero hero equity equity equity equity agent agent agent"
+    "hero hero hero hero hero equity equity equity equity agent agent agent"
+    "hero hero hero hero hero pipe pipe pipe pipe agent agent agent"
+    "jour jour jour sig sig sig pos pos pos pos pos pos"
+    "jour jour jour sig sig sig pos pos pos pos pos pos"
+    "funnel funnel funnel sig sig sig gate gate gate gate gate gate"
+    "funnel funnel funnel sig sig sig post post post post post post"
+    "runs runs runs runs runs runs runs runs runs runs runs runs";
+}
+/*
+ * Feeling Agent aurora — ported 1:1 from the old dashboard's #agent/.aura/.aura2 (public/
+ * _archive-pre-react/app.html lines ~262-287): two oversized, offset, blurred radial-gradient
+ * clouds (NOT a single flat glow) that slowly counter-rotate, plus a slow float bob on the face
+ * itself. Colors are swapped per-mood via CSS custom properties set inline by FeelingAgent.tsx.
+ */
+@keyframes agent-swirl {
+  to { transform: rotate(360deg); }
+}
+@keyframes agent-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+.agent-aura {
+  position: absolute;
+  inset: -70px;
+  border-radius: 50%;
+  filter: blur(34px);
+  opacity: 0.92;
+  background:
+    radial-gradient(34% 36% at 40% 36%, var(--a1), transparent 68%),
+    radial-gradient(36% 38% at 64% 42%, var(--a2), transparent 68%),
+    radial-gradient(42% 44% at 50% 66%, var(--a3), transparent 70%);
+  animation: agent-swirl 12s linear infinite;
+  transition: background 0.8s;
+}
+.agent-aura2 {
+  position: absolute;
+  inset: -48px;
+  border-radius: 50%;
+  filter: blur(44px);
+  opacity: 0.55;
+  background: radial-gradient(46% 46% at 50% 48%, var(--a4), transparent 72%);
+  animation: agent-swirl 16s linear infinite reverse;
+  transition: background 0.8s;
+}
+.agent-face-svg {
+  animation: agent-float 6.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-aura, .agent-aura2, .agent-face-svg {
+    animation: none;
+  }
+}
+
+/*
+ * Feeling Agent speech bubble — ported 1:1 from the old .agentTile .say (public/
+ * _archive-pre-react/app.html lines ~290-309). Owner rejected a first attempt that was plain text
+ * floating at a fixed spot ("kemarin bubble kayak chat, posisi atas/bawah random, ada typing juga")
+ * — this is a real chat-bubble box (background/border/blur/shadow), placed randomly ABOVE or BELOW
+ * the face each time it speaks, with a 2-dot tail that flips to always point toward the head.
+ */
+.agent-say {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) scale(0.9);
+  max-width: 70%;
+  min-width: 120px;
+  padding: 10px 14px;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: #cfe0ff;
+  background: rgba(18, 24, 36, 0.85);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(120, 160, 255, 0.3);
+  border-radius: 16px;
+  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.35s, transform 0.35s;
+  pointer-events: none;
+  z-index: 5;
+}
+.agent-say.on {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+.agent-say::before {
+  content: "";
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  margin-left: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: inherit;
+  border: 1px solid rgba(120, 160, 255, 0.3);
+}
+.agent-say::after {
+  content: "";
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  margin-left: -9px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: inherit;
+  border: 1px solid rgba(120, 160, 255, 0.3);
+}
+/* below the face — dots flip to the TOP of the bubble, pointing UP to the head */
+.agent-say.below::before { bottom: auto; top: -9px; }
+.agent-say.below::after { bottom: auto; top: -20px; }
+.agent-say .cur {
+  opacity: 0.6;
+  animation: agent-say-blink 1s steps(1) infinite;
+}
+@keyframes agent-say-blink {
+  50% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-say .cur { animation: none; }
+}
+
+@media (max-width: 1024px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "s1"
+      "hero"
+      "equity"
+      "pipe"
+      "pos"
+      "jour"
+      "sig"
+      "gate"
+      "funnel"
+      "post"
+      "runs"
+      "agent";
+    grid-template-rows: none;
+  }
+  .dash-grid > * {
+    min-height: 220px;
+  }
+}

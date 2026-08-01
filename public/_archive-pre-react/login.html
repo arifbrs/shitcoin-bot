@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shitcoin · Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{--bg:#060606;--glass:rgba(255,255,255,0.06);--gborder:rgba(255,255,255,0.14);--gborder2:rgba(255,255,255,0.24);--line:rgba(255,255,255,0.08);--tx:#fff;--tx2:rgba(255,255,255,0.6);--tx3:rgba(255,255,255,0.34);--neg:#FF6B6B;--disp:'Bebas Neue',sans-serif;--body:'Inter',system-ui,sans-serif;--ease:cubic-bezier(0.2,0.8,0.2,1);}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  ::selection{background:#0000ee;color:#fff;}
+  body{font-family:var(--body);color:var(--tx);min-height:100vh;display:flex;flex-direction:column;background:var(--bg);background-image:radial-gradient(circle at 50% 0%,rgba(255,255,255,0.08) 0%,transparent 60%);-webkit-font-smoothing:antialiased;}
+  .label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.18em;color:var(--tx3);}
+  header{display:flex;align-items:center;justify-content:space-between;height:64px;padding:0 28px;border-bottom:1px solid var(--line);}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .logo{width:34px;height:34px;background:#fff;display:grid;place-items:center;border-radius:9px;}
+  .brand-name{font-family:var(--disp);font-size:24px;letter-spacing:.06em;}
+  header a{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--tx3);text-decoration:none;transition:color .2s var(--ease);}
+  header a:hover{color:var(--tx);}
+  .wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 24px;}
+  .cta{width:100%;max-width:440px;background:var(--glass);border:1px solid var(--gborder);border-radius:22px;padding:44px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:0 20px 60px rgba(0,0,0,0.4);}
+  .cta h1{font-family:var(--disp);font-weight:400;font-size:52px;letter-spacing:.02em;line-height:.9;margin:16px 0 8px;}
+  .cta .desc{font-size:13px;color:var(--tx2);}
+  form{margin-top:30px;}
+  .field-label{display:block;margin-bottom:9px;}
+  input[type=password]{width:100%;background:rgba(255,255,255,0.06);border:1px solid var(--gborder);border-radius:12px;padding:15px 16px;font-family:var(--body);font-size:15px;color:#fff;transition:border-color .25s var(--ease);}
+  input[type=password]:focus{outline:none;border-color:var(--gborder2);}
+  .err{display:none;margin-top:14px;border:1px solid rgba(255,107,107,.5);border-radius:12px;padding:11px 14px;font-size:12px;color:var(--neg);background:rgba(255,107,107,.08);}
+  .err.show{display:block;}
+  button{margin-top:24px;width:100%;background:#fff;color:#060606;border:none;border-radius:9999px;padding:16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;cursor:pointer;transition:transform .3s var(--ease),background .3s var(--ease);}
+  button:hover{transform:scale(1.03);background:rgba(255,255,255,.88);}
+  .foot{margin-top:22px;text-align:center;}
+  .foot a{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:var(--tx3);text-decoration:none;}
+  .foot a:hover{color:var(--tx);}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo"><svg viewBox="0 0 16 16" fill="none"><path d="M2 12L6 4l2 5 2-3 2 6" stroke="#060606" stroke-width="1.6" stroke-linecap="square"/></svg></div>
+    <span class="brand-name">SHITCOIN</span>
+  </div>
+  <a href="/">← BACK</a>
+</header>
+<div class="wrap">
+  <div class="cta">
+    <span class="label">RESTRICTED · CONTROL SURFACE</span>
+    <h1>Sign in</h1>
+    <div class="desc">Masuk untuk mengakses console live Shitcoin.</div>
+    <form method="POST" action="/login">
+      <label class="field-label label" for="password">ACCESS KEY</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" autofocus placeholder="••••••••••" />
+      <div class="err" id="err">ACCESS DENIED · INVALID KEY</div>
+      <button type="submit">AUTHENTICATE →</button>
+    </form>
+    <div class="foot"><a href="/">RETURN TO LANDING</a></div>
+  </div>
+</div>
+<script>
+  if (new URLSearchParams(location.search).get("e")) document.getElementById("err").classList.add("show");
+</script>
+</body>
+</html>
