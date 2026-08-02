@@ -41,7 +41,8 @@
     "profit:evaluate": "tsx src/profit-evaluator.ts",
     "shadow": "tsx src/shadow.ts",
     "structural:report": "tsx src/calibration.ts",
-    "mc-anomaly:selftest": "tsx src/mc-anomaly-selftest.ts"
+    "mc-anomaly:selftest": "tsx src/mc-anomaly-selftest.ts",
+    "bx:swaps": "tsx src/discovery/bloxroute-swap-recorder.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
