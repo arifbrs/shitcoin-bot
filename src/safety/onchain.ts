@@ -95,10 +95,41 @@ let rpcId = 0;
  * live: sending `[{mint, limit}]` returns `invalid type: map, expected a string`, while sending
  * the bare object succeeds. Widening the type keeps every existing array caller valid.
  */
-async function rpcVia<T>(url: string, method: string, params: unknown, low: boolean, signal?: AbortSignal): Promise<T> {
+/**
+ * Params may be a FUNCTION of the endpoint URL, because providers disagree on the shape of the
+ * same method. Measured 2026-08-02 on `getTokenAccounts` (the holder gate's primary source):
+ *   Helius    accepts `mint`,        rejects `mintAddress` ("unknown field")
+ *   QuickNode accepts `mintAddress`, rejects `mint`
+ * There is no single body that both accept, and the pool retries the SAME params on the next
+ * endpoint — so a fixed shape means one provider always fails, takes an undeserved strike, and
+ * eventually gets benched, silently destroying the redundancy it was added for.
+ */
+type ParamsFor = unknown | ((url: string) => unknown);
+const resolveParams = (p: ParamsFor, url: string): unknown => (typeof p === "function" ? (p as (u: string) => unknown)(url) : p);
+
+/**
+ * A CLIENT error — malformed params, a bad pubkey, a field this provider does not know. The
+ * endpoint is behaving correctly by rejecting it; the request is what is wrong.
+ *
+ * This distinction was missing and it cost twice. The catch-all `else if (++ep.fails >= 3)`
+ * branch below treated these exactly like a 5xx or a timeout, so (a) a healthy endpoint
+ * collected strikes and was eventually benched for OUR bug, and (b) every such call was retried
+ * across the whole pool even though a rejected pubkey is rejected identically everywhere —
+ * burning the entry path's RPC budget to re-learn the same answer.
+ *
+ * Observed live 2026-08-02: sending Helius's `mint` spelling to QuickNode benched BOTH healthy
+ * endpoints for 15s. Solana RPC has no distinct error class for this, so match on the wording
+ * the providers actually return.
+ */
+const CLIENT_ERROR = /invalid pubkey|invalid param|unknown field|validation error|invalid type|expected one of|missing field|could not parse|invalid request/i;
+function isClientError(err: unknown): boolean {
+  return CLIENT_ERROR.test((err as Error)?.message ?? "");
+}
+
+async function rpcVia<T>(url: string, method: string, params: ParamsFor, low: boolean, signal?: AbortSignal): Promise<T> {
   const res = await fetchJson<{ result?: T; error?: { message: string } }>(url, {
     bucket: low ? researchBucket : rpcBucket,
-    body: { jsonrpc: "2.0", id: ++rpcId, method, params },
+    body: { jsonrpc: "2.0", id: ++rpcId, method, params: resolveParams(params, url) },
     retries: 1,
     failFastOn429: true, // a rate-limited endpoint should hand off, not stall
     signal,
@@ -288,11 +319,11 @@ export async function waitForMintVisible(mint: string, maxWaitMs = 8_000, pollMs
   }
 }
 
-export async function pooledRpc<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+export async function pooledRpc<T>(method: string, params: ParamsFor, signal?: AbortSignal): Promise<T> {
   return rpc<T>(method, params, 0, signal);
 }
 
-async function rpc<T>(method: string, params: unknown, needBatch = 0, signal?: AbortSignal): Promise<T> {
+async function rpc<T>(method: string, params: ParamsFor, needBatch = 0, signal?: AbortSignal): Promise<T> {
   const low = priorityCtx.getStore()?.low === true;
   if (low) {
     // Yield the budget to the trading path: if any gate/entry/tick RPC is in flight, this
@@ -342,6 +373,7 @@ async function rpc<T>(method: string, params: unknown, needBatch = 0, signal?: A
         stats.errorsByMethod.set(method, (stats.errorsByMethod.get(method) ?? 0) + 1);
         lastErr = err;
         if (err instanceof ResearchYield) throw err; // budget yield, not an endpoint fault
+        if (isClientError(err)) throw err; // our request is malformed — no strike, and no point asking anyone else
         if (err instanceof RateLimited) {
           stats.rateLimited++;
           ep.rateLimits++;
@@ -529,7 +561,13 @@ interface DasTokenAccounts { token_accounts?: Array<{ amount?: number; owner?: s
 
 export async function holderCountWithSource(mint: string): Promise<{ count: number | null; source: "rpc" | "das" | "gmgn" | null }> {
   try {
-    const das = await rpc<DasTokenAccounts>("getTokenAccounts", { mint, limit: HOLDER_PAGE, options: { showZeroBalance: false } });
+    // Per-provider shape — see the ParamsFor note on rpcVia. Keyed on the host so a new endpoint
+    // defaults to the Helius spelling (the DAS spec Metaplex published); only QuickNode's variant
+    // is special-cased, because that is the one measured to differ.
+    const das = await rpc<DasTokenAccounts>("getTokenAccounts", (url: string) =>
+      url.includes("quiknode.pro")
+        ? { mintAddress: mint, limit: HOLDER_PAGE, options: { showZeroBalance: false } }
+        : { mint, limit: HOLDER_PAGE, options: { showZeroBalance: false } });
     const accounts = das?.token_accounts;
     if (Array.isArray(accounts)) {
       // Distinct OWNERS, not accounts — one wallet can hold several token accounts for a mint,

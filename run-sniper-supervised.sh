@@ -30,6 +30,19 @@ cd "$(dirname "$0")"
 #
 # PERINGATAN: MFE bukan P&L terealisasi. Ini arah dengan bukti terkuat yang kita punya, BUKAN
 # janji profit. Kalau cohort baru tidak lebih baik dari 1qa0i0o, hapus dua baris export ini.
+# ── UKURAN POSISI 0,03 -> 0,15 SOL (2026-08-02) ──
+# Biaya TETAP menghancurkan posisi kecil. Tip validator (0,001 SOL/sisi, default aplikasi
+# pump.fun) tidak pernah dimodelkan dan pada 0,03 SOL setara 6,67% round-trip — lebih besar
+# dari SELURUH biaya lain digabung (2,39%). Diukur pada kurva nyata (vSol=70, tengah band):
+#   0,03 SOL -> total 10,30%   EV live -2,63%
+#   0,10 SOL -> total  5,80%   EV live +1,87%
+#   0,15 SOL -> total  5,27%   EV live +2,40%   <- dipilih
+#   0,25 SOL -> total  5,02%   EV live +2,65%   (optimum, tapi 12,5% float per posisi)
+#   0,50 SOL -> total  5,33%   EV live +2,34%   (slippage mulai menang lagi)
+# Slot bukan kendala: konkurensi terukur median 1, puncak 5; 0,15 SOL memberi 13 slot.
+# 0,15 dipilih karena menangkap +2,40 dari +2,65 maksimum dengan separuh konsentrasi risiko.
+export PAPER_TRADE_SIZE_SOL=0.15
+
 export ENTRY_MC_FLOOR_SOL=55
 export ENTRY_MC_CEIL_SOL=100
 

@@ -880,7 +880,7 @@ function buildCohorts() {
       cfg,
       current: cfg === liveCfg,
       trades: rows.length,
-      evPct: Number(mean(pnls).toFixed(2)),      // the headline: expected % per trade
+      evPct: Number(mean(pnls).toFixed(2)),      // the headline: expected % per trade (PAPER)
       totalSol: Number(sols.reduce((s, x) => s + x, 0).toFixed(4)),
       winPct: rows.length ? Math.round((wins.length / rows.length) * 100) : 0,
       // -25%, not the -60% used elsewhere: measured over 780 sniper closes, NOTHING lands below
@@ -895,6 +895,29 @@ function buildCohorts() {
       reasons,
     };
   }).sort((a, b) => String(b.lastTs ?? "").localeCompare(String(a.lastTs ?? "")));
+
+  // Paper EV minus what a real fill would additionally pay.
+  //
+  // The overhead is a FIXED number of SOL, so as a percentage it depends entirely on the position
+  // size — and that size differs per cohort (0.05 before 2026-08-02, 0.15 after). Reading it from
+  // this process's own `config.risk.paperTradeSizeSol` was wrong for the same reason `configHash`
+  // was wrong twice before: the dashboard is a separate process and its env is not the trader's.
+  // It reported every cohort at 0.05 while the live one was trading 0.15, overstating the newest
+  // cohort's overhead by 3×. Take the size from each cohort's OWN trade records instead.
+  const tipSol0 = Number(process.env.VALIDATOR_TIP_SOL ?? 0.001);
+  const prioSol0 = Number(process.env.LIVE_PRIORITY_FEE_SOL ?? 0.000001);
+  const perTrip = 2 * (tipSol0 + prioSol0);
+  for (const c of cohorts) {
+    const sizes = (byCfg.get(c.cfg) ?? [])
+      .map((r) => num(r, "entrySizeSol") ?? num(r, "sizeSol"))
+      .filter((v): v is number => v != null && v > 0);
+    const size = sizes.length ? med(sizes) : config.risk.paperTradeSizeSol;
+    const oh = size > 0 ? (perTrip / size) * 100 : 0;
+    const x = c as unknown as { evLivePct: number; sizeSol: number; overheadPct: number };
+    x.sizeSol = Number(size.toFixed(4));
+    x.overheadPct = Number(oh.toFixed(2));
+    x.evLivePct = Number((c.evPct - oh).toFixed(2));
+  }
 
   // The two newest cohorts with a usable sample — the pair a tuning change is actually judged on.
   const usable = cohorts.filter((c) => c.trades >= 20);
@@ -915,8 +938,27 @@ function buildCohorts() {
       }
     : null;
 
+  // LIVE-ADJUSTED EV. Paper P&L deliberately excludes the validator/Jito tip and the priority
+  // fee — folding them into `pnlPct` would re-base 1,365 historical trades and make the running
+  // cohort incomparable with the baseline it is measured against. So the overhead is applied
+  // HERE, on top, where it can be read beside the paper figure instead of replacing it.
+  //
+  // It is not a rounding detail: at the 0.03 SOL size this bot traded until 2026-08-02 the tip
+  // alone was 6.67% round trip, larger than every other modelled cost combined, and it turned
+  // the best cohort (3orcmx, +5.28% on paper) into −1.39% live. Position size was raised to
+  // 0.15 SOL precisely because fixed costs scale inversely with it.
+  const tipSol = Number(process.env.VALIDATOR_TIP_SOL ?? 0.001);
+  const prioSol = Number(process.env.LIVE_PRIORITY_FEE_SOL ?? 0.000001); // measured market rate, not the config's stale 0.00005
+  const liveRow = cohorts.find((c) => c.current) as unknown as { sizeSol?: number } | undefined;
+  const sizeSol = liveRow?.sizeSol ?? config.risk.paperTradeSizeSol;
+  const liveOverheadPct = sizeSol > 0 ? Number(((2 * (tipSol + prioSol) / sizeSol) * 100).toFixed(2)) : 0;
+
   return {
     activeCfg: liveCfg, // from the newest CLOSE, not this process's configHash — see note above
+    liveOverhead: {
+      tipSol, prioSol, sizeSol, pct: liveOverheadPct,
+      note: "Tip + priority fee per round trip, as % of position. NOT subtracted from evPct — evLivePct is.",
+    },
     cohorts,
     delta,
     caveat:

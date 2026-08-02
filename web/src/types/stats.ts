@@ -536,6 +536,11 @@ export interface Cohort {
   current: boolean;
   trades: number;
   evPct: number;
+  /** evPct minus the live execution overhead — what this cohort would have earned for real. */
+  evLivePct?: number;
+  /** Position size THIS cohort actually traded — the overhead % depends entirely on it. */
+  sizeSol?: number;
+  overheadPct?: number;
   totalSol: number;
   winPct: number;
   bleedPct: number;
@@ -548,6 +553,8 @@ export interface Cohort {
 
 export interface CohortsResponse {
   activeCfg: string;
+  /** Tip + priority fee a real fill pays on top of paper cost. Never folded into evPct. */
+  liveOverhead?: { tipSol: number; prioSol: number; sizeSol: number; pct: number; note: string };
   cohorts: Cohort[];
   delta: {
     cfgNew: string;

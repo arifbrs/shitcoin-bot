@@ -149,7 +149,23 @@ export class LaunchObservatory {
     if (this.watched.size === 0) return;
     const now = Date.now();
     const keys = [...this.watched.values()].filter((w) => !w.done).map((w) => w.bcKey);
-    const batch = keys.length ? await bondingCurvePricesMulti(keys) : new Map();
+    // RPC PRIORITY — this sweep is RESEARCH and must yield, exactly like the classify path below.
+    //
+    // It was NOT wrapped, and it is by far the most expensive thing the observatory does. The cost
+    // is invisible while a large-batch endpoint is up (200 keys = 2 calls at batch 100) and
+    // catastrophic the moment one is not: QuickNode's free tier caps getMultipleAccounts at 5
+    // accounts (measured 2026-08-02: "limited to a 5 range"), so the same sweep becomes 40 calls
+    // every 3s = 800/min against a 480/min budget — 167% of everything the bot has, spent on
+    // counterfactual data.
+    //
+    // Measured while it was running hot with Helius benched: entry `open` went to 35.8s and
+    // detect→entry to 64.4s, against ~9s when healthy, and the gate hit its 2.5s deadline on
+    // essentially every candidate. That is the RPC-starvation failure this project already fixed
+    // once; it came back through this one unwrapped call.
+    //
+    // Dropping samples here is the correct trade: the observatory measures launches we did NOT
+    // buy. A missing sample costs a row in a research dataset; a starved gate costs a real entry.
+    const batch = keys.length ? await lowPriorityRpc(() => bondingCurvePricesMulti(keys)).catch(() => new Map()) : new Map();
     for (const [mint, w] of [...this.watched]) {
       const ageSec = Math.round((now - w.launchAt) / 1000);
       const bc = batch.get(w.bcKey);

@@ -109,7 +109,9 @@ export function DiagnosticsDialog({ open, onOpenChange, data }: Props) {
                   <tr className="text-muted-foreground">
                     <th className="pb-1 text-left font-normal">cfg</th>
                     <th className="pb-1 text-right font-normal">trade</th>
-                    <th className="pb-1 text-right font-normal">EV</th>
+                    <th className="pb-1 text-right font-normal">EV kertas</th>
+                    <th className="pb-1 text-right font-normal">EV live</th>
+                    <th className="pb-1 text-right font-normal">size ◎</th>
                     <th className="pb-1 text-right font-normal">win</th>
                     <th className="pb-1 text-right font-normal">bleed</th>
                     <th className="pb-1 text-right font-normal">hold</th>
@@ -127,6 +129,10 @@ export function DiagnosticsDialog({ open, onOpenChange, data }: Props) {
                         </td>
                         <td className="py-0.5 text-right">{c.trades}</td>
                         <td className={`py-0.5 text-right ${c.evPct > 0 ? "text-up" : "text-down"}`}>{c.evPct}%</td>
+                        <td className={`py-0.5 text-right ${(c.evLivePct ?? 0) > 0 ? "text-up" : "text-down"}`}>
+                          {c.evLivePct != null ? `${c.evLivePct}%` : "—"}
+                        </td>
+                        <td className="py-0.5 text-right" title={`overhead ${c.overheadPct ?? "?"}%`}>{c.sizeSol ?? "—"}</td>
                         <td className="py-0.5 text-right">{c.winPct}%</td>
                         <td className="py-0.5 text-right">{c.bleedPct}%</td>
                         <td className="py-0.5 text-right">{c.medianHoldSec}s</td>
@@ -137,6 +143,14 @@ export function DiagnosticsDialog({ open, onOpenChange, data }: Props) {
                 </tbody>
               </table>
             </div>
+            {cohorts.liveOverhead && (
+              <p className="mt-2 text-[9px] leading-snug text-gold">
+                EV live = EV kertas − {cohorts.liveOverhead.pct}% (tip {cohorts.liveOverhead.tipSol} ◎ + priority fee, dua sisi,
+                pada posisi {cohorts.liveOverhead.sizeSol} ◎). Dihitung per cohort dari ukuran yang benar-benar
+                diperdagangkan, karena biaya ini tetap dalam SOL sehingga persentasenya bergantung penuh pada ukuran posisi.
+                TIDAK dikurangkan dari P&amp;L kertas, supaya angka historis tetap bisa dibandingkan.
+              </p>
+            )}
             <p className="mt-2 text-[9px] leading-snug text-muted-foreground">{cohorts.caveat}</p>
           </Section>
         )}
