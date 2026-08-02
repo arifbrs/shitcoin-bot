@@ -68,9 +68,20 @@ export interface StSnapshot {
   change5mPct: number | null; change1hPct: number | null;
 }
 
-/** Keys are tried in order; the third was added because the first two are exhausted until late August. */
+/**
+ * Keys are tried IN ORDER, richest first — the balances diverge wildly and the order is the only
+ * thing stopping every call from landing on a dead key. Measured 2026-08-02:
+ *   _4  2500 credits (added this day)
+ *   _3   679
+ *   base  -29   (negative = spent past the allowance, refuses with 403 "Insufficient credits")
+ *   _2     -9
+ * A negative key is not merely empty: it answers 403, so leaving it ahead of a funded key would
+ * waste every request. Re-check with `curl -H "x-api-key: <k>" https://data.solanatracker.io/credits`
+ * and re-order here when a monthly allowance resets.
+ */
 function keys(): string[] {
   return [
+    process.env.SOLTRACKER_API_KEY_4?.trim(),
     process.env.SOLTRACKER_API_KEY_3?.trim(),
     process.env.SOLTRACKER_API_KEY?.trim(),
     process.env.SOLTRACKER_API_KEY_2?.trim(),
