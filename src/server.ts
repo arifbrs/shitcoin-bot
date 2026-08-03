@@ -1731,6 +1731,18 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith("/assets/")) return serveWebAsset(res, path.slice(1), true);
   if (path === "/favicon.svg") return serveWebAsset(res, "favicon.svg", false);
 
+  // Design preview — static, no live data, auth-gated like /app. Copied through from web/public
+  // by Vite. Exists so UI directions can be compared side by side at the real tile size without
+  // touching the running dashboard.
+  if (path === "/preview-equity" || path === "/preview-hero") {
+    if (!isAuthed(req)) return redirect(res, "/login");
+    if (path === "/preview-hero") return serveWebPage(res, "preview-hero.html");
+    // serveWebPage, not serveWebAsset: the asset map only knows Vite's hashed types (js/css/
+    // woff2/svg) and falls back to application/octet-stream, which makes the browser DOWNLOAD
+    // the page instead of rendering it. serveWebPage sets text/html and reads from the same dir.
+    return serveWebPage(res, "preview-equity.html");
+  }
+
   if (path === "/" ) return serveWebPage(res, "index.html"); // Vite output name mirrors the SOURCE file's own name (web/index.html), not the rollupOptions.input key
 
   if (path === "/login" && req.method === "GET")

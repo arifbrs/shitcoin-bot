@@ -1,0 +1,285 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Equity Curve — 3 arah desain</title>
+<style>
+  :root{
+    --bg:#06070a; --tile:#0b0d12; --line:#1a1d24; --line2:#14161c;
+    --fg:#e9ebee; --dim:#7c828d; --dimmer:#40444d;
+    --up:#4bd07f; --down:#ff5f5f; --gold:#e8c56a; --scout:#a78bfa;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);padding:34px 30px 70px;-webkit-font-smoothing:antialiased}
+  h1{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+  .sub{font-size:12px;color:var(--dimmer);margin-bottom:30px;max-width:62ch;line-height:1.55}
+  .row{margin-bottom:34px}
+  .cap{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
+  .cap b{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg);font-weight:600}
+  .cap span{font-size:11.5px;color:var(--dim);line-height:1.5}
+  /* ukuran tile NYATA di dashboard — desain harus muat di sini */
+  .tile{width:648px;height:212px;background:var(--tile);border:1px solid var(--line);border-radius:12px;padding:13px 15px;display:flex;flex-direction:column;position:relative;overflow:hidden}
+  .hdr{display:flex;align-items:center;gap:7px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:9px}
+  .dot{width:5px;height:5px;border-radius:50%;background:var(--dim)}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+</style>
+<h1>Equity Curve — tiga arah</h1>
+<p class="sub">Data asli dari bot saat ini (288 titik, float $1.145,73, saldo $877,58). Ukuran kotak persis
+seperti tile di dashboard, jadi yang Anda lihat adalah yang akan muat.</p>
+<div id="out"></div>
+<script>
+const D = {"equity": [874.19, 877.36, 879.81, 882.86, 885.64, 880.24, 882.67, 876.45, 879.32, 882.37, 876.82, 879.92, 880, 879.84, 873.6, 869.27, 870.95, 867.6, 863.89, 857.91, 859.24, 855.79, 857.5, 860.33, 860.69, 864.11, 873.44, 871.89, 866.35, 859.93, 853.93, 850.41, 852.34, 853.9, 857.72, 860.57, 862.8, 856.22, 855.83, 850.62, 844.23, 836.93, 830.21, 825.91, 825.6, 827.39, 823.2, 826.09, 829.84, 832.77, 834.37, 835.54, 830.2, 831.84, 825.83, 824.64, 819.46, 812.75, 814.41, 817.06, 818.63, 818.49, 820.04, 822.87, 826.21, 825.77, 818.91, 820.27, 817.25, 829.89, 828.99, 842.26, 834.94, 838.73, 840.16, 840.61, 840.18, 833.31, 835.64, 839.07, 839.48, 838.14, 841.42, 839.88, 834.57, 833.32, 826.79, 837.72, 839.58, 841.33, 837.02, 838.35, 839.87, 835.52, 837, 831.58, 825.47, 829.35, 831.3, 834.29, 837.11, 839.06, 834.46, 828.8, 830.14, 827.98, 827.64, 820.1, 814.1, 813.54, 808.23, 809.84, 808.36, 810.2, 812.09, 806.51, 799.04, 798.95, 805.17, 798.79, 802.5, 807.54, 809.51, 812.46, 814.01, 807.22, 805.58, 808.23, 806.43, 807.12, 805.27, 801.02, 802.33, 796.33, 788.92, 787.45, 783.19, 796.22, 810.79, 815.84, 817.19, 819.91, 818.06, 819.41, 821.57, 823.3, 826.74, 824.99, 817.93, 811.98, 805.88, 799.95, 799.57, 797.73, 814.75, 833.75, 835.68, 839.72, 838.74, 837.1, 836.34, 832.4, 832.37, 825.87, 827.5, 827.66, 829.17, 829.55, 823.74, 817.67, 812.03, 813.22, 814.73, 817.17, 817.06, 818.54, 818.86, 820.3, 821.72, 824.33, 820.47, 823.76, 824.2, 826.51, 830.31, 824.01, 825.55, 821.67, 824.01, 824.88, 819.86, 822.32, 826.2, 830.23, 833.43, 830.98, 835.35, 838.6, 840.08, 843.47, 848.32, 851.93, 851.08, 853.95, 856.49, 858.73, 854.24, 848.14, 850.42, 847.39, 843.93, 844.88, 839.27, 840.08, 833.98, 835.38, 838.39, 841.97, 844.63, 844.15, 842.7, 845.33, 842.28, 841.29, 844.5, 847.48, 849, 848.88, 851.56, 852.61, 855.48, 857.24, 849.63, 844.01, 838.6, 840.39, 843.42, 847.28, 851.38, 844.19, 851.11, 852.58, 851.3, 845.6, 847.03, 848.51, 842.08, 848.66, 849.77, 847.84, 841.97, 843.52, 844.46, 855.33, 852.3, 850.01, 856.91, 857.6, 863.94, 865.18, 860.01, 861.69, 861.98, 861.59, 864.23, 866.9, 868.44, 870.37, 872.71, 867.46, 860.87, 863.52, 856.46, 859.62, 862.54, 865.5, 859.37, 865.72, 865.3, 867.59, 870.53, 871.97, 873.86, 870.41, 872.02, 878.51, 881, 876.96, 876.62, 870.08, 871.27, 865.22, 867.36, 861.98, 862.6, 855.83, 857.74, 856.04, 857.84, 860.23, 863.29, 865.72, 860.74, 855.25, 849.18, 850.65, 846.31, 842.48, 839.95, 841.36, 844.06, 847.96], "floatUsd": 1145.12, "totalUsd": 847.95, "solUsd": 72.56, "s1": {"balanceUsd": 121.32, "floatUsd": 145.12, "balanceSol": 1.6719500000000007, "floatSol": 2, "wins": 80, "losses": 117, "open": 0}, "s2": {"balanceUsd": 726.64, "floatUsd": 1000, "wins": 9, "losses": 46, "open": 0}, "wins": 89, "losses": 163, "open": 0};
+const $ = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
+const money = (v, d=2) => (v<0?"−":"") + "$" + Math.abs(v).toFixed(d);
+const pct = (v) => (v>=0?"+":"−") + Math.abs(v).toFixed(1) + "%";
+
+function block(letter, title, note){
+  // NOTE: tidak menerima node. Versi sebelumnya menerimanya dan memanggil appendChild(node)
+  // sementara pemanggilnya hanya mengirim 3 argumen -> appendChild(undefined) melempar
+  // TypeError dan mematikan seluruh skrip, menyisakan halaman kosong di bawah judul.
+  return $(`<div class="row"><div class="cap"><b>${letter} · ${title}</b><span>${note}</span></div></div>`);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   A — WATERLINE
+   Float dijadikan garis air. Jarak kurva ke garis itu DIARSIR:
+   itulah P&L, dan itulah yang sebenarnya ingin dibaca.
+   Float ikut masuk domain-Y, jadi angka pembanding headline
+   benar-benar terlihat — cacat utama desain sekarang.
+   ───────────────────────────────────────────────────────────── */
+function waterline(){
+  const W=618, HB=26, HC=78, GAPY=13, H=HB+GAPY+HC;   // pita float | penanda putus | kurva
+  const eq=D.equity, f=D.floatUsd;
+  const lo=Math.min(...eq), hi=Math.max(...eq);
+  const pad=(hi-lo)*0.14, y0=lo-pad, y1=hi+pad;
+  const X=i=>i/(eq.length-1)*W;
+  const Yc=v=>HB+GAPY+(HC-(v-y0)/(y1-y0)*HC);          // kurva pakai skalanya sendiri
+  const yF=10;                                          // garis float, tetap di pita atas
+  const line=eq.map((v,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Yc(v).toFixed(1)}`).join("");
+  const area=`${line}L${W},${HB+GAPY+HC}L0,${HB+GAPY+HC}Z`;
+  const gap=D.totalUsd-D.floatUsd, gp=100*gap/D.floatUsd;
+  // penanda putus: dua garis miring di tengah celah — konvensi baku sumbu terpotong
+  const brk=(x)=>`<path d="M${x-5},${HB+GAPY-3} l7,-7 M${x-5},${HB+GAPY+2} l7,-7" stroke="var(--dimmer)" stroke-width="1" fill="none"/>`;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>EQUITY · SELISIH DARI FLOAT</div>
+    <div style="display:flex;align-items:flex-end;gap:11px">
+      <div class="num" style="font-size:29px;font-weight:600;line-height:.95;color:var(--down)">${money(gap)}</div>
+      <div style="font-size:11px;color:var(--dim);padding-bottom:3px">${pct(gp)} di bawah float</div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:10px;color:var(--dimmer);padding-bottom:3px">${D.wins}W/${D.losses}L${D.open?" · "+D.open+" open":""}</div>
+    </div>
+    <svg width="${W}" height="${H}" style="margin-top:8px;overflow:visible">
+      <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--down)" stop-opacity=".22"/>
+        <stop offset="100%" stop-color="var(--down)" stop-opacity="0"/>
+      </linearGradient></defs>
+
+      <line x1="0" y1="${yF}" x2="${W}" y2="${yF}" stroke="var(--gold)" stroke-width="1" stroke-dasharray="4 3" opacity=".9"/>
+      <text x="0" y="${yF+13}" font-family="var(--mono)" font-size="9.5" fill="var(--gold)" opacity=".95">float ${f.toFixed(2)}</text>
+      <text x="${W}" y="${yF+13}" text-anchor="end" font-family="var(--mono)" font-size="9.5" fill="var(--dimmer)">jarak ${money(Math.abs(gap))}</text>
+
+      ${brk(W/2-9)}${brk(W/2+9)}
+      <text x="${W/2}" y="${HB+GAPY-4}" text-anchor="middle" font-family="var(--mono)" font-size="8" fill="var(--dimmer)">skala terputus</text>
+
+      <path d="${area}" fill="url(#wg)"/>
+      <path d="${line}" fill="none" stroke="var(--down)" stroke-width="1.4" stroke-linejoin="round"/>
+      <circle cx="${X(eq.length-1)}" cy="${Yc(eq[eq.length-1])}" r="2.6" fill="var(--down)"/>
+      <text x="0" y="${HB+GAPY+HC+10}" font-family="var(--mono)" font-size="9" fill="var(--dimmer)">${money(lo)}</text>
+      <text x="${W}" y="${HB+GAPY+HC+10}" text-anchor="end" font-family="var(--mono)" font-size="9" fill="var(--dimmer)">sekarang ${money(D.totalUsd)}</text>
+    </svg>
+  </div>`);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   B — DUA MESIN
+   Berhenti menjumlahkan hal yang tidak sebanding. S1 dan S2 punya
+   float berbeda 7x dan arah berlawanan; satu garis gabungan
+   meratakannya jadi tak terbaca. Di sini masing-masing punya
+   sumbu sendiri, jadi "seluruh rugi ada di S2" langsung terlihat.
+   ───────────────────────────────────────────────────────────── */
+function engines(){
+  const eq=D.equity,W=618;
+  const spark=(w,h,color)=>{const lo=Math.min(...eq),hi=Math.max(...eq);
+    const X=i=>i/(eq.length-1)*w, Y=v=>h-(v-lo)/(hi-lo||1)*h;
+    return `<path d="${eq.map((v,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join("")}" fill="none" stroke="${color}" stroke-width="1.2"/>`;};
+  const bar=(name,accent,bal,flt,w,l,open)=>{
+    const dp=100*(bal/flt-1), up=dp>=0, span=648-30-150;
+    const zero=span*0.42, len=Math.min(Math.abs(dp)/40,1)*(up?span-zero:zero);
+    return `<div style="display:flex;align-items:center;gap:11px;margin-bottom:9px">
+      <div style="width:74px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:${accent}">${name}</div>
+      <div style="flex:1;position:relative;height:19px">
+        <div style="position:absolute;left:${zero}px;top:0;bottom:0;width:1px;background:var(--dimmer)"></div>
+        <div style="position:absolute;top:4px;height:11px;border-radius:2px;background:${up?"var(--up)":"var(--down)"};opacity:.85;
+             ${up?`left:${zero}px;width:${len}px`:`left:${zero-len}px;width:${len}px`}"></div>
+        <div class="num" style="position:absolute;${up?`left:${zero+len+7}px`:`left:${zero-len-7}px;transform:translateX(-100%)`};top:2px;font-size:11px;color:${up?"var(--up)":"var(--down)"}">${pct(dp)}</div>
+      </div>
+      <div class="num" style="width:132px;text-align:right;font-size:10px;color:var(--dim)">${money(bal)} / ${money(flt,0)} · ${w}W/${l}L${open?" · "+open+" open":""}</div>
+    </div>`;};
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>EQUITY · PER MESIN</div>
+    <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:11px">
+      <div class="num" style="font-size:25px;font-weight:600;line-height:1">${money(D.totalUsd)}</div>
+      <div class="num" style="font-size:11px;color:var(--down);padding-bottom:2px">${money(D.totalUsd-D.floatUsd)} (${pct(100*(D.totalUsd/D.floatUsd-1))})</div>
+      <div style="flex:1"></div>
+      <svg width="112" height="26" style="opacity:.5;padding-bottom:1px">${spark(112,26,"var(--down)")}</svg>
+    </div>
+    ${bar("S1 sniper","var(--gold)",D.s1.balanceUsd,D.s1.floatUsd,D.s1.wins,D.s1.losses,D.s1.open)}
+    ${bar("S2 scout","var(--scout)",D.s2.balanceUsd,D.s2.floatUsd,D.s2.wins,D.s2.losses,D.s2.open)}
+    <div style="margin-top:auto;font-size:9.5px;color:var(--dimmer);line-height:1.45">
+      Skala bar dipotong di ±40%. S1 float kecil dan sedang untung; seluruh kerugian ada di S2.
+    </div>
+  </div>`);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   C — PITA
+   Bukan kurva halus tapi satu batang per sampel, tingginya
+   simpangan dari rata-rata jendela. Teksturnya membuat volatilitas
+   dan kedalaman drawdown terbaca langsung — mirip pita kertas.
+   ───────────────────────────────────────────────────────────── */
+function tape(){
+  const eq=D.equity,W=618,H=104,N=Math.min(eq.length,104);
+  const s=[]; const step=eq.length/N;
+  for(let i=0;i<N;i++) s.push(eq[Math.floor(i*step)]);
+  const base=s[0], dev=s.map(v=>v-base);
+  const m=Math.max(...dev.map(Math.abs))||1, bw=W/N;
+  const bars=dev.map((d,i)=>{const h=Math.abs(d)/m*(H/2-2), up=d>=0;
+    return `<rect x="${(i*bw+.6).toFixed(1)}" y="${(up?H/2-h:H/2).toFixed(1)}" width="${(bw-1.2).toFixed(1)}" height="${Math.max(h,.8).toFixed(1)}" fill="${up?"var(--up)":"var(--down)"}" opacity="${.35+.55*Math.abs(d)/m}"/>`;}).join("");
+  const gap=D.totalUsd-D.floatUsd;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>EQUITY · PITA SESI</div>
+    <div style="display:flex;align-items:baseline;gap:9px">
+      <div class="num" style="font-size:25px;font-weight:600">${money(D.totalUsd)}</div>
+      <div class="num" style="font-size:11px;color:var(--down)">${money(gap)} vs float</div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:9.5px;color:var(--dimmer)">${N} sampel · sejak ${money(base)}</div>
+    </div>
+    <svg width="${W}" height="${H}" style="margin-top:9px">
+      <line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="var(--line)" stroke-width="1"/>
+      ${bars}
+    </svg>
+    <div style="margin-top:auto;display:flex;gap:14px;font-size:9.5px;color:var(--dimmer)">
+      <span>hijau di atas titik awal sesi · merah di bawah</span>
+      <span style="flex:1"></span>
+      <span class="num">rentang ${money(Math.min(...eq))} – ${money(Math.max(...eq))}</span>
+    </div>
+  </div>`);
+}
+
+
+/* ─────────────────────────────────────────────────────────────
+   D — DOMPET EXCHANGE
+   Dompet ini SUNGGUH dua denominasi: S1 bermodal SOL, S2 bermodal
+   USD. Selama ini keduanya dijumlahkan jadi satu angka dolar dan
+   fakta itu hilang. Di sini saldo tampil ganda dengan kursnya,
+   tiap aset punya baris sendiri, dan pita sesi tetap di bawah.
+   ───────────────────────────────────────────────────────────── */
+function wallet(){
+  const eq=D.equity, r=D.solUsd;
+  const totSol=D.totalUsd/r, fltSol=D.floatUsd/r;
+  const gap=D.totalUsd-D.floatUsd, gp=100*gap/D.floatUsd;
+  const s1pct=100*(D.s1.balanceSol/D.s1.floatSol-1);
+  const s2pct=100*(D.s2.balanceUsd/D.s2.floatUsd-1);
+  const shareS1=100*D.s1.balanceUsd/D.totalUsd, shareS2=100-shareS1;
+  // pita mini: simpangan dari titik awal sesi
+  const N=Math.min(eq.length,72), step=eq.length/N;
+  const sm=[]; for(let i=0;i<N;i++) sm.push(eq[Math.floor(i*step)]);
+  const base=sm[0], dev=sm.map(v=>v-base), m=Math.max(...dev.map(Math.abs))||1;
+  const TW=606,TH=30,bw=TW/N;
+  const bars=dev.map((d,i)=>{const h=Math.abs(d)/m*(TH/2-1),up=d>=0;
+    return `<rect x="${(i*bw+.5).toFixed(1)}" y="${(up?TH/2-h:TH/2).toFixed(1)}" width="${(bw-1).toFixed(1)}" height="${Math.max(h,.7).toFixed(1)}" fill="${up?"var(--up)":"var(--down)"}" opacity="${(.4+.5*Math.abs(d)/m).toFixed(2)}"/>`}).join("");
+  const asset=(sym,accent,native,nativeUsd,dp,share,sub)=>`
+    <div style="display:flex;align-items:center;gap:9px;height:23px">
+      <div style="width:34px;font-size:9.5px;letter-spacing:.1em;color:${accent}">${sym}</div>
+      <div class="num" style="width:96px;font-size:12px;color:var(--fg)">${native}</div>
+      <div class="num" style="width:74px;font-size:10px;color:var(--dimmer)">${nativeUsd}</div>
+      <div class="num" style="width:52px;font-size:10.5px;color:${dp>=0?"var(--up)":"var(--down)"}">${pct(dp)}</div>
+      <div style="flex:1;height:4px;border-radius:2px;background:var(--line2);overflow:hidden">
+        <div style="height:100%;width:${share.toFixed(0)}%;background:${accent};opacity:.55"></div>
+      </div>
+      <div class="num" style="width:34px;text-align:right;font-size:9.5px;color:var(--dimmer)">${share.toFixed(0)}%</div>
+      <div class="num" style="width:64px;text-align:right;font-size:9.5px;color:var(--dimmer)">${sub}</div>
+    </div>`;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>DOMPET · SATU SALDO, DUA DENOMINASI</div>
+    <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:1px">
+      <div class="num" style="font-size:27px;font-weight:600;line-height:.95">${money(D.totalUsd)}</div>
+      <div class="num" style="font-size:14px;color:var(--dim);padding-bottom:1px">${totSol.toFixed(4)} ◎</div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:10px;color:var(--down);padding-bottom:2px">${money(gap)} · ${pct(gp)}</div>
+    </div>
+    <div class="num" style="font-size:9.5px;color:var(--dimmer);margin-bottom:9px">
+      1 ◎ = ${money(r)} · float ${money(D.floatUsd)} / ${fltSol.toFixed(4)} ◎
+    </div>
+    ${asset("SOL","var(--gold)",`${D.s1.balanceSol.toFixed(4)} ◎`,`≈ ${money(D.s1.balanceUsd)}`,s1pct,shareS1,`${D.s1.wins}W/${D.s1.losses}L`)}
+    ${asset("USD","var(--scout)",money(D.s2.balanceUsd),`= ${(D.s2.balanceUsd/r).toFixed(3)} ◎`,s2pct,shareS2,`${D.s2.wins}W/${D.s2.losses}L`)}
+    <svg width="${TW}" height="${TH}" style="margin-top:7px">
+      <line x1="0" y1="${TH/2}" x2="${TW}" y2="${TH/2}" stroke="var(--line)" stroke-width="1"/>${bars}
+    </svg>
+    <div style="margin-top:auto;font-size:9px;color:var(--dimmer);line-height:1.4">
+      SOL bergerak sendiri — angka dolar berubah walau tanpa trading. %-nya diukur pada denominasi asli tiap mesin.
+    </div>
+  </div>`);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   E — PITA PENUH + NERACA
+   Pita jadi tokoh utama (lebih tinggi, lebih terbaca), dengan satu
+   kolom neraca ringkas di kanan: komposisi dompet, kurs, dan
+   saldo ganda. Tidak ada kurva halus sama sekali.
+   ───────────────────────────────────────────────────────────── */
+function tapeLedger(){
+  const eq=D.equity,r=D.solUsd,W=430,H=112;
+  const N=Math.min(eq.length,86), step=eq.length/N;
+  const s=[]; for(let i=0;i<N;i++) s.push(eq[Math.floor(i*step)]);
+  const base=s[0], dev=s.map(v=>v-base), m=Math.max(...dev.map(Math.abs))||1, bw=W/N;
+  const bars=dev.map((d,i)=>{const h=Math.abs(d)/m*(H/2-3),up=d>=0;
+    return `<rect x="${(i*bw+.7).toFixed(1)}" y="${(up?H/2-h:H/2).toFixed(1)}" width="${(bw-1.4).toFixed(1)}" height="${Math.max(h,.9).toFixed(1)}" fill="${up?"var(--up)":"var(--down)"}" opacity="${(.35+.55*Math.abs(d)/m).toFixed(2)}"/>`}).join("");
+  const gap=D.totalUsd-D.floatUsd;
+  const shareS1=100*D.s1.balanceUsd/D.totalUsd;
+  const kv=(k,v,c)=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--line2)">
+      <span style="font-size:9.5px;color:var(--dimmer)">${k}</span>
+      <span class="num" style="font-size:10px;color:${c||"var(--fg)"}">${v}</span></div>`;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PITA SESI · NERACA DOMPET</div>
+    <div style="display:flex;gap:15px;flex:1;min-height:0">
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <div class="num" style="font-size:23px;font-weight:600">${money(D.totalUsd)}</div>
+          <div class="num" style="font-size:11px;color:var(--dim)">${(D.totalUsd/r).toFixed(3)} ◎</div>
+        </div>
+        <svg width="${W}" height="${H}" style="margin-top:6px">
+          <line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="var(--line)" stroke-width="1"/>${bars}
+        </svg>
+        <div class="num" style="margin-top:4px;font-size:9px;color:var(--dimmer)">${N} sampel sejak ${money(base)} · hijau di atas, merah di bawah</div>
+      </div>
+      <div style="width:172px;display:flex;flex-direction:column;padding-top:2px">
+        ${kv("vs float", money(gap), "var(--down)")}
+        ${kv("float", money(D.floatUsd))}
+        ${kv("1 SOL", money(r), "var(--gold)")}
+        ${kv("SOL leg", `${D.s1.balanceSol.toFixed(3)} ◎`, "var(--gold)")}
+        ${kv("USD leg", money(D.s2.balanceUsd), "var(--scout)")}
+        <div style="margin-top:7px;height:5px;border-radius:3px;overflow:hidden;display:flex">
+          <div style="width:${shareS1.toFixed(0)}%;background:var(--gold);opacity:.6"></div>
+          <div style="flex:1;background:var(--scout);opacity:.6"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:3px;font-size:8.5px;color:var(--dimmer)">
+          <span>SOL ${shareS1.toFixed(0)}%</span><span>USD ${(100-shareS1).toFixed(0)}%</span>
+        </div>
+      </div>
+    </div>
+  </div>`);
+}
+
+const out=document.getElementById("out");
+out.appendChild(block("A","Waterline","Float jadi garis air; jarak kurva ke garis itu diarsir — itulah P&L. Float ikut masuk skala, jadi angka pembanding headline benar-benar terlihat."));
+out.lastChild.appendChild(waterline());
+out.appendChild(block("B","Dua mesin","Berhenti menjumlahkan hal tak sebanding. S1 dan S2 punya float beda 7x dan arah berlawanan — di sini terbaca langsung."));
+out.lastChild.appendChild(engines());
+out.appendChild(block("C","Pita sesi","Satu batang per sampel, bukan kurva halus. Tekstur membuat volatilitas dan kedalaman drawdown terbaca seketika."));
+out.lastChild.appendChild(tape());
+out.appendChild(block("D","Dompet exchange","Saldo ganda SOL/USD dengan kursnya, tiap aset punya baris dan persentasenya sendiri, pita sesi di bawah. Paling lengkap."));
+out.lastChild.appendChild(wallet());
+out.appendChild(block("E","Pita penuh + neraca","Pita jadi tokoh utama dengan kolom neraca ringkas di kanan: komposisi dompet, kurs, dua kaki saldo."));
+out.lastChild.appendChild(tapeLedger());
+</script>

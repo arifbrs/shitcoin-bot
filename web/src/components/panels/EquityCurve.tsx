@@ -1,73 +1,142 @@
-import { Area, AreaChart, ResponsiveContainer, YAxis } from "recharts";
 import type { StatsResponse } from "@/types/stats";
 
+/**
+ * WALLET — one balance, two denominations, plus the session tape.
+ *
+ * The old panel drew a single smooth curve of the combined USD balance. Three things were wrong
+ * with that, and all three are why this was rebuilt rather than restyled:
+ *
+ *  1. It compared against a number it never showed. The y-domain was [min(points), max(points)],
+ *     so with the series at 783–886 and the float at 1145.73, the "▼ $293.93 vs $1145.95" headline
+ *     referred to a line that was literally outside the frame.
+ *  2. It hid where the money actually is. S1 is SOL-denominated (float 2 ◎) and S2 is USD-native
+ *     (float $1000) — different sizes, different directions. Summing them into one line flattened
+ *     the only fact worth knowing, which is which engine is losing.
+ *  3. A smooth area hides the SHAPE of the loss. Whether a drawdown is a steady bleed or a few
+ *     cliffs is real risk information, and interpolation erases it.
+ *
+ * So: dual denomination with the live rate, one row per asset measured in its OWN currency, and
+ * a tape (one bar per sample) instead of a curve.
+ *
+ * Percentages are deliberately computed on each engine's NATIVE denomination. SOL moves on its
+ * own, so pricing the SOL leg in dollars mixes trading performance with the SOL price — that is
+ * not the bot's doing and must not land on its scorecard.
+ */
 export function EquityCurve({ data }: { data: StatsResponse }) {
-  // ONE wallet, same as the Hero. This panel used to draw Strategy 2 alone, so it showed $781.16
-  // beside a headline of $892.48 — two balances on one screen again, which is precisely what
-  // combining the wallet was supposed to end.
   const c = data.combined;
-  const s2 = data.strategy2Primary;
-  const paper = s2?.paper;
-  if (!paper) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
+  const paper = data.strategy2Primary?.paper;
+  if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
 
-  const points = (c?.equity ?? []).map((e, i) => ({ i, bal: e.bal }));
-  const floatUsd = c?.floatUsd ?? 0;
-  const balUsd = c?.totalUsd ?? 0;
-  const min = Math.min(...points.map((p) => p.bal), floatUsd);
-  const max = Math.max(...points.map((p) => p.bal), floatUsd);
-  const neg = balUsd < floatUsd;
-  const color = neg ? "var(--hud-down)" : "var(--hud-up)";
-  const delta = balUsd - floatUsd;
+  const rate = c.solUsd;
+  const totalUsd = c.totalUsd ?? 0;
+  const floatUsd = c.floatUsd ?? 0;
+  const gap = totalUsd - floatUsd;
+  const gapPct = floatUsd > 0 ? (gap / floatUsd) * 100 : 0;
 
-  const bySource = s2?.bySource ?? [];
+  // Native-denomination performance, per engine.
+  const s1Pct = c.s1.floatSol > 0 ? (c.s1.balanceSol / c.s1.floatSol - 1) * 100 : 0;
+  const s2Pct = c.s2.floatUsd > 0 ? (c.s2.balanceUsd / c.s2.floatUsd - 1) * 100 : 0;
+  const s1Share = totalUsd > 0 ? ((c.s1.balanceUsd ?? 0) / totalUsd) * 100 : 0;
+
+  // TAPE — deviation from the first sample of this run, one bar per sample. Downsampled to a
+  // fixed count so bar width stays legible however long the run gets.
+  const eq = (c.equity ?? []).map((e) => e.bal);
+  const N = Math.min(eq.length, 76);
+  const samples = N > 0 ? Array.from({ length: N }, (_, i) => eq[Math.floor((i * eq.length) / N)]!) : [];
+  const base = samples[0] ?? 0;
+  const dev = samples.map((v) => v - base);
+
+  // Zero sits where zero actually falls in the range, not at a fixed midline.
+  //
+  // With the midline pinned to 50%, a run that never traded above its starting point left the
+  // whole top half of the panel empty — measured on the live screenshot, roughly half the tile
+  // was dead space. Placing the line proportionally uses the full height while keeping ONE
+  // scale for both directions: separate up/down scales would fill the box too, but a +$5 bar
+  // and a −$5 bar would then draw at different heights, which is a lie about the data.
+  const PLOT_H = 96;                 // 2 units of breathing room top and bottom
+  const TOP = 2;
+  const maxUp = Math.max(0, ...dev);
+  const maxDown = Math.max(0, ...dev.map((d) => -d));
+  const span = maxUp + maxDown;
+  // A run that has not moved at all (or has a single sample) has no range to place zero within.
+  // Pinning the line to the middle is the honest reading of "flat"; the proportional formula
+  // would drop it to the very top and read as "everything is below the start", which is wrong.
+  const flat = span < 1e-9;
+  const zeroY = flat ? TOP + PLOT_H / 2 : TOP + (maxUp / span) * PLOT_H;
+  const unit = flat ? 0 : PLOT_H / span;   // one scale, both directions
+
+  const money = (v: number, d = 2): string => `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(d)}`;
+  const pct = (v: number): string => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}%`;
+
+  const AssetRow = ({ sym, accent, native, quote, dp, share, wl }: {
+    sym: string; accent: string; native: string; quote: string; dp: number; share: number; wl: string;
+  }) => (
+    <div className="flex h-[22px] items-center gap-2">
+      <span className="w-8 font-mono text-[9px] tracking-widest" style={{ color: accent }}>{sym}</span>
+      <span className="w-[92px] font-mono text-[11.5px] tabular-nums text-foreground">{native}</span>
+      <span className="w-[70px] font-mono text-[9.5px] tabular-nums text-muted-foreground/60">{quote}</span>
+      <span className={`w-[48px] font-mono text-[10px] tabular-nums ${dp >= 0 ? "text-up" : "text-down"}`}>{pct(dp)}</span>
+      <span className="h-[4px] flex-1 overflow-hidden rounded-full bg-muted">
+        <span className="block h-full rounded-full opacity-60" style={{ width: `${share.toFixed(0)}%`, background: accent }} />
+      </span>
+      <span className="w-[62px] text-right font-mono text-[9px] tabular-nums text-muted-foreground/60">{wl}</span>
+    </div>
+  );
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-baseline justify-between">
-        <span className="font-sans text-xl font-semibold text-foreground">${balUsd.toFixed(2)}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">
-          {min.toFixed(2)}–{max.toFixed(2)}
+      <div className="flex items-end gap-2.5">
+        <span className="font-sans text-[26px] font-semibold leading-none tabular-nums">{money(totalUsd)}</span>
+        {rate != null && rate > 0 && (
+          <span className="pb-px font-mono text-[13px] tabular-nums text-muted-foreground">{(totalUsd / rate).toFixed(4)} ◎</span>
+        )}
+        <span className="flex-1" />
+        <span className={`pb-0.5 font-mono text-[10px] tabular-nums ${gap >= 0 ? "text-up" : "text-down"}`}>
+          {money(gap)} · {pct(gapPct)}
         </span>
       </div>
-      <p className={`mb-1 font-mono text-[10px] ${neg ? "text-down" : "text-up"}`}>
-        {delta >= 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(2)} vs ${floatUsd.toFixed(2)}
+
+      <p className="mb-2 mt-0.5 font-mono text-[9.5px] tabular-nums text-muted-foreground/60">
+        {rate != null && rate > 0 ? <>1 ◎ = {money(rate)} · </> : <>kurs SOL tidak tersedia · </>}
+        float {money(floatUsd)}
+        {rate != null && rate > 0 && <> / {(floatUsd / rate).toFixed(4)} ◎</>}
       </p>
 
-      <div className="min-h-0 flex-1">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={points} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-            <defs>
-              <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity={0.35} />
-                <stop offset="100%" stopColor={color} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <YAxis domain={[min, max]} hide />
-            <Area type="monotone" dataKey="bal" stroke={color} strokeWidth={1.5} fill="url(#equityFill)" isAnimationActive={false} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      <AssetRow
+        sym="SOL" accent="var(--hud-gold)"
+        native={`${c.s1.balanceSol.toFixed(4)} ◎`}
+        quote={c.s1.balanceUsd != null ? `≈ ${money(c.s1.balanceUsd)}` : "—"}
+        dp={s1Pct} share={s1Share} wl={`${c.s1.wins}W/${c.s1.losses}L`}
+      />
+      <AssetRow
+        sym="USD" accent="var(--hud-scout)"
+        native={money(c.s2.balanceUsd)}
+        quote={rate != null && rate > 0 ? `= ${(c.s2.balanceUsd / rate).toFixed(3)} ◎` : "—"}
+        dp={s2Pct} share={100 - s1Share} wl={`${c.s2.wins}W/${c.s2.losses}L`}
+      />
 
-      {bySource.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {bySource.map((b) => {
-            const up = b.pnlUsd >= 0;
+      {/* Tape: bars, not a curve — clustering and cliff depth stay visible. */}
+      <div className="mt-1.5 min-h-0 flex-1">
+        <svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(N, 1)} 100`}>
+          <line x1="0" y1={zeroY.toFixed(2)} x2={Math.max(N, 1)} y2={zeroY} stroke="var(--hud-line)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
+          {dev.map((d, i) => {
+            const h = Math.abs(d) * unit;
+            const up = d >= 0;
             return (
-              <span key={b.source} className="rounded-full border border-border px-2 py-0.5 font-mono text-[9px] text-muted-foreground">
-                {b.source}{" "}
-                {b.n > 0 ? (
-                  <>
-                    <b className={up ? "text-up" : "text-down"}>{up ? "+" : ""}${b.pnlUsd.toFixed(2)}</b> · {Math.round(b.winRate * 100)}% ({b.n})
-                  </>
-                ) : (
-                  <span className="text-muted-foreground/60">no closes yet</span>
-                )}
-                {b.openN > 0 && <span className="text-muted-foreground/60"> · {b.openN} open</span>}
-              </span>
+              <rect
+                key={i} x={i + 0.12} width={0.76}
+                y={up ? zeroY - h : zeroY} height={Math.max(h, 0.6)}
+                fill={up ? "var(--hud-up)" : "var(--hud-down)"}
+                opacity={0.35 + 0.55 * (Math.abs(d) / (Math.max(maxUp, maxDown) || 1))}
+              />
             );
           })}
-        </div>
-      )}
+        </svg>
+      </div>
+
+      <p className="mt-1 font-mono text-[8.5px] leading-tight text-muted-foreground/50">
+        {N} sampel sejak {money(base)} · %-nya diukur pada denominasi asli tiap mesin, jadi harga SOL tidak mencemari rapor bot
+      </p>
     </div>
   );
 }

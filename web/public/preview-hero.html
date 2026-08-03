@@ -1,0 +1,241 @@
+<!doctype html>
+<meta charset="utf-8"><title>Hero — tiga arah</title>
+<style>
+ :root{--bg:#06070a;--tile:#0b0d12;--line:#1a1d24;--line2:#14161c;--fg:#e9ebee;--dim:#7c828d;
+  --dimmer:#40444d;--up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",sans-serif}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:var(--sans);padding:32px 28px 64px;-webkit-font-smoothing:antialiased}
+ h1{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+ .sub{font-size:12px;color:var(--dimmer);margin-bottom:26px;max-width:70ch;line-height:1.55}
+ .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+ .col{width:610px}
+ .cap{margin-bottom:9px}
+ .cap b{display:block;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg);font-weight:600;margin-bottom:3px}
+ .cap span{font-size:11.5px;color:var(--dim);line-height:1.5}
+ .tile{width:610px;height:452px;background:var(--tile);border:1px solid var(--line);border-radius:12px;
+   padding:15px 17px;display:flex;flex-direction:column;position:relative;overflow:hidden}
+ .hdr{display:flex;align-items:center;gap:7px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--dim)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+</style>
+<h1>Hero — tiga arah</h1>
+<p class="sub">Panel terbesar di dashboard (610&times;452). Data asli. Masalah versi sekarang: judulnya
+&ldquo;TOTAL P&amp;L&rdquo; tapi angka besarnya SALDO, saldo positif diberi warna merah, dan seluruh isinya
+sudah ada di panel Dompet sebelahnya.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"totalUsd": 894.78, "floatUsd": 1144.53, "pnlUsd": -249.75, "pnlPct": -21.82, "wins": 120, "losses": 201, "solUsd": 72.26, "s1": {"balanceUsd": 183.04, "floatUsd": 144.53, "balanceSol": 2.532983000000004, "floatSol": 2, "wins": 111, "losses": 152, "open": 0}, "s2": {"balanceUsd": 711.73, "floatUsd": 1000, "wins": 9, "losses": 49, "open": 1}, "pnlStats": {"avgWin": 55.6117117117117, "avgLoss": -38.27342105263159, "best": 368.21, "worst": -69.94, "expectancy": 1.3511026615969592}, "totals": {"gated": 128, "passed": 42, "rejected": 86, "passRate": 0.328125}, "gateRejections": {"deadToken": 7, "staleMc": 5, "unroutable": 0, "bundle": 25, "ath": 49, "cost": 0}, "seenMints": 17012, "scan": ["Punch", "PSA", "67", "ROOMBA", "NEX Ai", "JUAN#1", "WOJAK", "HeavyPulp", "PSA", "BURNIE", "PsyopAnime", "NEX Ai", "Buttcoin", "_RAClST", "Aliens", "PSA", "TripleT", "Mansion", "Mayhem ", "CATJAK", "maxxing", "KINGCAT", "NEX Ai", "_RAClST"], "confirmed": 1343, "cur": {"cfg": "ip3g0x", "current": true, "trades": 338, "evPct": -1.42, "totalSol": -0.7178, "winPct": 41, "bleedPct": 41, "medianHoldSec": 47, "avgPeakPct": 50, "firstTs": "2026-08-02T12:32:41.156Z", "lastTs": "2026-08-03T09:08:37.968Z", "reasons": {"MAX_HOLD": {"n": 34, "avgPnlPct": 43.4}, "TRAIL_LOCK": {"n": 126, "avgPnlPct": 33.4}, "NO_DEVELOPMENT": {"n": 124, "avgPnlPct": -40.8}, "FALLBACK_STOP": {"n": 13, "avgPnlPct": -50.1}, "DEV_DUMP": {"n": 37, "avgPnlPct": -5.9}, "CATASTROPHIC": {"n": 4, "avgPnlPct": -57.1}}, "sizeSol": 0.15, "overheadPct": 1.33, "evLivePct": -2.75}, "base": {"cfg": "11el98q", "current": false, "trades": 247, "evPct": -5.56, "totalSol": -0.6872, "winPct": 42, "bleedPct": 46, "medianHoldSec": 47, "avgPeakPct": 47, "firstTs": "2026-08-01T20:15:27.288Z", "lastTs": "2026-08-02T11:16:34.414Z", "reasons": {"CATASTROPHIC": {"n": 3, "avgPnlPct": -25.6}, "MAX_HOLD": {"n": 24, "avgPnlPct": 64}, "DEV_DUMP": {"n": 48, "avgPnlPct": -5.4}, "NO_DEVELOPMENT": {"n": 91, "avgPnlPct": -43.2}, "TRAIL_LOCK": {"n": 73, "avgPnlPct": 24.4}, "FALLBACK_STOP": {"n": 8, "avgPnlPct": -54}}, "sizeSol": 0.05, "overheadPct": 4, "evLivePct": -9.56}, "cohorts": [{"cfg": "ip3g0x", "current": true, "trades": 338, "evPct": -1.42, "totalSol": -0.7178, "winPct": 41, "bleedPct": 41, "medianHoldSec": 47, "avgPeakPct": 50, "firstTs": "2026-08-02T12:32:41.156Z", "lastTs": "2026-08-03T09:08:37.968Z", "reasons": {"MAX_HOLD": {"n": 34, "avgPnlPct": 43.4}, "TRAIL_LOCK": {"n": 126, "avgPnlPct": 33.4}, "NO_DEVELOPMENT": {"n": 124, "avgPnlPct": -40.8}, "FALLBACK_STOP": {"n": 13, "avgPnlPct": -50.1}, "DEV_DUMP": {"n": 37, "avgPnlPct": -5.9}, "CATASTROPHIC": {"n": 4, "avgPnlPct": -57.1}}, "sizeSol": 0.15, "overheadPct": 1.33, "evLivePct": -2.75}, {"cfg": "i07166", "current": false, "trades": 23, "evPct": -27.18, "totalSol": -0.9376, "winPct": 22, "bleedPct": 61, "medianHoldSec": 75, "avgPeakPct": 14, "firstTs": "2026-08-02T11:19:24.415Z", "lastTs": "2026-08-02T12:20:40.564Z", "reasons": {"DEV_DUMP": {"n": 3, "avgPnlPct": 10.3}, "NO_DEVELOPMENT": {"n": 17, "avgPnlPct": -42.6}, "TRAIL_LOCK": {"n": 2, "avgPnlPct": 16.3}, "MAX_HOLD": {"n": 1, "avgPnlPct": 35}}, "sizeSol": 0.15, "overheadPct": 1.33, "evLivePct": -28.51}, {"cfg": "11el98q", "current": false, "trades": 247, "evPct": -5.56, "totalSol": -0.6872, "winPct": 42, "bleedPct": 46, "medianHoldSec": 47, "avgPeakPct": 47, "firstTs": "2026-08-01T20:15:27.288Z", "lastTs": "2026-08-02T11:16:34.414Z", "reasons": {"CATASTROPHIC": {"n": 3, "avgPnlPct": -25.6}, "MAX_HOLD": {"n": 24, "avgPnlPct": 64}, "DEV_DUMP": {"n": 48, "avgPnlPct": -5.4}, "NO_DEVELOPMENT": {"n": 91, "avgPnlPct": -43.2}, "TRAIL_LOCK": {"n": 73, "avgPnlPct": 24.4}, "FALLBACK_STOP": {"n": 8, "avgPnlPct": -54}}, "sizeSol": 0.05, "overheadPct": 4, "evLivePct": -9.56}, {"cfg": "3orcmx", "current": false, "trades": 199, "evPct": 5.28, "totalSol": 0.5253, "winPct": 47, "bleedPct": 35, "medianHoldSec": 46, "avgPeakPct": 54, "firstTs": "2026-08-01T14:16:42.576Z", "lastTs": "2026-08-01T20:14:26.390Z", "reasons": {"TRAIL_LOCK": {"n": 79, "avgPnlPct": 26}, "DEV_DUMP": {"n": 34, "avgPnlPct": -13.9}, "NO_DEVELOPMENT": {"n": 58, "avgPnlPct": -40.2}, "CATASTROPHIC": {"n": 4, "avgPnlPct": -67}, "MAX_HOLD": {"n": 19, "avgPnlPct": 124.1}, "FALLBACK_STOP": {"n": 5, "avgPnlPct": -57.8}}, "sizeSol": 0.05, "overheadPct": 4, "evLivePct": 1.28}], "lifetime": {"runs": 6, "profitable": 1, "pnlSol": -5.4161, "trades": 1512}};
+const $=h=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
+const money=(v,d=2)=>(v<0?"−":"")+"$"+Math.abs(v).toFixed(d);
+const pct=(v,d=1)=>(v>=0?"+":"−")+Math.abs(v).toFixed(d)+"%";
+
+/* ladang titik statis — mewakili gelombang yang sudah ada, bukan menggantinya */
+function dots(w,h,rows,op){
+  let s="";
+  for(let r=0;r<rows;r++){
+    const y=h-(r/rows)*h, k=(r/rows), n=Math.round(28+k*46), a=(0.05+k*0.30)*op;
+    for(let i=0;i<n;i++){
+      const x=(i/(n-1))*w;
+      const yy=y-Math.sin(i*0.30+r*0.55)*(3+k*7);
+      s+=`<circle cx="${x.toFixed(1)}" cy="${yy.toFixed(1)}" r="${(0.5+k*1.0).toFixed(2)}" fill="#8aa" opacity="${a.toFixed(3)}"/>`;
+    }
+  }
+  return s;
+}
+function col(letter,title,note){
+  // TIDAK menerima node — pemanggilnya menempelkan tile sendiri lewat out.lastChild.
+  // Versi pertama menerimanya dan memanggil appendChild(undefined); itu melempar TypeError
+  // dan mengosongkan seluruh halaman. Persis bug yang sama sudah terjadi di preview-equity.
+  return $(`<div class="col"><div class="cap"><b>${letter} · ${title}</b><span>${note}</span></div></div>`);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   A — RAPOR EKSPERIMEN
+   Tile terbesar diberi pertanyaan yang benar-benar menggerakkan
+   keputusan: apakah setelan yang berjalan mengalahkan baseline,
+   dan berapa jauh lagi sampai bisa divonis. Selama ini jawaban itu
+   terkubur di dialog Diagnostics.
+   ══════════════════════════════════════════════════════════════ */
+function scorecard(){
+  const cur=D.cur, base=D.base, TARGET=500;
+  const prog=Math.min(cur.trades/TARGET,1);
+  const delta=cur.evPct-base.evPct;
+  const W=576;
+  // rel = posisi EV pada rentang -8%..+2% supaya baseline & sekarang bisa dibandingkan visual
+  const lo=-8,hi=2, pos=v=>Math.max(0,Math.min(1,(v-lo)/(hi-lo)))*W;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>EKSPERIMEN BERJALAN · cfg ${cur.cfg}</div>
+
+    <div style="display:flex;align-items:flex-end;gap:13px;margin-top:11px">
+      <div class="num" style="font-size:56px;font-weight:600;line-height:.86;color:${cur.evPct>=0?"var(--up)":"var(--down)"}">${pct(cur.evPct,2)}</div>
+      <div style="padding-bottom:6px">
+        <div style="font-size:11px;color:var(--dim);line-height:1.35">EV per trade</div>
+        <div class="num" style="font-size:11px;color:${delta>=0?"var(--up)":"var(--down)"}">${pct(delta,2)} vs baseline</div>
+      </div>
+      <div style="flex:1"></div>
+      <div style="text-align:right;padding-bottom:4px">
+        <div class="num" style="font-size:15px">${cur.trades}</div>
+        <div style="font-size:9.5px;color:var(--dimmer);letter-spacing:.08em">TRADE</div>
+      </div>
+    </div>
+
+    <!-- rel EV: baseline vs sekarang pada sumbu yang sama -->
+    <div style="margin-top:17px">
+      <div style="position:relative;height:26px">
+        <div style="position:absolute;left:0;right:0;top:11px;height:2px;background:var(--line)"></div>
+        <div style="position:absolute;left:${pos(0)}px;top:4px;width:1px;height:16px;background:var(--dimmer)"></div>
+        <div style="position:absolute;left:${pos(0)+5}px;top:2px;font-size:8.5px;color:var(--dimmer)">impas</div>
+        <div style="position:absolute;left:${pos(base.evPct)-3}px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--dimmer)"></div>
+        <div class="num" style="position:absolute;left:${pos(base.evPct)-3}px;top:15px;transform:translateX(-40%);font-size:8.5px;color:var(--dimmer);white-space:nowrap">${base.cfg} ${pct(base.evPct)}</div>
+        <div style="position:absolute;left:${pos(cur.evPct)-4}px;top:4px;width:9px;height:9px;border-radius:50%;background:var(--down);box-shadow:0 0 0 3px rgba(255,95,95,.16)"></div>
+      </div>
+    </div>
+
+    <!-- SIGNATURE: rel menuju ambang vonis -->
+    <div style="margin-top:16px">
+      <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--dimmer);margin-bottom:5px">
+        <span>menuju vonis</span><span class="num">${cur.trades} / ${TARGET} trade</span>
+      </div>
+      <div style="height:7px;border-radius:4px;background:var(--line2);overflow:hidden">
+        <div style="height:100%;width:${(prog*100).toFixed(1)}%;background:linear-gradient(90deg,var(--scout),var(--acid));opacity:.75"></div>
+      </div>
+      <div style="font-size:9px;color:var(--dimmer);margin-top:5px;line-height:1.45">
+        Ambang dihitung dari SD nyata (105 poin). Di bawah ini selisihnya masih derau.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:9px;margin-top:15px">
+      ${[["band MC","55–100 ◎"],["posisi","0,15 ◎"],["NO_DEV","45 s"]].map(([k,v])=>
+        `<span style="border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:9.5px;color:var(--dim)">${k} <b class="num" style="color:var(--fg);font-weight:500">${v}</b></span>`).join("")}
+    </div>
+
+    <div style="display:flex;gap:26px;margin-top:16px">
+      ${[["win",cur.winPct+"%"],["bleed",cur.bleedPct+"%"],["hold",cur.medianHoldSec+"s"],["EV live",pct(cur.evLivePct,2)]].map(([k,v])=>
+        `<div><div class="num" style="font-size:16px">${v}</div><div style="font-size:9px;color:var(--dimmer);letter-spacing:.08em;text-transform:uppercase">${k}</div></div>`).join("")}
+    </div>
+
+    <div style="flex:1"></div>
+    <svg width="${W}" height="62" style="opacity:.5">${dots(W,62,7,1)}</svg>
+  </div>`);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   B — P&L JUJUR
+   Tetap panel P&L, tapi angkanya diperbaiki: yang besar adalah P&L
+   sungguhan, bukan saldo yang diwarnai merah. Baris S1/S2 dibuang
+   karena sudah jadi tugas panel Dompet; ruangnya dipakai untuk
+   kualitas trade — satu-satunya hal yang tidak ada di panel lain.
+   ══════════════════════════════════════════════════════════════ */
+function honest(){
+  const s=D.pnlStats, W=576;
+  const aw=s.avgWin, al=Math.abs(s.avgLoss), m=Math.max(aw,al);
+  const wr=Math.round(100*D.wins/(D.wins+D.losses));
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>UNTUNG / RUGI · SATU DOMPET</div>
+
+    <div class="num" style="font-size:56px;font-weight:600;line-height:.9;color:var(--down);margin-top:13px">${money(D.pnlUsd)}</div>
+    <div class="num" style="font-size:13px;color:var(--down);margin-top:3px">${pct(D.pnlPct)} dari float</div>
+    <div class="num" style="font-size:10.5px;color:var(--dimmer);margin-top:6px">
+      saldo ${money(D.totalUsd)} · float ${money(D.floatUsd)} · ${D.wins}W/${D.losses}L (${wr}% menang)
+    </div>
+
+    <!-- SIGNATURE: menang lebih BESAR dari rugi, tapi kalah jumlah -->
+    <div style="margin-top:22px">
+      <div style="font-size:9.5px;color:var(--dimmer);letter-spacing:.1em;text-transform:uppercase;margin-bottom:9px">Ukuran rata-rata tiap sisi</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:7px">
+        <span class="num" style="width:58px;font-size:11px;color:var(--up)">${pct(aw)}</span>
+        <div style="flex:1;height:15px;background:var(--line2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${(100*aw/m).toFixed(0)}%;background:var(--up);opacity:.6"></div></div>
+        <span class="num" style="width:76px;font-size:9.5px;color:var(--dimmer)">${D.wins} menang</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="num" style="width:58px;font-size:11px;color:var(--down)">${pct(s.avgLoss)}</span>
+        <div style="flex:1;height:15px;background:var(--line2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${(100*al/m).toFixed(0)}%;background:var(--down);opacity:.6"></div></div>
+        <span class="num" style="width:76px;font-size:9.5px;color:var(--dimmer)">${D.losses} rugi</span>
+      </div>
+      <div style="font-size:9.5px;color:var(--dim);margin-top:9px;line-height:1.5">
+        Menang rata-rata <b style="color:var(--up);font-weight:500">lebih besar</b> dari rugi — yang menghabiskan uang adalah
+        <b style="color:var(--down);font-weight:500">jumlahnya</b>, bukan ukurannya.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:26px;margin-top:16px">
+      ${[["ekspektansi",pct(s.expectancy,2)],["terbaik",pct(s.best,0)],["terburuk",pct(s.worst,0)]].map(([k,v])=>
+        `<div><div class="num" style="font-size:16px">${v}</div><div style="font-size:9px;color:var(--dimmer);letter-spacing:.08em;text-transform:uppercase">${k}</div></div>`).join("")}
+    </div>
+
+    <div style="flex:1"></div>
+    <svg width="${W}" height="86" style="opacity:.55">${dots(W,86,9,1)}</svg>
+  </div>`);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   C — CORONG HIDUP
+   Bukan "berapa uang saya" (itu tugas Dompet) tapi "apa yang bot
+   kerjakan sekarang". Corong dengan alasan penolakan yang mengelupas
+   ke samping — terlihat mana gerbang yang paling banyak menyaring.
+   ══════════════════════════════════════════════════════════════ */
+function funnel(){
+  const t=D.totals, g=D.gateRejections, W=576;
+  const stages=[["dilihat scout",D.seenMints],["dinilai gerbang",t.gated],["lolos",t.passed]];
+  const maxN=stages[0][1];
+  const rej=Object.entries(g).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const nameId={deadToken:"token mati",staleMc:"MC basi",unroutable:"tak bisa dirutekan",bundle:"bundle",ath:"dekat ATH",cost:"biaya"};
+  const totRej=rej.reduce((s,[,v])=>s+v,0)||1;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>SCANNER · LANGSUNG</div>
+
+    <div style="display:flex;align-items:flex-end;gap:12px;margin-top:11px">
+      <div class="num" style="font-size:50px;font-weight:600;line-height:.88;color:var(--acid)">${t.passed}</div>
+      <div style="padding-bottom:5px">
+        <div style="font-size:11px;color:var(--dim);line-height:1.35">masuk posisi</div>
+        <div class="num" style="font-size:11px;color:var(--dimmer)">dari ${t.gated} dinilai · ${Math.round(t.passRate*100)}% lolos</div>
+      </div>
+      <div style="flex:1"></div>
+      <div style="text-align:right;padding-bottom:3px">
+        <div class="num" style="font-size:14px;color:var(--dim)">${D.confirmed.toLocaleString("id")}</div>
+        <div style="font-size:9px;color:var(--dimmer);letter-spacing:.08em">MOMENTUM OK</div>
+      </div>
+    </div>
+
+    <!-- SIGNATURE: corong melebar-menyempit, penolakan mengelupas ke kanan -->
+    <div style="margin-top:20px">
+      ${stages.map(([label,n],i)=>{
+        const w=Math.max(6,(Math.log10(n+1)/Math.log10(maxN+1))*100);
+        return `<div style="display:flex;align-items:center;gap:11px;margin-bottom:8px">
+          <span style="width:104px;font-size:10px;color:var(--dim)">${label}</span>
+          <div style="flex:1;height:19px;position:relative">
+            <div style="height:100%;width:${w.toFixed(1)}%;border-radius:3px;background:${i===2?"var(--acid)":"var(--scout)"};opacity:${i===2?.55:.28-i*.06}"></div>
+          </div>
+          <span class="num" style="width:64px;text-align:right;font-size:12px">${n.toLocaleString("id")}</span>
+        </div>`}).join("")}
+    </div>
+
+    <div style="margin-top:13px">
+      <div style="font-size:9.5px;color:var(--dimmer);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">Kenapa ${t.rejected} ditolak</div>
+      ${rej.map(([k,v])=>`<div style="display:flex;align-items:center;gap:9px;margin-bottom:5px">
+          <span style="width:104px;font-size:9.5px;color:var(--dim)">${nameId[k]||k}</span>
+          <div style="flex:1;height:5px;border-radius:3px;background:var(--line2);overflow:hidden">
+            <div style="height:100%;width:${(100*v/totRej).toFixed(0)}%;background:var(--down);opacity:.5"></div></div>
+          <span class="num" style="width:30px;text-align:right;font-size:9.5px;color:var(--dimmer)">${v}</span>
+        </div>`).join("")}
+    </div>
+
+    <div style="flex:1"></div>
+    <div style="font-size:9px;color:var(--dimmer);letter-spacing:.06em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-bottom:7px">
+      ${D.scan.slice(0,14).join(" · ")}
+    </div>
+    <svg width="${W}" height="52" style="opacity:.45">${dots(W,52,6,1)}</svg>
+  </div>`);
+}
+
+const out=document.getElementById("out");
+out.appendChild(col("A","Rapor eksperimen","Tile terbesar diberi pertanyaan yang menggerakkan keputusan: apakah setelan berjalan mengalahkan baseline, dan berapa jauh lagi ke vonis. Selama ini terkubur di Diagnostics."));
+out.lastChild.appendChild(scorecard());
+out.appendChild(col("B","P&L jujur","Angka besar jadi P&L sungguhan, bukan saldo berwarna merah. Baris S1/S2 dibuang (sudah jadi tugas Dompet); ruangnya dipakai kualitas trade."));
+out.lastChild.appendChild(honest());
+out.appendChild(col("C","Corong hidup","Bukan 'berapa uang saya' tapi 'apa yang bot kerjakan sekarang'. Terlihat gerbang mana yang paling banyak menyaring."));
+out.lastChild.appendChild(funnel());
+</script>

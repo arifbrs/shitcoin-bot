@@ -53,7 +53,7 @@ export default function Dashboard() {
             <Tile area="hero" label="Total P&L · 1 dompet (S1+S2)" live={data.system.strategy2Alive}>
               <Hero data={data} />
             </Tile>
-            <Tile area="equity" label="Equity Curve · realized">
+            <Tile area="equity" label="Dompet · satu saldo, dua denominasi">
               <EquityCurve data={data} />
             </Tile>
             <Tile area="pipe" label="Pipeline · live" live={data.system.strategy2Alive}>
