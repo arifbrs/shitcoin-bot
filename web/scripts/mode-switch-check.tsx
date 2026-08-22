@@ -121,8 +121,20 @@ const REAL = SUM({
   recent: [{ ts: "2026-08-22T05:03:28Z", tradeId: "t1", mint: "AbcdEf1234", symbol: "HODL", reason: "EARLY_CUT", spentSol: 0.01157, proceedsSol: 0.012534, netSol: 0.000964, netPct: 8.33, heldSec: 13 }],
 });
 
-panelCase("dompet live · nol trade", <LiveWallet data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade"] });
-panelCase("dompet live · ada hasil nyata", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["-0.00764", "-15.9%"] });
+panelCase("dompet live · nol trade", <LiveWallet data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade", "tape muncul setelah"] });
+// Gaya grafik harus SAMA dengan panel simulasi: batang (<rect>), bukan garis (<polyline>).
+// Versi pertama menggambar polyline tipis melar — dari empat trade diskrit ia terbaca sebagai
+// tren mulus, yang menyanjung dan bohong.
+panelCase("dompet live · tape BATANG bukan garis", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["<rect", "<line"] });
+{
+  const html = renderToStaticMarkup(<LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />);
+  const bars = (html.match(/<rect/g) ?? []).length;
+  const ok = !html.includes("<polyline") && bars === REAL.equitySol.length;
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"satu batang per trade, nol polyline".padEnd(40)} ${bars} batang / ${REAL.equitySol.length} trade${html.includes("<polyline") ? " *** MASIH POLYLINE ***" : ""}`);
+}
+// Minus tipografis (−, U+2212) sama seperti panel simulasi — bukan hyphen ASCII.
+panelCase("dompet live · ada hasil nyata", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["0.00764", "15.9%", "\u2212"] });
 panelCase("dompet live · payload separuh", <LiveWallet data={{ liveBridge: { permitted: true, armed: true, openLots: 0, deployedSol: 0 } } as never} />, {});
 panelCase("journal live · kosong", <LiveJournal data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
 panelCase("journal live · ada baris", <LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["HODL", "EARLY_CUT", "+0.00096"] });
