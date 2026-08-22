@@ -70,6 +70,8 @@ class FakeChain {
    * null = follow sellResult.ok.
    */
   sellLands: boolean | null = null;
+  /** Set true to simulate a gate that refuses exits — production must NEVER do this. */
+  exitBlocked = false;
   /** Tokens credited on a buy. 0 = the fill never arrives (or not yet). */
   fillTokens = 1_000_000;
   solPerFullSell = 0.019;
@@ -93,6 +95,11 @@ class FakeChain {
         return { ...this.buyResult, signature: "sigbuy" };
       },
       sell: async (mint: string, amount: number | string) => {
+        // MODEL THE REAL GATE. The fake used to sell unconditionally, so "a HALT does not
+        // strand the bag" passed here while production did the exact opposite: liveSell went
+        // through liveAllowed(), which includes the kill switch, so a halt blocked every exit.
+        // A fake that is more permissive than production turns its test into a decoration.
+        if (this.exitBlocked) return { ok: false, err: "live blocked: HALTED" };
         this.calls.push(`sell:${mint}:${amount}`);
         if (this.sellLands ?? this.sellResult.ok) {
           const have = this.tokens.get(mint) ?? 0;
@@ -350,6 +357,15 @@ async function main(): Promise<void> {
   await B.__drainForTest();
   check("a HALT does not strand the bag — the exit still runs",
     B.__lotsForTest().get("t8")!.state === "closed" && (c.tokens.get("M8") ?? 0) === 0);
+  // And prove it against the real module, not just the fake: the exit gate must ignore the halt.
+  {
+    const { liveAllowed, liveExitAllowed, halt: h, resume: rs } = await import("./execution/guardian.js");
+    h("selftest: exit gate");
+    check("HALT blocks BUYING (liveAllowed)", !liveAllowed().ok);
+    check("HALT does NOT block SELLING (liveExitAllowed)", liveExitAllowed().ok,
+      `(${liveExitAllowed().reason ?? ""}) — a halt must never trap a real bag`);
+    rs();
+  }
   resume();
 
   // ── 8. INVARIANT 6 — unexplained movement ─────────────────────────────────

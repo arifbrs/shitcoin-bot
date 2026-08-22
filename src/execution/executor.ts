@@ -2,7 +2,7 @@ import { Connection, VersionedTransaction, SystemProgram, Transaction, LAMPORTS_
 import { config } from "../config.js";
 import { logRecord } from "../util/log.js";
 import { botWallet } from "./wallet.js";
-import { guardBuy, recordSpend, liveAllowed, reconcile } from "./guardian.js";
+import { guardBuy, recordSpend, liveAllowed, liveExitAllowed, reconcile } from "./guardian.js";
 import { pooledRpc } from "../safety/onchain.js";
 import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus } from "./rpc.js";
 
@@ -170,11 +170,17 @@ export async function liveBuy(mint: string, sizeSol: number, deployedSol: number
 }
 
 /**
- * LIVE SELL on mainnet. A sell returns SOL (doesn't spend principal) so it is not
- * capped by the spend limits, but it is still gated by liveAllowed() and confirmed.
+ * LIVE SELL on mainnet. A sell returns SOL (doesn't spend principal), so it is capped by
+ * nothing — not the spend limits, and not the kill switch. See liveExitAllowed().
+ *
+ * `pool` matters more than it looks. A token that pumps hard GRADUATES off the bonding curve
+ * onto an AMM, and a sell still addressed to the curve fails with 0x1775. Callers exiting a
+ * position should pass "auto" and let PumpPortal resolve the venue that exists NOW, rather than
+ * the one that existed at entry.
  */
 export async function liveSell(mint: string, tokenAmount: number | string, pool = "auto"): Promise<LiveResult> {
-  const gate = liveAllowed();
+  const gate = liveExitAllowed(); // NOT liveAllowed(): a halt must never trap a bag
+
   if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
   const kp = botWallet();
   const bytes = await buildSellTx(kp.publicKey.toBase58(), mint, tokenAmount, pool);

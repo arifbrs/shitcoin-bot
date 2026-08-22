@@ -390,7 +390,16 @@ async function doSell(tradeId: string, fracOfOriginal: number, reason: string): 
 
     const before = await readBalanceSol();
     const t0 = Date.now();
-    const r = await chain.sell(lot.mint, amount, lot.pool);
+    // VENUE LADDER. `lot.pool` is frozen at ENTRY, and a token that pumps hard graduates off
+    // the bonding curve onto an AMM — after which a sell addressed to the curve fails with
+    // 0x1775 forever. Measured 2026-08-22: `imback` 3.7x'd through its scale-outs, graduated,
+    // and its 25,649-token tail then failed 22 sell attempts in a row against a dead venue.
+    // "auto" first so PumpPortal resolves whatever exists NOW; the stored pool is only a
+    // fallback for the case where auto cannot decide.
+    let r = await chain.sell(lot.mint, amount, "auto");
+    if (!r.ok && !r.timedOut && lot.pool && lot.pool !== "auto") {
+      r = await chain.sell(lot.mint, amount, lot.pool);
+    }
     const after = await readBalanceSol();
     const got = before != null && after != null ? after - before : null;
 

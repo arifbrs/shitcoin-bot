@@ -147,6 +147,22 @@ export function reconcile(expectedSol: number, actualSol: number): GuardVerdict 
  *   2. a signing key is reachable — keychain OR file (execution/keystore.ts)
  * and the kill switch must not be tripped. Any failure → not allowed.
  */
+/**
+ * EXIT gate. Env permission + a key, and DELIBERATELY NOT the kill switch.
+ *
+ * The halt exists to stop us SPENDING. Gating sells on it inverted the whole design: on
+ * 2026-08-22 a bag failed to sell six times (the token had graduated off the bonding curve, so
+ * the curve sell instruction errored), the kill switch tripped as designed — and then blocked
+ * every subsequent exit attempt, including the ones that would have worked. 25,649 real tokens
+ * sat unsellable for over an hour because the safety mechanism was applied to the safe
+ * direction. Getting OUT must never require permission that getting IN needs.
+ */
+export function liveExitAllowed(): GuardVerdict {
+  if (!config.exec.liveConfirmed) return { ok: false, reason: "LIVE not confirmed" };
+  if (!keyAvailable()) return { ok: false, reason: "no signing key" };
+  return { ok: true };
+}
+
 export function liveAllowed(): GuardVerdict {
   if (!config.exec.liveConfirmed) {
     return { ok: false, reason: "LIVE not confirmed — set LIVE_TRADING_CONFIRMED=yes in .env (out-of-band)" };
