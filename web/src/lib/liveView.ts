@@ -56,11 +56,22 @@ export function toLiveView(data: StatsResponse): StatsResponse {
   // Wallet: SOL-denominated, like the sniper leg. The "float" is the balance BEFORE live trading
   // started, derived by backing the realised P&L out of the current balance — so the panel's
   // "vs float" reading means "what live trading did", not "what the wallet happens to hold".
-  const balanceSol = b.expectedBalanceSol ?? 0;
+  //
+  // `walletSol` is read on-chain by the web server. It must NOT fall back to
+  // `expectedBalanceSol`: that is the bridge's post-transaction snapshot, and the bridge only
+  // transacts in the TRADER process, so in the web server it is null forever. Treating it as
+  // the balance rendered $0.00 / 0.0000 SOL against a wallet holding 0.22, and dragged float
+  // and every percentage down with it.
+  //
+  // Unknown stays UNKNOWN. Returning the untouched paper data would be worse (a simulation
+  // balance under a live heading), so the balance-derived fields carry null and the panels draw
+  // their own em-dashes.
+  const known = typeof b.walletSol === "number" && b.walletSol >= 0;
+  const balanceSol = known ? (b.walletSol as number) : 0;
   const netSol = s?.netSol ?? 0;
-  const floatSol = balanceSol - netSol;
+  const floatSol = known ? balanceSol - netSol : 0;
   const rate = data.combined?.solUsd ?? null;
-  const usd = (sol: number): number | null => (rate != null && rate > 0 ? sol * rate : null);
+  const usd = (sol: number): number | null => (known && rate != null && rate > 0 ? sol * rate : null);
 
   // Equity in BALANCE terms (the panel plots deviation from its first sample), so the live
   // cumulative-P&L series is re-based onto the starting float.
@@ -93,7 +104,7 @@ export function toLiveView(data: StatsResponse): StatsResponse {
           totalUsd: usd(balanceSol),
           floatUsd: usd(floatSol),
           pnlUsd: usd(netSol),
-          pnlPct: floatSol > 0 ? (netSol / floatSol) * 100 : null,
+          pnlPct: known && floatSol > 0 ? (netSol / floatSol) * 100 : null,
           wins: s?.wins ?? 0,
           losses: s?.losses ?? 0,
           winRate: s && s.trades > 0 ? s.wins / s.trades : 0,

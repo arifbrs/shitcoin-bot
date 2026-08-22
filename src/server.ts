@@ -723,6 +723,17 @@ function exitProximity(opts: { peakPct: number; fromPeakPct: number; engine: "S1
 }
 
 /** Cached art for a mint, kicking off a background lookup the first time we miss. */
+/**
+ * Wallet balance cache. Polled rather than read per request: /api/stats is built every few
+ * seconds and a chain read on that path would spend the RPC budget the trader needs. `null`
+ * means UNKNOWN and must stay null all the way to the UI — never coerced to zero.
+ */
+let cachedWalletSol: number | null = null;
+setInterval(() => {
+  void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => { /* keep the last known value */ });
+}, 20_000);
+void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => {});
+
 function artFor(mint: string | undefined): string | null {
   if (!mint) return null;
   const hit = artCache.get(mint);
@@ -2035,8 +2046,16 @@ function buildStats() {
     // (it runs inside the trader process too, where no art cache exists).
     liveBridge: (() => {
       const b = bridgeStatus();
+      void cachedWalletSol; // (declared below; read inside the object literal)
       return {
         ...b,
+        // REAL balance, read on-chain by THIS process.
+        //
+        // `expectedBalanceSol` is the bridge's post-transaction snapshot, and the bridge only
+        // transacts inside the TRADER process — in the web server it is null forever. Publishing
+        // it as the wallet balance made the live panel read $0.00 / 0.0000 SOL against a wallet
+        // holding 0.22, and every derived figure (float, %) followed it into nonsense.
+        walletSol: cachedWalletSol,
         summary: { ...b.summary, recent: b.summary.recent.map((r) => ({ ...r, img: artFor(r.mint) })) },
         lots: b.lots.map((l) => ({ ...l, img: artFor(l.mint) })),
       };

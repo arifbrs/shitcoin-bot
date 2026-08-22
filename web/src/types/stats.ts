@@ -456,6 +456,8 @@ export interface LiveBridgeStatus {
   spentLast24h: number;
   caps: { maxPerTradeSol: number; maxDeployedSol: number; maxDailySpendSol: number; feeReserveSol: number; reconcileToleranceSol: number };
   clipSol: number;
+  /** Real on-chain balance read by the web server. `null` = unknown, never zero. */
+  walletSol?: number | null;
   summary: LiveSummary;
   lots?: Array<{
     tradeId: string; mint: string; symbol: string | null; state: string;

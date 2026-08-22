@@ -111,7 +111,7 @@ const BASE: Any = {
   recentTrades: [{ ts: "2026-08-22T01:00:00Z", symbol: "PAPERCOIN", reason: "MAX_HOLD", pnlPct: 33.2 }],
   strategy2Primary: { recentTrades: [{ ts: "2026-08-22T01:00:00Z", symbol: "S2COIN", reason: "TRAIL_STOP", pnlPct: -12.1 }], paper: { open: 0, openPositions: [] }, totals: { rejected: 0 } },
   runs: { profitable: 2, completed: 5, recent: [], lifetime: { runs: 5, profitable: 2, pnlSol: -1, trades: 900 } },
-  liveBridge: { ...ARMED, summary: REAL, lots: [] },
+  liveBridge: { ...ARMED, summary: REAL, lots: [], walletSol: 0.2358 },
 };
 
 function adapterCase(name: string, node: (d: Any) => React.ReactElement, want: { mustShow?: string[]; mustNotShow?: string[] }) {
@@ -130,6 +130,15 @@ function adapterCase(name: string, node: (d: Any) => React.ReactElement, want: {
 }
 
 adapterCase("recap = angka live", (d) => <SniperRecap data={d} />, { mustShow: ["1W/3L"], mustNotShow: ["PAPERCOIN"] });
+// Saldo dompet HARUS yang dibaca on-chain oleh server, bukan snapshot bridge (yang null di
+// proses web). Salah sumber membuat panel live membaca 0.0000 SOL atas dompet berisi 0,22.
+adapterCase("dompet memakai saldo on-chain", (d) => <EquityCurve data={d} />, { mustShow: ["0.2358"], mustNotShow: ["0.0000 ◎"] });
+{ // saldo TIDAK diketahui → jangan pernah menggambar nol
+  const v = toLiveView({ ...BASE, liveBridge: { ...ARMED, summary: REAL, lots: [], walletSol: null } } as never) as Any;
+  const ok = v.combined.totalUsd === null && v.combined.pnlPct === null;
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"saldo tak diketahui → null, bukan 0".padEnd(40)} ${ok ? "null" : "*** dipalsukan jadi 0 ***"}`);
+}
 adapterCase("dompet = saldo + kurva live", (d) => <EquityCurve data={d} />, { mustShow: ["W/3L"] });
 adapterCase("journal = trade live saja", (d) => <TradeJournal data={d} />, { mustShow: ["HODL", "EARLY_CUT"], mustNotShow: ["PAPERCOIN", "S2COIN"] });
 adapterCase("exit quality = aturan live", (d) => <ExitQuality data={d} />, { mustShow: ["EARLY_CUT"], mustNotShow: ["TRAIL_STOP"] });
