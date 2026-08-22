@@ -635,8 +635,19 @@ export function bridgeStart(paperOpenProbe: (tradeId: string) => boolean): void 
   if (started) return;
   started = true;
   const armed = bridgeArmed();
-  ui.warn(`[live] ⚠ LIVE PERMITTED — currently ${armed ? "ARMED (real SOL)" : "disarmed"}. size ${config.exec.live.sizeSol} | caps: trade ${config.exec.guard.maxPerTradeSol} / exposure ${config.exec.guard.maxDeployedSol} / daily ${config.exec.guard.maxDailySpendSol}`);
-  logRecord("live-exec", { type: "permitted", armed, size: config.exec.live.sizeSol, caps: config.exec.guard, wallet: botPubkey() });
+  // Print the sizing RULE, not the fixed clip. With compounding on, `live.sizeSol` is only the
+  // fallback for an unreadable balance — logging it as "size" states a number the bot will not
+  // actually use, on the one line an operator reads to confirm what they just armed.
+  const L = config.exec.live;
+  const sizing = L.compound ? `${L.riskPct}% saldo (floor ${L.minSol}, fallback ${L.sizeSol})` : `${L.sizeSol} fixed`;
+  ui.warn(`[live] ⚠ LIVE PERMITTED — currently ${armed ? "ARMED (real SOL)" : "disarmed"}. size ${sizing} | caps: trade ${config.exec.guard.maxPerTradeSol} / exposure ${config.exec.guard.maxDeployedSol} / daily ${config.exec.guard.maxDailySpendSol}`);
+  logRecord("live-exec", {
+    type: "permitted", armed, caps: config.exec.guard, wallet: botPubkey(),
+    sizing: L.compound ? "compound" : "fixed",
+    riskPct: L.compound ? L.riskPct : null,
+    minSol: L.minSol,
+    fallbackSizeSol: L.sizeSol,
+  });
   void snapshotBalance();
   reconcileTimer = setInterval(() => void reconcileTick().catch(() => {}), config.exec.live.reconcileMs);
   sweepTimer = setInterval(() => void sweepTick().catch(() => {}), config.exec.live.sweepMs);
