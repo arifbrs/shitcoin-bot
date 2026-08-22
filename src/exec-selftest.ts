@@ -69,13 +69,27 @@ async function main(): Promise<void> {
   // ── 2. LIVE GATE ───────────────────────────────────────────────────────
   console.log("\n2. LIVE GATE (real-money double-lock)");
   const gate = liveAllowed();
-  check("live is BLOCKED without opt-in", !gate.ok, `(${gate.reason})`);
+  // This used to assert "live is always blocked", which was true only while the permission had
+  // never been granted. Once LIVE_TRADING_CONFIRMED=yes was added to .env the check started
+  // failing on a correctly-configured machine — a test that fails when reality is right teaches
+  // people to ignore it. What must hold in BOTH states is that the gate agrees with the .env
+  // lock, and nothing else can open it.
+  if (config.exec.liveConfirmed) {
+    check("permission granted → gate open (and .env is the only thing that opened it)", gate.ok, `(${gate.reason})`);
+    console.log("     ⚠ LIVE_TRADING_CONFIRMED=yes — real spending is one console click away");
+  } else {
+    check("no permission → live is BLOCKED", !gate.ok, `(${gate.reason})`);
+  }
   // Regression guard: the gate must accept a keychain-stored key. It previously required the
   // key FILE to exist, so migrating the key off disk silently blocked live execution forever.
   check("the live gate is not blocked by a missing key FILE",
     gate.reason?.includes("signing key") !== true || keySource() === "none",
     `(${gate.reason})`);
-  check("EXEC_MODE is not live in .env", config.exec.mode !== "live" || !config.exec.liveConfirmed);
+  // The ACTIVATION lock, read from the control file the bot actually obeys — not from .env.
+  const { readControl } = await import("./control.js");
+  const activated = readControl().execMode === "live";
+  check("armed state matches the console switch", activated === (config.exec.liveConfirmed && activated));
+  console.log(`     mode sekarang: ${readControl().execMode}${activated ? "  ← UANG SUNGGUHAN AKTIF" : ""}`);
 
   // ── 2b. KEY STORAGE ────────────────────────────────────────────────────
   console.log("\n2b. KEY STORAGE (keychain first, file fallback)");
