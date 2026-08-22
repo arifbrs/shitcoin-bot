@@ -141,6 +141,16 @@ adapterCase("dompet memakai saldo on-chain", (d) => <EquityCurve data={d} />, { 
 }
 adapterCase("dompet = saldo + kurva live", (d) => <EquityCurve data={d} />, { mustShow: ["W/3L"] });
 adapterCase("journal = trade live saja", (d) => <TradeJournal data={d} />, { mustShow: ["HODL", "EARLY_CUT"], mustNotShow: ["PAPERCOIN", "S2COIN"] });
+// Baris live TIDAK boleh berlabel S2 — itu menamai mesin yang salah DAN menyembunyikan bahwa
+// ini uang sungguhan. Dan persen saja menyesatkan: dengan compounding tiap baris bertaruh
+// jumlah berbeda, jadi nominal SOL harus ikut tampil.
+adapterCase("baris live berlabel LIVE + ada nominal SOL", (d) => <TradeJournal data={d} />, { mustShow: [">LIVE<", "0.0010◎"] });
+{ // jurnal simulasi tidak boleh ikut berubah
+  const html = renderToStaticMarkup(<TradeJournal data={BASE as never} />);
+  const ok = html.includes(">S1<") && html.includes(">S2<") && !html.includes("◎");
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"jurnal simulasi tidak tersentuh".padEnd(40)} ${ok ? "S1/S2, tanpa kolom SOL" : "*** ikut berubah ***"}`);
+}
 adapterCase("exit quality = aturan live", (d) => <ExitQuality data={d} />, { mustShow: ["EARLY_CUT"], mustNotShow: ["TRAIL_STOP"] });
 adapterCase("posisi = kosong bila tak ada bag", (d) => <OpenPositions data={d} />, { mustShow: ["no open positions"] });
 { // runs tidak berlaku di live — jangan tampilkan riwayat simulasi di bawah judul live

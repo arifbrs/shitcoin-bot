@@ -17,8 +17,8 @@ function fmtAgo(ts: string): string {
  * existing feeds client-side instead of showing Strategy 2 only).
  */
 function TradeJournalInner({ data }: { data: StatsResponse }) {
-  const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, img: t.img ?? null, tag: "S2" as const }));
-  const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, img: t.img ?? t.image ?? null, tag: "S1" as const }));
+  const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, img: t.img ?? null, pnlSol: (t as { pnlSol?: number }).pnlSol, tag: ((t as { tag?: string }).tag ?? "S2") as "S1" | "S2" | "LIVE" }));
+  const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, img: t.img ?? t.image ?? null, pnlSol: undefined as number | undefined, tag: "S1" as "S1" | "S2" | "LIVE" }));
   const trades = [...s1, ...s2].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, 30);
 
   if (!trades.length) {
@@ -42,15 +42,24 @@ function TradeJournalInner({ data }: { data: StatsResponse }) {
       {trades.map((t, i) => {
         const up = t.pnlPct >= 0;
         return (
-          <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
-            <span className={`rounded px-1 text-[8px] font-semibold ${t.tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{t.tag}</span>
+          <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_auto_1fr_auto_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
+            <span className={`rounded px-1 text-[8px] font-semibold ${t.tag === "LIVE" ? "bg-down/20 text-down" : t.tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{t.tag}</span>
             {/* The server has been sending `img` for every row all along — the memo fingerprint
                 even tracks it — but nothing ever rendered it. */}
             <CoinIcon img={t.img} symbol={t.symbol} />
             <span className="truncate text-foreground">{t.symbol}</span>
             <span className="text-muted-foreground">{t.reason}</span>
             <span className="text-muted-foreground/70">{fmtAgo(t.ts)}</span>
-            <b className={up ? "text-up" : "text-down"}>{up ? "+" : ""}{t.pnlPct.toFixed(1)}%</b>
+            {/* REAL MONEY GETS ITS ABSOLUTE NUMBER.
+                Percent alone hides that each row risked a different amount: with compounding on,
+                a -74.6% on a 0.0276 clip lost MORE (-0.021 SOL) than a +156.3% on a 0.0123 clip
+                made (+0.019). Reading the column as a scorecard then inverts the two. Percentages
+                are also not additive — summing this column gives -152%, which means nothing.
+                Only shown for live rows, so the simulation journal is untouched. */}
+            {t.pnlSol !== undefined && (
+              <b className={`tabular-nums ${up ? "text-up" : "text-down"}`}>{up ? "+" : ""}{t.pnlSol.toFixed(4)}◎</b>
+            )}
+            <b className={`tabular-nums ${up ? "text-up" : "text-down"}`}>{up ? "+" : ""}{t.pnlPct.toFixed(1)}%</b>
           </div>
         );
       })}

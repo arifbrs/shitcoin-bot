@@ -34,6 +34,10 @@ export function toLiveView(data: StatsResponse): StatsResponse {
     pnlSol: r.netSol,
     heldSec: r.heldSec,
     img: r.img ?? null,
+    // Tag explicitly. These rows sit in the Strategy-2 slot only because that is the array the
+    // journal and Exit Quality already read — labelling them "S2" would name the wrong engine
+    // AND hide that this is real money.
+    tag: "LIVE" as const,
   }));
 
   // Open bags, joined to the paper position that decided each one so the card's rings (time
