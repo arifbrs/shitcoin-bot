@@ -1182,8 +1182,15 @@ const {
   keyFile: _keyFile,
   pumpPortalTradeLocalUrl: _tradeLocalUrl,
   liveConfirmed: _liveConfirmed,
+  // `live` is excluded for the SAME reason `liveConfirmed` is: it cannot change a single paper
+  // decision. The live bridge mirrors what the paper trader already decided — its clip size,
+  // sweep interval and settle window never touch entry, exit or sizing in the model. Leaving it
+  // in fragmented cohort 7xk6ol (1,067 trades) on the restart that first enables live, which
+  // would have destroyed the comparison at exactly the moment it mattered most.
+  live: _liveBridgeMaterial,
   ..._execMaterial
 } = config.exec;
+void _liveBridgeMaterial;
 const _cfgMaterial = JSON.stringify({
   measurementEpoch: config.measurementEpoch,
   strategyVersion: config.strategyVersion,

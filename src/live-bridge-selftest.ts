@@ -21,8 +21,12 @@
 const NOPERM_CHILD = process.env.LIVE_BRIDGE_NOPERM_CHILD === "1";
 
 process.env.EXEC_MODE = "live";
-if (!NOPERM_CHILD) process.env.LIVE_TRADING_CONFIRMED = "yes";
-else delete process.env.LIVE_TRADING_CONFIRMED;
+// The child sets "no" rather than DELETING the variable. Deleting looks equivalent and is not:
+// dotenv only skips keys already present in process.env, so once the real .env gained
+// LIVE_TRADING_CONFIRMED=yes, a deleted key was simply repopulated from the file and the child
+// came up PERMITTED. The negative test then silently passed nothing — it went hollow at the
+// exact moment the permission became real, which is the only moment it protects anything.
+process.env.LIVE_TRADING_CONFIRMED = NOPERM_CHILD ? "no" : "yes";
 process.env.LIVE_BUY_SETTLE_MS = "40";     // don't wait 3 minutes to test the timeout path
 process.env.LIVE_RECONCILE_MS = "3600000"; // no background timers during the suite
 process.env.LIVE_SWEEP_MS = "3600000";
@@ -117,10 +121,15 @@ async function main(): Promise<void> {
   const LOTS = join(config.logDir, "live-lots.json");
   const GUARD = join(config.logDir, "guard.json");
   const CONTROL = join(config.logDir, "control.json");
+  // The suite writes real `live-exec` records for its FAKE trades (mint "M1", tradeId "t7", a
+  // deliberate reconcile-halt). Left alone they land in the same stream a live run writes to —
+  // 524 of them did, and had to be scrubbed by hand before the first real trade. A log that
+  // mixes rehearsal with reality is the "lying instrument" this project keeps getting burned by.
+  const LIVE_EXEC = join(config.logDir, `live-exec-${new Date().toISOString().slice(0, 10)}.jsonl`);
   const stash: string[] = [];
-  for (const p of [LOTS, GUARD, CONTROL]) if (existsSync(p)) { renameSync(p, `${p}.selftest-stash`); stash.push(p); }
+  for (const p of [LOTS, GUARD, CONTROL, LIVE_EXEC]) if (existsSync(p)) { renameSync(p, `${p}.selftest-stash`); stash.push(p); }
   const restore = () => {
-    for (const p of [LOTS, GUARD, CONTROL]) if (existsSync(p)) rmSync(p);
+    for (const p of [LOTS, GUARD, CONTROL, LIVE_EXEC]) if (existsSync(p)) rmSync(p);
     for (const p of stash) if (existsSync(`${p}.selftest-stash`)) renameSync(`${p}.selftest-stash`, p);
   };
 
@@ -169,7 +178,7 @@ async function main(): Promise<void> {
   // process.execArgv carries tsx's own --require/--import loader flags; without them the
   // child would be plain node and could not run a .ts file at all.
   const child = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!], {
-    env: { ...process.env, LIVE_BRIDGE_NOPERM_CHILD: "1", LIVE_TRADING_CONFIRMED: "" },
+    env: { ...process.env, LIVE_BRIDGE_NOPERM_CHILD: "1", LIVE_TRADING_CONFIRMED: "no" },
     encoding: "utf8",
   });
   const out = `${child.stdout ?? ""}${child.stderr ?? ""}`;
