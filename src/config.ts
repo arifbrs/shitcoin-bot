@@ -1117,7 +1117,11 @@ export const config = {
     sameSlotBundleMax: 5, // ≥ this many buys in ONE slot at launch = coordinated bundle → TOXIC
   },
 
-  logDir: new URL("../logs/", import.meta.url).pathname,
+  // Env-overridable so a TEST RUN CAN NEVER TOUCH PRODUCTION STATE. The live-bridge selftest
+  // used to stash/restore the real control.json, guard.json and live-lots.json of a RUNNING
+  // bot — a window in which the bot reads whatever the test happened to write. For a file that
+  // decides whether real money is spent, "we put it back afterwards" is not isolation.
+  logDir: process.env.LOG_DIR?.trim() || new URL("../logs/", import.meta.url).pathname,
 
   // FROZEN strategy tag for the clean experiment (#6). Bump this whenever entry/exit
   // logic changes materially — runs with different tags must NOT be pooled as one

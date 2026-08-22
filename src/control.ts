@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 
@@ -104,6 +104,25 @@ export function writeControl(next: Partial<ControlState>): ControlState {
   // Hard guard, server-side: activation without permission is refused here, not in the UI.
   // The browser is not trusted to enforce this — it only renders what it is told.
   if (merged.execMode === "live" && !livePermitted()) merged.execMode = "dry-run";
+  // AUDIT TRAIL for the one field that decides whether real money moves.
+  //
+  // Live re-armed once without anyone clicking, and there was no way to answer "who did that?" —
+  // control.json holds only the current value, so the transition left no trace anywhere. Six
+  // minutes later the bot bought a real position. Every mode change now records which process
+  // made it, so the question is answerable the first time it is asked instead of reconstructed
+  // from file mtimes.
+  if (merged.execMode !== cur.execMode) {
+    try {
+      appendFileSync(
+        join(config.logDir, `events-${new Date().toISOString().slice(0, 10)}.jsonl`),
+        JSON.stringify({
+          ts: new Date().toISOString(), type: "exec-mode-change",
+          from: cur.execMode, to: merged.execMode,
+          pid: process.pid, script: process.argv[1]?.split("/").slice(-2).join("/") ?? null,
+        }) + "\n",
+      );
+    } catch { /* never let logging block a mode change, least of all a disarm */ }
+  }
   writeFileSync(PATH, JSON.stringify(merged, null, 2));
   return merged;
 }

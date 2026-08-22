@@ -20,6 +20,18 @@
  */
 const NOPERM_CHILD = process.env.LIVE_BRIDGE_NOPERM_CHILD === "1";
 
+/**
+ * ISOLATED STATE DIR. The suite used to stash/restore the RUNNING bot's control.json,
+ * guard.json, live-lots.json and live-exec log. Stash-and-restore is not isolation: between the
+ * two there is a window in which a live bot reads whatever the test wrote — and control.json is
+ * the file that decides whether real money is spent. Now the whole suite runs against a throwaway
+ * directory and production is never opened at all.
+ */
+if (!process.env.LOG_DIR) {
+  const dir = mkdtempSync(join(tmpdir(), "live-bridge-selftest-"));
+  process.env.LOG_DIR = dir;
+}
+
 process.env.EXEC_MODE = "live";
 // The child sets "no" rather than DELETING the variable. Deleting looks equivalent and is not:
 // dotenv only skips keys already present in process.env, so once the real .env gained
@@ -33,7 +45,8 @@ process.env.LIVE_SWEEP_MS = "3600000";
 process.env.LIVE_TRADE_SIZE_SOL = "0.02";
 process.env.LIVE_MAX_SELL_FAILURES = "3";
 
-import { existsSync, rmSync, renameSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, rmSync, readdirSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -117,20 +130,10 @@ async function main(): Promise<void> {
   const { resume, isHalted } = await import("./execution/guardian.js");
   const control = await import("./control.js");
 
-  // Keep the suite off the real ledgers.
-  const LOTS = join(config.logDir, "live-lots.json");
-  const GUARD = join(config.logDir, "guard.json");
-  const CONTROL = join(config.logDir, "control.json");
-  // The suite writes real `live-exec` records for its FAKE trades (mint "M1", tradeId "t7", a
-  // deliberate reconcile-halt). Left alone they land in the same stream a live run writes to —
-  // 524 of them did, and had to be scrubbed by hand before the first real trade. A log that
-  // mixes rehearsal with reality is the "lying instrument" this project keeps getting burned by.
-  const LIVE_EXEC = join(config.logDir, `live-exec-${new Date().toISOString().slice(0, 10)}.jsonl`);
-  const stash: string[] = [];
-  for (const p of [LOTS, GUARD, CONTROL, LIVE_EXEC]) if (existsSync(p)) { renameSync(p, `${p}.selftest-stash`); stash.push(p); }
+  // Everything below writes into the throwaway LOG_DIR set at the top of this file, so there
+  // is nothing to stash and nothing to put back.
   const restore = () => {
-    for (const p of [LOTS, GUARD, CONTROL, LIVE_EXEC]) if (existsSync(p)) rmSync(p);
-    for (const p of stash) if (existsSync(`${p}.selftest-stash`)) renameSync(`${p}.selftest-stash`, p);
+    try { rmSync(config.logDir, { recursive: true, force: true }); } catch { /* best effort */ }
   };
 
   console.log("═══════ LIVE BRIDGE SELF-TEST (fake chain, no real money) ═══════\n");
