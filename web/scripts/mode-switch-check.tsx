@@ -138,16 +138,30 @@ panelCase("dompet live · tape BATANG bukan garis", <LiveWallet data={withPaper(
 panelCase("dompet live · ada hasil nyata", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["0.00764", "15.9%", "\u2212"] });
 panelCase("dompet live · payload separuh", <LiveWallet data={{ liveBridge: { permitted: true, armed: true, openLots: 0, deployedSol: 0 } } as never} />, {});
 panelCase("journal live · kosong", <LiveJournal data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
-panelCase("journal live · ada baris", <LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["HODL", "EARLY_CUT", "+0.00096"] });
-// Kosong harus MENJELASKAN, bukan satu kalimat di tengah tile besar.
-panelCase("posisi live · kosong menjelaskan", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 0, lots: [] }) as never} />, { mustShow: ["menunggu entry", "clip berikutnya", "10-60 detik"] });
+// Jurnal live memakai kolom yang SAMA dengan jurnal paper — persen, bukan SOL. Nominal SOL
+// hidup di panel Dompet dan Kesehatan Eksekusi; mengulangnya di sini akan memaksa kolom ke-7
+// dan membuat dua feed itu berbeda bentuk lagi.
+panelCase("journal live · ada baris", <LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["HODL", "EARLY_CUT", "+8.3%"] });
+// KONSISTENSI VISUAL: panel live harus memakai komponen yang sama dengan panel simulasi.
+// Menulis tata letak sendiri membuat berpindah dari simulasi ke live terasa pindah aplikasi —
+// mata harus belajar ulang panelnya tepat saat uang sungguhan ada di dalamnya.
+panelCase("posisi live · kosong", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 0, lots: [] }) as never} />, { mustShow: ["menunggu entry"] });
 const LOTS = [
   { tradeId: "L1", mint: "AbcdEf1234", symbol: "HODL", state: "open", spentSol: 0.0118, tokens: 1e5, openedAt: Date.now() - 12000, heldSec: 12, sells: 0, proceedsSol: 0, sellFailures: 0, lastErr: null, img: null },
   { tradeId: "L2", mint: "Zz99", symbol: "imback", state: "stuck", spentSol: 0.0123, tokens: 25649, openedAt: Date.now() - 3600000, heldSec: 3600, sells: 3, proceedsSol: 0.0368, sellFailures: 22, lastErr: "0x1775", img: null },
 ];
-panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02, lots: LOTS }) as never} />, { mustShow: ["HODL", "0.0118"] });
+panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02, lots: LOTS }) as never} />, { mustShow: ["HODL", "LIVE"] });
 // Bag yang bermasalah HARUS terlihat di dashboard, bukan hanya di log.
-panelCase("posisi live · bag tersangkut menonjol", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, lots: LOTS }) as never} />, { mustShow: ["GAGAL JUAL 22x", "imback"] });
+panelCase("posisi live · bag tersangkut ditandai", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, lots: LOTS }) as never} />, { mustShow: ["ring-down", "imback"] });
+// Kartu live dan kartu paper harus komponen yang SAMA — dibuktikan lewat kelas grid identik.
+{
+  const liveHtml = renderToStaticMarkup(<LivePositions data={withPaper({ ...ARMED, lots: LOTS, summary: REAL }) as never} />);
+  const GRID = 'repeat(auto-fill, minmax(272px, 1fr))';
+  const ok = liveHtml.includes("minmax(272px");
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"posisi live pakai grid kartu yang sama".padEnd(40)} ${ok ? "PositionCard" : "*** tata letak sendiri ***"}`);
+  void GRID;
+}
 // Ikon koin: ada gambar → <img>; tidak ada → tetap ada kotak huruf, baris tidak boleh menciut.
 {
   const withImg = REAL.recent.map((r: Any) => ({ ...r, img: "https://example.invalid/a.png" }));

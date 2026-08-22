@@ -1,5 +1,6 @@
 import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
+import { CoinIcon } from "./CoinIcon";
 
 function fmtAgo(ts: string): string {
   const sec = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
@@ -16,8 +17,8 @@ function fmtAgo(ts: string): string {
  * existing feeds client-side instead of showing Strategy 2 only).
  */
 function TradeJournalInner({ data }: { data: StatsResponse }) {
-  const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, tag: "S2" as const }));
-  const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, tag: "S1" as const }));
+  const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, img: t.img ?? null, tag: "S2" as const }));
+  const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, img: t.img ?? t.image ?? null, tag: "S1" as const }));
   const trades = [...s1, ...s2].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, 30);
 
   if (!trades.length) {
@@ -41,8 +42,11 @@ function TradeJournalInner({ data }: { data: StatsResponse }) {
       {trades.map((t, i) => {
         const up = t.pnlPct >= 0;
         return (
-          <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
+          <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
             <span className={`rounded px-1 text-[8px] font-semibold ${t.tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{t.tag}</span>
+            {/* The server has been sending `img` for every row all along — the memo fingerprint
+                even tracks it — but nothing ever rendered it. */}
+            <CoinIcon img={t.img} symbol={t.symbol} />
             <span className="truncate text-foreground">{t.symbol}</span>
             <span className="text-muted-foreground">{t.reason}</span>
             <span className="text-muted-foreground/70">{fmtAgo(t.ts)}</span>

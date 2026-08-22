@@ -27,7 +27,7 @@ function fmtHeld(sec: number): string {
  * Every number is served, never derived here — S1's trail is a LADDER (+15% peak → 6% giveback,
  * +300% → 45%), so a constant in the UI would draw a stop that does not exist.
  */
-export function PositionCard({ position, tag }: { position: OpenPosition; tag?: "S1" | "S2" }) {
+export function PositionCard({ position, tag }: { position: OpenPosition; tag?: "S1" | "S2" | "LIVE" }) {
   const pnl = position.unrealizedPnl ?? 0;
   const up = pnl >= 0;
   const accent = up ? "var(--hud-up)" : "var(--hud-down)";
@@ -104,7 +104,9 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
 
         <div className="min-w-0 flex-1 overflow-hidden">
           <div className="flex min-w-0 items-center gap-1.5">
-            {tag && <span className={`rounded px-1 text-[8px] font-semibold ${tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{tag}</span>}
+            {/* LIVE gets its own colour, and it must not be mistakable for either paper tag —
+                this is the one badge that means real SOL is at risk in this card. */}
+            {tag && <span className={`rounded px-1 text-[8px] font-semibold ${tag === "LIVE" ? "bg-down/20 text-down" : tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{tag}</span>}
             <span className="truncate font-mono text-[12px] font-semibold">{position.symbol}</span>
           </div>
           {/* One line, clipped — wrapping badges pushed the card taller than its row and spilled

@@ -1,4 +1,6 @@
-import type { StatsResponse } from "@/types/stats";
+import type { OpenPosition, StatsResponse } from "@/types/stats";
+import { PositionCard } from "./PositionCard";
+import { CoinIcon } from "./CoinIcon";
 
 /**
  * LIVE TRADE JOURNAL — replaces the paper journal while real money is armed.
@@ -10,31 +12,6 @@ import type { StatsResponse } from "@/types/stats";
  * where there were four at -15.9%. The log keeps both rows as the honest record of what
  * happened; the reader takes the later one.
  */
-/**
- * Coin art, with a letter tile as the fallback rather than a gap.
- *
- * `img` resolves ASYNCHRONOUSLY on the server (its own fetch queue), so it is absent on the
- * first tick after a trade and may never arrive for a token whose metadata is unreachable. A
- * row that collapses when the picture is missing makes the whole list jump as art trickles in;
- * the tile reserves the same box either way.
- */
-function CoinIcon({ img, symbol }: { img?: string | null; symbol?: string | null }) {
-  if (img) {
-    return (
-      <img
-        src={img} alt="" loading="lazy"
-        className="h-[18px] w-[18px] shrink-0 rounded-[5px] object-cover"
-        onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
-      />
-    );
-  }
-  return (
-    <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-muted font-mono text-[9px] text-muted-foreground">
-      {(symbol || "?").slice(0, 1)}
-    </span>
-  );
-}
-
 const REASON_TONE: Record<string, string> = {
   EARLY_CUT: "text-gold",
   ORPHAN_SWEEP: "text-gold",
@@ -55,105 +32,82 @@ export function LiveJournal({ data }: { data: StatsResponse | null }) {
   }
 
   return (
-    <div className="flex flex-col gap-[3px] overflow-y-auto font-mono text-[10px]">
-      {rows.map((r) => {
-        const neg = r.netSol < 0;
-        return (
-          <div key={`${r.tradeId}-${r.ts}`} className="flex items-center gap-2 whitespace-nowrap">
-            <CoinIcon img={r.img} symbol={r.symbol} />
-            <span className="w-[78px] truncate text-foreground" title={r.mint}>
-              {r.symbol || `${r.mint.slice(0, 6)}…`}
-            </span>
-            <span className={`flex-1 truncate text-right ${REASON_TONE[r.reason] ?? "text-muted-foreground"}`}>
-              {r.reason}
-            </span>
-            <span className="w-[38px] text-right text-muted-foreground">{r.heldSec}s</span>
-            <span className={`w-[62px] text-right font-semibold ${neg ? "text-down" : "text-up"}`}>
-              {r.netSol >= 0 ? "+" : ""}{r.netSol.toFixed(5)}◎
-            </span>
-            <span className={`w-[48px] text-right ${neg ? "text-down" : "text-up"}`}>
-              {r.netPct == null ? "—" : `${r.netPct >= 0 ? "+" : ""}${r.netPct.toFixed(1)}%`}
-            </span>
-          </div>
-        );
-      })}
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+        {rows.map((r) => {
+          const up = r.netSol >= 0;
+          return (
+            <div key={`${r.tradeId}-${r.ts}`} className="grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
+              <span className="rounded bg-down/20 px-1 text-[8px] font-semibold text-down">LIVE</span>
+              <CoinIcon img={r.img} symbol={r.symbol} />
+              <span className="truncate text-foreground" title={r.mint}>{r.symbol || `${r.mint.slice(0, 6)}…`}</span>
+              <span className={REASON_TONE[r.reason] ?? "text-muted-foreground"}>{r.reason}</span>
+              <span className="text-muted-foreground/70">{r.heldSec}s</span>
+              <b className={up ? "text-up" : "text-down"}>{up ? "+" : ""}{(r.netPct ?? 0).toFixed(1)}%</b>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 /**
- * LIVE OPEN POSITIONS — the bags we actually hold on-chain right now.
+ * LIVE OPEN POSITIONS — the SAME card as the paper panel, fed with live bags.
  *
- * Live positions live for ten to sixty seconds, so this tile is empty most of the time. The
- * first version answered that with one sentence in the middle of a large void, which reads as a
- * broken panel rather than a true one. Empty now says WHY it is empty and what the next buy
- * will look like, so the space carries information in both states.
+ * The first version invented its own list layout. That was wrong for a reason worth stating:
+ * switching from simulation to live should change the NUMBERS, not the application. A different
+ * visual language for the same concept makes the eye re-learn the panel at exactly the moment
+ * real money is on it, and it made the dashboard look assembled from parts.
  *
- * `sellFailures` is surfaced per bag because the one case that matters here is a bag fighting
- * its venue — the failure mode that stranded 25,649 tokens for an hour while the dashboard
- * cheerfully showed nothing at all.
+ * So this reuses `PositionCard` and joins each live bag to the paper position that decided it
+ * (by mint). The card's rings — time against budget, distance to the trailing stop — belong to
+ * the paper model, which is correct: the model is what decides this bag's exit. What the LIVE
+ * badge adds is that the SOL in the card is real.
  */
 export function LivePositions({ data }: { data: StatsResponse | null }) {
-  const b = data?.liveBridge;
-  const lots = b?.lots ?? [];
-  const last = b?.summary?.recent?.[0];
+  const lots = data?.liveBridge?.lots ?? [];
+  const paperOpen = data?.paper?.openPositions ?? [];
 
   if (lots.length === 0) {
-    const clip = typeof b?.clipSol === "number" ? b.clipSol : null;
-    const compound = (b?.summary?.trades ?? 0) >= 0 && clip != null;
+    // Same empty treatment as OpenPositions, deliberately — a familiar panel that happens to be
+    // empty reads as calm; a bespoke one reads as broken.
     return (
-      <div className="flex h-full flex-col gap-2 font-mono text-[10px]">
-        <p className="text-muted-foreground">
-          {b?.armed ? "Tidak ada bag terbuka — menunggu entry berikutnya." : "Tidak armed, tidak ada bag."}
-        </p>
-        <div className="flex flex-col gap-[3px]">
-          <div className="flex justify-between text-muted-foreground">
-            <span>clip berikutnya</span>
-            <span className="text-foreground">{compound ? `${clip.toFixed(4)}◎` : "—"}</span>
-          </div>
-          <div className="flex justify-between text-muted-foreground">
-            <span>cap exposure</span>
-            <span className="text-foreground">{b?.caps?.maxDeployedSol != null ? `${b.caps.maxDeployedSol}◎` : "—"}</span>
-          </div>
-          {last && (
-            <div className="flex justify-between text-muted-foreground">
-              <span>trade terakhir</span>
-              <span className={last.netSol >= 0 ? "text-up" : "text-down"}>
-                {last.symbol || `${last.mint.slice(0, 6)}…`} {last.netSol >= 0 ? "+" : ""}{last.netSol.toFixed(5)}◎
-              </span>
-            </div>
-          )}
-        </div>
-        <p className="mt-auto text-[8.5px] leading-tight text-muted-foreground/50">
-          Posisi live umumnya hidup 10-60 detik, jadi panel ini memang lebih sering kosong
-          daripada terisi. Kosong di sini artinya sehat, bukan diam.
-        </p>
+      <div className="flex h-full items-center justify-center">
+        <p className="font-mono text-[11px] text-muted-foreground">tidak ada bag live — menunggu entry berikutnya</p>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col gap-1 overflow-y-auto font-mono text-[10px]">
+    <div className="grid h-full auto-rows-min gap-2 overflow-y-auto pr-1"
+         style={{ gridTemplateColumns: "repeat(auto-fill, minmax(272px, 1fr))" }}>
       {lots.map((l) => {
-        const stuck = l.sellFailures > 0;
+        // The paper position for the same mint carries the marks and the exit-proximity data.
+        // Absent (an orphan the model already closed, or a stuck bag) the card still renders —
+        // with empty rings, because inventing a trail or a budget would draw a stop that does
+        // not exist.
+        const p = paperOpen.find((x) => x.mint === l.mint);
+        const position = {
+          ...(p ?? {}),
+          mint: l.mint,
+          symbol: l.symbol ?? p?.symbol ?? l.mint.slice(0, 6),
+          img: l.img ?? (p as { img?: string | null } | undefined)?.img ?? null,
+          unrealizedPnl: p?.unrealizedPnl ?? 0,
+          heldSec: l.heldSec,
+          entryPrice: p?.entryPrice ?? 1,
+          lastPrice: p?.lastPrice ?? 1,
+          marketCap: p?.marketCap ?? null,
+          holders: p?.holders ?? null,
+          noManualClose: true as const,
+        } as unknown as OpenPosition;
         return (
-          <div key={l.tradeId} className={`flex items-center gap-2 rounded-md px-1.5 py-1 whitespace-nowrap ${stuck ? "bg-down/10" : "hover:bg-secondary/40"}`}>
-            <CoinIcon img={l.img} symbol={l.symbol} />
-            <span className="w-[76px] truncate text-foreground" title={l.mint}>
-              {l.symbol || `${l.mint.slice(0, 6)}…`}
-            </span>
-            <span className={`flex-1 truncate ${stuck ? "text-down" : "text-muted-foreground"}`}>
-              {stuck ? `GAGAL JUAL ${l.sellFailures}x` : l.state}
-            </span>
-            <span className="w-[34px] text-right text-muted-foreground">{l.heldSec}s</span>
-            <span className="w-[58px] text-right text-foreground">{l.spentSol.toFixed(4)}◎</span>
-            {l.sells > 0 && <span className="w-[44px] text-right text-up">+{l.proceedsSol.toFixed(4)}</span>}
+          <div key={l.tradeId} className={l.sellFailures > 0 ? "rounded-xl ring-1 ring-down" : undefined}
+               title={l.sellFailures > 0 ? `gagal jual ${l.sellFailures}x — ${l.lastErr ?? ""}` : undefined}>
+            <PositionCard position={position} tag="LIVE" />
           </div>
         );
       })}
-      <p className="mt-auto pt-1 text-[8.5px] leading-tight text-muted-foreground/50">
-        Keluarnya diputuskan model paper; bridge menjual bag nyata mengikuti keputusan itu.
-      </p>
     </div>
   );
 }
