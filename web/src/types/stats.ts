@@ -419,6 +419,24 @@ export interface GuardianInfo {
 }
 
 /** Live-bridge readout (src/execution/live-bridge.ts). Armed only behind the double lock. */
+export interface LiveTradeRow {
+  ts: string; tradeId: string; mint: string; symbol: string | null; reason: string;
+  spentSol: number; proceedsSol: number; netSol: number; netPct: number | null; heldSec: number;
+}
+
+export interface LiveSummary {
+  trades: number;
+  wins: number;
+  losses: number;
+  spentSol: number;
+  proceedsSol: number;
+  netSol: number;
+  netPct: number | null;
+  neverFilled: number;
+  recent: LiveTradeRow[];
+  equitySol: number[];
+}
+
 export interface LiveBridgeStatus {
   /** .env lock. False = the LIVE button is unavailable and no amount of clicking changes that. */
   permitted: boolean;
@@ -430,6 +448,10 @@ export interface LiveBridgeStatus {
   realizedSol: number;
   wallet: string;
   expectedBalanceSol: number | null;
+  spentLast24h: number;
+  caps: { maxPerTradeSol: number; maxDeployedSol: number; maxDailySpendSol: number; feeReserveSol: number; reconcileToleranceSol: number };
+  clipSol: number;
+  summary: LiveSummary;
 }
 
 export interface ExecSimInfo {

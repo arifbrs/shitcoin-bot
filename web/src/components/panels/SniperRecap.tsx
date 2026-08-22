@@ -15,7 +15,7 @@ function SniperRecapInner({ data }: { data: StatsResponse }) {
     return (
       <div className="flex h-full items-center gap-3 px-1 font-mono text-[10px] text-muted-foreground">
         <span className={`h-[6px] w-[6px] rounded-full ${alive ? "bg-foreground shadow-[0_0_7px_var(--hud-fg)] animate-pulse" : "bg-muted-foreground/40"}`} />
-        <span className="tracking-[0.14em] uppercase">Strategy 1 · Sniper</span>
+        <span className="tracking-[0.14em] uppercase">{data.liveBridge?.armed ? "PAPER · Strategy 1" : "Strategy 1 · Sniper"}</span>
         <span>{alive ? "belum ada trade" : "OFF"}</span>
       </div>
     );
@@ -28,7 +28,9 @@ function SniperRecapInner({ data }: { data: StatsResponse }) {
     <div className="flex h-full items-center gap-x-5 gap-y-1 overflow-x-auto px-1 font-mono text-[10px] whitespace-nowrap">
       <span className="flex items-center gap-2 tracking-[0.14em] text-muted-foreground uppercase">
         <span className={`h-[6px] w-[6px] rounded-full ${alive ? "bg-foreground shadow-[0_0_7px_var(--hud-fg)] animate-pulse" : "bg-muted-foreground/40"}`} />
-        Strategy 1 · Sniper
+        {/* Under a red LIVE badge these figures read as real money. They are not: they are the
+            paper float's cumulative simulation. Say so, in the label, permanently. */}
+        {data.liveBridge?.armed ? "PAPER · Strategy 1" : "Strategy 1 · Sniper"}
       </span>
       <span className={`font-semibold ${neg ? "text-down" : "text-up"}`}>
         {p.balanceSol.toFixed(3)}◎

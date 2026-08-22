@@ -17,9 +17,13 @@ import { PipelineFlow } from "@/components/panels/PipelineFlow";
 import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { RunLedger } from "@/components/panels/RunLedger";
 import { SniperRecap } from "@/components/panels/SniperRecap";
+import { LiveWallet } from "@/components/panels/LiveWallet";
+import { LiveJournal, LivePositions, LiveRecap } from "@/components/panels/LiveJournal";
 
 export default function Dashboard() {
   const { data, status } = useLiveStats();
+  // One switch for the whole layout: armed = show real money, archive the simulation.
+  const live = data?.liveBridge?.armed === true;
   const [controlOpen, setControlOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
 
@@ -47,14 +51,29 @@ export default function Dashboard() {
           <>
           <StaleBanner data={data} />
           <div className="dash-grid mx-auto max-w-[1700px]">
-            <div className="flex items-center rounded-xl border border-border bg-card px-3.5" style={{ gridArea: "s1" }}>
-              <SniperRecap data={data} />
+            {/* Paper recap is REPLACED, not hidden. Its cumulative +831.5% on a notional float is
+                meaningless next to a real wallet and actively misleading above one — but an empty
+                row would read as "nothing is happening" while real money is at work. */}
+            <div
+              className={`flex items-center rounded-xl border px-3.5 ${live ? "border-down/60 bg-down/5" : "border-border bg-card"}`}
+              style={{ gridArea: "s1" }}
+            >
+              {live ? <LiveRecap data={data} /> : <SniperRecap data={data} />}
             </div>
             <Tile area="hero" label="Pasar · langsung" right={heroMeta(data)} live={data.system.strategy2Alive}>
               <Hero data={data} />
             </Tile>
-            <Tile area="equity" label="Dompet · satu saldo, dua denominasi">
-              <EquityCurve data={data} />
+            {/* LIVE REPLACES PAPER — it never sits next to it.
+                Showing both put a red LIVE badge above the paper wallet's $2,432 / +831.5%
+                while the real wallet held 0.2486 SOL: the eye takes the biggest number on the
+                screen as the answer, so "both" is strictly worse than either. Paper is archived
+                out of the layout (still logged, still measured) whenever live is armed. */}
+            <Tile
+              area="equity"
+              label={live ? "Dompet LIVE · uang sungguhan" : "Dompet · satu saldo, dua denominasi"}
+              live={live}
+            >
+              {live ? <LiveWallet data={data} /> : <EquityCurve data={data} />}
             </Tile>
             <Tile area="pipe" label="Pipeline · langsung" live={data.system.strategy2Alive}>
               <PipelineFlow data={data} />
@@ -62,14 +81,24 @@ export default function Dashboard() {
             <Tile area="agent" label="Feeling Agent" live={data.feeling.enabled}>
               <FeelingAgent data={data} />
             </Tile>
-            <Tile area="jour" label="Trade Journal · closed" right={`${data.strategy2Primary?.recentTrades.length ?? 0} recent`}>
-              <TradeJournal data={data} />
+            <Tile
+              area="jour"
+              label={live ? "Trade Journal LIVE · selesai" : "Trade Journal · closed"}
+              right={live ? `${data.liveBridge?.summary?.trades ?? 0} trade` : `${data.strategy2Primary?.recentTrades.length ?? 0} recent`}
+              live={live}
+            >
+              {live ? <LiveJournal data={data} /> : <TradeJournal data={data} />}
             </Tile>
             <Tile area="sig" label="Band Watch · jendela entry">
               <BandWatch data={data} />
             </Tile>
-            <Tile area="pos" label="Open Positions" right={`${(data.strategy2Primary?.paper.open ?? 0) + (data.paper?.openPositions?.length ?? 0)} active`}>
-              <OpenPositions data={data} />
+            <Tile
+              area="pos"
+              label={live ? "Posisi LIVE · bag nyata" : "Open Positions"}
+              right={live ? `${data.liveBridge?.openLots ?? 0} bag` : `${(data.strategy2Primary?.paper.open ?? 0) + (data.paper?.openPositions?.length ?? 0)} active`}
+              live={live}
+            >
+              {live ? <LivePositions data={data} /> : <OpenPositions data={data} />}
             </Tile>
             <Tile area="funnel" label="Scout — candidates" right={`${data.strategy2.count} kandidat`}>
               <ScoutPanel data={data} />

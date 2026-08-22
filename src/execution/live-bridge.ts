@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { config } from "../config.js";
@@ -6,7 +6,7 @@ import { logRecord, ui } from "../util/log.js";
 import { botWallet, botPubkey } from "./wallet.js";
 import { liveBuy, liveSell } from "./executor.js";
 import type { LiveResult } from "./executor.js";
-import { liveAllowed, halt, isHalted } from "./guardian.js";
+import { liveAllowed, halt, isHalted, spentLast24h as guardSpent24h } from "./guardian.js";
 import { tokenBalanceOfOwner } from "../safety/onchain.js";
 import { readControl, livePermitted as envLivePermitted } from "../control.js";
 import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus, poolLatestBlockhash, poolAccountOwner, poolTokenAccountAmount } from "./rpc.js";
@@ -415,8 +415,29 @@ async function doSell(tradeId: string, fracOfOriginal: number, reason: string): 
   }
 }
 
+/**
+ * Queued settle. Re-reads the balance INSIDE the queue slot, so anything that ran ahead of it
+ * (a sell that was in flight when the sweeper decided to act) has already been booked.
+ */
+async function settleIfEmpty(lot: LiveLot): Promise<void> {
+  if (lot.state === "closed") return; // the sell we were racing already finished the job
+  const bal = await chain.tokenBalance(lot.mint);
+  if (bal == null) return;            // unreadable → try again next sweep, never assume empty
+  if (bal > 0) return;                // a late fill landed; the normal exit path owns it now
+  if (lot.state === "opening" || lot.state === "stuck") {
+    // Nothing after the settle window and the tx never landed → genuinely no position.
+    if (Date.now() - lot.openedAt > config.exec.live.buySettleMs + 60_000) await settleEmpty(lot, "NEVER_FILLED");
+    return;
+  }
+  await settleEmpty(lot, "SWEEP_CONFIRMED_EMPTY");
+}
+
 /** The chain says the bag is gone. Book it, reclaim the rent, and stop tracking. */
 async function settleEmpty(lot: LiveLot, reason: string): Promise<void> {
+  // Idempotent by construction. Queuing fixes the known race; this makes a SECOND `settled`
+  // record impossible for any future caller that forgets, because a duplicate here corrupts
+  // realised P&L permanently — the log is append-only truth.
+  if (lot.state === "closed") return;
   lot.state = "closed";
   lot.closedAt = Date.now();
   lot.sellFailures = 0;
@@ -537,14 +558,19 @@ async function sweepTick(): Promise<void> {
     if (bal == null) continue; // unknown → try again next sweep, never assume
 
     if (bal <= 0) {
-      if (lot.state === "opening" || lot.state === "stuck") {
-        // Still nothing after the settle window and the tx never landed → genuinely no position.
-        if (Date.now() - lot.openedAt > config.exec.live.buySettleMs + 60_000) {
-          await settleEmpty(lot, "NEVER_FILLED");
-        }
-      } else {
-        await settleEmpty(lot, "SWEEP_CONFIRMED_EMPTY");
-      }
+      // MUST go through the per-mint queue, never settle inline.
+      //
+      // Found on the FIRST live run (2026-08-22, MELLO): the sweeper read a zero token balance
+      // while an EARLY_CUT sell was still in flight — the tokens had already left the wallet but
+      // the SOL had not arrived and `lot.proceedsSol` was still 0. It settled inline and booked
+      // the trade at -100%, then the real sell settled it again at -25.9%. Two `settled` records
+      // for one trade, and the live P&L read 2.5x worse than reality.
+      //
+      // The accounting damage was the visible half. The dangerous half: had that in-flight sell
+      // FAILED, the lot would already be marked closed while a real bag was still on-chain —
+      // invariant 3 broken, bag abandoned. Queuing makes the sweeper wait for the sell it was
+      // racing, and the re-read below then sees the settled truth.
+      enqueue(lot.mint, () => settleIfEmpty(lot));
       continue;
     }
 
@@ -602,6 +628,93 @@ export function bridgeStop(): void {
   save();
 }
 
+export interface LiveTradeRow {
+  ts: string;
+  tradeId: string;
+  mint: string;
+  symbol: string | null;
+  reason: string;
+  spentSol: number;
+  proceedsSol: number;
+  netSol: number;
+  netPct: number | null;
+  heldSec: number;
+}
+
+export interface LiveSummary {
+  trades: number;      // settled lots that actually held a bag
+  wins: number;
+  losses: number;
+  spentSol: number;    // real SOL that left the wallet on buys
+  proceedsSol: number; // real SOL returned by sells (+ reclaimed ATA rent)
+  netSol: number;
+  netPct: number | null;
+  neverFilled: number; // buys that never produced a bag — not trades, but worth seeing
+  recent: LiveTradeRow[];  // newest first
+  equitySol: number[];     // cumulative net after each trade, oldest first
+}
+
+/**
+ * Realised live P&L, read from the append-only `live-exec` log rather than from `lots`.
+ *
+ * The in-memory ledger drops settled lots after 6h, so it can only ever answer "what is open
+ * right now". A dashboard that showed live P&L from it would silently reset itself overnight —
+ * and it would do so while sitting under a red LIVE badge, which is the worst possible place
+ * for a number to quietly become wrong.
+ */
+export function liveSummary(): LiveSummary {
+  const out: LiveSummary = { trades: 0, wins: 0, losses: 0, spentSol: 0, proceedsSol: 0, netSol: 0, netPct: null, neverFilled: 0, recent: [], equitySol: [] };
+  type SettledRow = { ts?: string; type?: string; tradeId?: string; mint?: string; symbol?: string | null; reason?: string; spentSol?: number; proceedsSol?: number; rentReclaimedSol?: number; netSol?: number; netPct?: number | null; heldSec?: number };
+  const seen = new Map<string, SettledRow>();
+  const rows: SettledRow[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(config.logDir).filter((f) => f.startsWith("live-exec-") && f.endsWith(".jsonl")).sort();
+  } catch { return out; }
+  for (const f of files) {
+    let text: string;
+    try { text = readFileSync(join(config.logDir, f), "utf8"); } catch { continue; }
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let r: SettledRow;
+      try { r = JSON.parse(line) as SettledRow; } catch { continue; }
+      if (r.type !== "settled") continue;
+      // The log is append-only and is never rewritten, so the duplicate `settled` rows the
+      // sweeper race already produced stay on disk as the honest record of what happened. The
+      // READER is what must not be fooled: last row per tradeId wins, because the later one is
+      // the one written after the sell was booked.
+      if (r.tradeId) seen.set(r.tradeId, r);
+      else rows.push(r);
+      // A buy that never filled moved no money and is not a trade. Counting it would drag the
+      // win rate toward zero with rows that never had a position. (Applied below, after dedupe.)
+    }
+  }
+  // Chronological, so the equity series reads left-to-right like every other curve here.
+  const settled = [...seen.values(), ...rows].sort((a, b) => (a.ts ?? "").localeCompare(b.ts ?? ""));
+  let cum = 0;
+  for (const r of settled) {
+    if (r.reason === "NEVER_FILLED" && !(r.spentSol! > 0)) { out.neverFilled++; continue; }
+    out.trades++;
+    out.spentSol += r.spentSol ?? 0;
+    out.proceedsSol += (r.proceedsSol ?? 0) + (r.rentReclaimedSol ?? 0);
+    const net = r.netSol ?? 0;
+    out.netSol += net;
+    net >= 0 ? out.wins++ : out.losses++;
+    cum += net;
+    out.equitySol.push(Number(cum.toFixed(6)));
+    out.recent.push({
+      ts: r.ts ?? "", tradeId: r.tradeId ?? "", mint: r.mint ?? "", symbol: r.symbol ?? null,
+      reason: r.reason ?? "?", spentSol: r.spentSol ?? 0, proceedsSol: r.proceedsSol ?? 0,
+      netSol: net, netPct: r.netPct ?? null, heldSec: r.heldSec ?? 0,
+    });
+  }
+  out.recent.reverse();                       // newest first for the journal
+  out.recent = out.recent.slice(0, 40);
+  out.equitySol = out.equitySol.slice(-120);  // bound the payload
+  out.netPct = out.spentSol > 0 ? (out.netSol / out.spentSol) * 100 : null;
+  return out;
+}
+
 export interface BridgeStatus {
   permitted: boolean; // .env lock — the browser can never change this
   armed: boolean;     // permitted AND the console switch is on "live"
@@ -612,6 +725,10 @@ export interface BridgeStatus {
   realizedSol: number;
   wallet: string;
   expectedBalanceSol: number | null;
+  spentLast24h: number;
+  caps: typeof config.exec.guard;
+  clipSol: number;
+  summary: LiveSummary;
 }
 
 /** Snapshot for the dashboard. */
@@ -634,6 +751,10 @@ export function bridgeStatus(): BridgeStatus {
     realizedSol: Number(realized.toFixed(5)),
     wallet: bridgePermitted() ? botPubkey() : "",
     expectedBalanceSol,
+    spentLast24h: guardSpent24h(),
+    caps: config.exec.guard,
+    clipSol: config.exec.live.sizeSol,
+    summary: liveSummary(),
   };
 }
 
