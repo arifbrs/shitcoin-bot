@@ -422,6 +422,8 @@ export interface GuardianInfo {
 export interface LiveTradeRow {
   ts: string; tradeId: string; mint: string; symbol: string | null; reason: string;
   spentSol: number; proceedsSol: number; netSol: number; netPct: number | null; heldSec: number;
+  /** Resolved asynchronously by the server's art cache — absent on the first tick after a trade. */
+  img?: string | null;
 }
 
 export interface LiveSummary {
@@ -455,6 +457,12 @@ export interface LiveBridgeStatus {
   caps: { maxPerTradeSol: number; maxDeployedSol: number; maxDailySpendSol: number; feeReserveSol: number; reconcileToleranceSol: number };
   clipSol: number;
   summary: LiveSummary;
+  lots?: Array<{
+    tradeId: string; mint: string; symbol: string | null; state: string;
+    spentSol: number; tokens: number; openedAt: number; heldSec: number;
+    sells: number; proceedsSol: number; sellFailures: number; lastErr: string | null;
+    img?: string | null;
+  }>;
 }
 
 export interface ExecSimInfo {

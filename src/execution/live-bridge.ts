@@ -776,6 +776,21 @@ export function liveSummary(): LiveSummary {
   return out;
 }
 
+export interface LiveOpenLot {
+  tradeId: string;
+  mint: string;
+  symbol: string | null;
+  state: LotState;
+  spentSol: number;
+  tokens: number;
+  openedAt: number;
+  heldSec: number;
+  sells: number;
+  proceedsSol: number;
+  sellFailures: number;
+  lastErr: string | null;
+}
+
 export interface BridgeStatus {
   permitted: boolean; // .env lock — the browser can never change this
   armed: boolean;     // permitted AND the console switch is on "live"
@@ -790,6 +805,13 @@ export interface BridgeStatus {
   caps: typeof config.exec.guard;
   clipSol: number;
   summary: LiveSummary;
+  /**
+   * Per-bag detail. `openLots` alone answered "how many?" but not "which, and is one of them in
+   * trouble?" — and a stuck bag is exactly the case where that second question is the only one
+   * that matters. sellFailures/lastErr are carried so a bag fighting its venue is visible on the
+   * dashboard instead of only in the log.
+   */
+  lots: LiveOpenLot[];
 }
 
 /** Snapshot for the dashboard. */
@@ -816,6 +838,17 @@ export function bridgeStatus(): BridgeStatus {
     caps: config.exec.guard,
     clipSol: config.exec.live.sizeSol,
     summary: liveSummary(),
+    lots: [...lots.values()]
+      .filter((l) => l.state !== "closed")
+      .sort((a, b) => a.openedAt - b.openedAt)
+      .map((l) => ({
+        tradeId: l.tradeId, mint: l.mint, symbol: l.symbol ?? null, state: l.state,
+        spentSol: Number((l.spentSol || l.liveSizeSol).toFixed(6)),
+        tokens: l.tokensBought, openedAt: l.openedAt,
+        heldSec: Math.round((Date.now() - l.openedAt) / 1000),
+        sells: l.sells.length, proceedsSol: Number(l.proceedsSol.toFixed(6)),
+        sellFailures: l.sellFailures, lastErr: l.lastErr ?? null,
+      })),
   };
 }
 

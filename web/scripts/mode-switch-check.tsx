@@ -139,8 +139,24 @@ panelCase("dompet live · ada hasil nyata", <LiveWallet data={withPaper({ ...ARM
 panelCase("dompet live · payload separuh", <LiveWallet data={{ liveBridge: { permitted: true, armed: true, openLots: 0, deployedSol: 0 } } as never} />, {});
 panelCase("journal live · kosong", <LiveJournal data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
 panelCase("journal live · ada baris", <LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["HODL", "EARLY_CUT", "+0.00096"] });
-panelCase("posisi live · kosong", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 0 }) as never} />, { mustShow: ["tidak ada bag live"] });
-panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02 }) as never} />, { mustShow: ["0.0200"] });
+// Kosong harus MENJELASKAN, bukan satu kalimat di tengah tile besar.
+panelCase("posisi live · kosong menjelaskan", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 0, lots: [] }) as never} />, { mustShow: ["menunggu entry", "clip berikutnya", "10-60 detik"] });
+const LOTS = [
+  { tradeId: "L1", mint: "AbcdEf1234", symbol: "HODL", state: "open", spentSol: 0.0118, tokens: 1e5, openedAt: Date.now() - 12000, heldSec: 12, sells: 0, proceedsSol: 0, sellFailures: 0, lastErr: null, img: null },
+  { tradeId: "L2", mint: "Zz99", symbol: "imback", state: "stuck", spentSol: 0.0123, tokens: 25649, openedAt: Date.now() - 3600000, heldSec: 3600, sells: 3, proceedsSol: 0.0368, sellFailures: 22, lastErr: "0x1775", img: null },
+];
+panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02, lots: LOTS }) as never} />, { mustShow: ["HODL", "0.0118"] });
+// Bag yang bermasalah HARUS terlihat di dashboard, bukan hanya di log.
+panelCase("posisi live · bag tersangkut menonjol", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, lots: LOTS }) as never} />, { mustShow: ["GAGAL JUAL 22x", "imback"] });
+// Ikon koin: ada gambar → <img>; tidak ada → tetap ada kotak huruf, baris tidak boleh menciut.
+{
+  const withImg = REAL.recent.map((r: Any) => ({ ...r, img: "https://example.invalid/a.png" }));
+  const a = renderToStaticMarkup(<LiveJournal data={withPaper({ ...ARMED, summary: { ...REAL, recent: withImg } }) as never} />);
+  const bHtml = renderToStaticMarkup(<LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />);
+  const ok = a.includes("<img") && !bHtml.includes("<img") && bHtml.includes("rounded-[5px]");
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"ikon koin: gambar / fallback huruf".padEnd(40)} img=${a.includes("<img")} fallback=${bHtml.includes("rounded-[5px]")}`);
+}
 panelCase("recap live · nol trade", <LiveRecap data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
 panelCase("recap live · ada hasil", <LiveRecap data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["-0.00764", "1W/3L"] });
 const REASONS = [

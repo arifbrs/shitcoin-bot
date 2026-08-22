@@ -2029,7 +2029,18 @@ function buildStats() {
     guardian: guardStatus(), // money-safety caps, 24h spend, halt state (live-phase readout)
     // Live bridge readout. `armed: false` — the normal state — means every real-money path
     // is inert and the numbers below are structurally zero, not merely quiet.
-    liveBridge: bridgeStatus(),
+    //
+    // Coin art is attached HERE rather than inside the bridge: `artFor` is a server-side cache
+    // with its own fetch queue, and the bridge must stay a pure reader of the append-only log
+    // (it runs inside the trader process too, where no art cache exists).
+    liveBridge: (() => {
+      const b = bridgeStatus();
+      return {
+        ...b,
+        summary: { ...b.summary, recent: b.summary.recent.map((r) => ({ ...r, img: artFor(r.mint) })) },
+        lots: b.lots.map((l) => ({ ...l, img: artFor(l.mint) })),
+      };
+    })(),
     execLive, // devnet execution mirror (real sign→send→confirm, worthless SOL)
     paper: {
       // EXECUTABLE ONLY (audit P0-2) — every number here reflects trades proven, by mainnet
