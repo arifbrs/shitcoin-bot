@@ -832,11 +832,33 @@ export interface BridgeStatus {
   lots: LiveOpenLot[];
 }
 
+/**
+ * Lots as they exist ON DISK.
+ *
+ * `lots` is per-process memory, and only the TRADER ever fills it (via bridgeStart → load()).
+ * The web server imports the same module but never starts the bridge, so its map is empty
+ * forever — which made the positions panel report 0 bags permanently, no matter how many were
+ * really held. Trades then appeared in the journal (which reads the log from disk) without ever
+ * having been visible as a position, and a stuck bag would have shown as nothing at all.
+ *
+ * The file is the shared truth between processes, exactly like control.json and guard.json, so
+ * status reads it directly and is correct in ANY process.
+ */
+function lotsOnDisk(): LiveLot[] {
+  try {
+    const s = JSON.parse(readFileSync(STATE_PATH, "utf8")) as { lots?: LiveLot[] };
+    return Array.isArray(s.lots) ? s.lots : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Snapshot for the dashboard. */
 export function bridgeStatus(): BridgeStatus {
   let openLots = 0;
   let realized = 0;
-  for (const l of lots.values()) {
+  const ledger = lotsOnDisk();
+  for (const l of ledger) {
     if (l.state !== "closed") openLots++;
     else realized += l.proceedsSol + l.rentReclaimedSol - l.spentSol;
   }
@@ -848,7 +870,14 @@ export function bridgeStatus(): BridgeStatus {
     halted: h.halted,
     haltReason: h.reason,
     openLots,
-    deployedSol: Number(deployedLiveSol().toFixed(5)),
+    // Also from the ledger, for the same reason: deployedLiveSol() sums the in-process map,
+    // which is empty in the web server.
+    deployedSol: Number(
+      ledger
+        .filter((l) => l.state !== "closed")
+        .reduce((a, l) => a + Math.max(0, (l.spentSol || l.liveSizeSol) - l.proceedsSol), 0)
+        .toFixed(5),
+    ),
     realizedSol: Number(realized.toFixed(5)),
     wallet: bridgePermitted() ? botPubkey() : "",
     expectedBalanceSol,
@@ -856,7 +885,7 @@ export function bridgeStatus(): BridgeStatus {
     caps: config.exec.guard,
     clipSol: config.exec.live.sizeSol,
     summary: liveSummary(),
-    lots: [...lots.values()]
+    lots: ledger
       .filter((l) => l.state !== "closed")
       .sort((a, b) => a.openedAt - b.openedAt)
       .map((l) => ({

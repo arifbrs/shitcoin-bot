@@ -297,6 +297,27 @@ async function main(): Promise<void> {
     B.__setFillHookForTest(() => {});
   }
 
+  // ── 2c. STATUS HARUS TERBACA DARI PROSES LAIN ─────────────────────────────
+  // Dashboard adalah proses TERPISAH yang tidak pernah memanggil bridgeStart(), jadi peta lot
+  // di memorinya kosong selamanya. Status yang membaca memori melaporkan 0 bag permanen —
+  // trade muncul di jurnal (baca log dari disk) tanpa pernah terlihat sebagai posisi, dan bag
+  // tersangkut tidak akan terlihat sama sekali.
+  console.log("\n2c. STATUS DIBACA DARI DISK, BUKAN MEMORI PROSES");
+  c = fresh();
+  B.bridgeOpen({ tradeId: "td1", mint: "MD1", symbol: "DISK", sizeSol: 0.05 });
+  await B.__drainForTest();
+  {
+    const onDisk = JSON.parse(readFileSync(join(config.logDir, "live-lots.json"), "utf8")) as { lots: Array<{ state: string }> };
+    check("lot tertulis ke disk", onDisk.lots.some((l) => l.state !== "closed"));
+    // Tiru proses lain: kosongkan memori, status harus TETAP melihat bag itu.
+    B.__resetForTest();
+    const st = B.bridgeStatus();
+    check("status tetap melihat bag walau memori kosong", st.openLots === 1 && st.lots.length === 1,
+      `(openLots ${st.openLots}, lots ${st.lots.length})`);
+    check("  dan SOL berisiko ikut terbaca", st.deployedSol > 0, `(${st.deployedSol})`);
+    check("  simbolnya ikut, jadi panel bisa menamainya", st.lots[0]?.symbol === "DISK");
+  }
+
   // ── 3. INVARIANT 1 — real balance is truth ────────────────────────────────
   console.log("\n3. INVARIANT 1 — the chain decides how much we can sell");
   c = fresh();
