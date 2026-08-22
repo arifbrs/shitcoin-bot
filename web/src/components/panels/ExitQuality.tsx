@@ -14,7 +14,11 @@ const TONE: Record<string, "up" | "down" | "dim"> = {
  * not silently overstated.
  */
 function ExitQualityInner({ data }: { data: StatsResponse }) {
-  const trades = data.strategy2Primary?.recentTrades ?? [];
+  // Reads whichever feed is populated. In live view lib/liveView puts the live trades here, so
+  // this panel tallies real exit reasons through the same code path — no live-specific copy.
+  const trades = data.strategy2Primary?.recentTrades?.length
+    ? data.strategy2Primary.recentTrades
+    : (data.recentTrades ?? []).map((t) => ({ ...t, reason: t.reason ?? "?" }));
   const tally = new Map<string, number>();
   for (const t of trades) {
     const reason = t.reason.replace(/_NO_LIQUIDITY_FORCED$/, "");

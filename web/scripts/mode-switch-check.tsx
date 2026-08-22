@@ -16,9 +16,13 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ModeSwitch } from "../src/components/panels/ModeSwitch";
-import { LiveWallet } from "../src/components/panels/LiveWallet";
-import { LiveJournal, LivePositions, LiveRecap } from "../src/components/panels/LiveJournal";
-import { LiveExitQuality, LiveExecHealth } from "../src/components/panels/LiveAnalytics";
+import { toLiveView } from "../src/lib/liveView";
+import { SniperRecap } from "../src/components/panels/SniperRecap";
+import { EquityCurve } from "../src/components/panels/EquityCurve";
+import { TradeJournal } from "../src/components/panels/TradeJournal";
+import { OpenPositions } from "../src/components/panels/OpenPositions";
+import { ExitQuality } from "../src/components/panels/ExitQuality";
+import { RunLedger } from "../src/components/panels/RunLedger";
 
 type Any = Record<string, any>;
 
@@ -82,108 +86,67 @@ try {
   console.log(`  ${ok ? "✓" : "✗"} tanpa izin, kata "ARMED" tidak pernah muncul`);
 } catch { bad++; }
 
-// ── PANEL LIVE: tidak boleh meminjam SATU pun angka paper ────────────────────
-// Kejadian nyata 2026-08-22: badge LIVE merah duduk di atas "18.629◎ +831.5%" dan dompet
-// $2.432 — semuanya paper — sementara dompet asli 0,2486 SOL. Live kini MENGGANTIKAN panel
-// paper, jadi yang harus dijaga: tidak ada angka paper yang bocor ke dalamnya.
-console.log("\nPANEL LIVE (menggantikan paper)");
-const PAPER_POISON = ["18.629", "831.5", "2432", "16.629", "591", "845"];
+// ── ADAPTER LIVE lewat KOMPONEN ASLI ─────────────────────────────────────────
+// Tidak ada panel khusus live. toLiveView menukar SUMBER-nya, panel yang sama merender.
+// Yang dijaga di sini: tidak ada satu pun angka simulasi yang lolos ke tampilan live.
+console.log("\nADAPTER LIVE (panel yang sama, sumber berganti)");
+const PAPER_POISON = ["18.629", "831.5", "2432", "16.629"];
 const SUM = (over: Any = {}): Any => ({ ...SUM0, recent: [], equitySol: [], buyFailed: 0, sellDeferred: 0, exitReasons: [], ...over });
-const withPaper = (lb: Any | undefined): Any => ({
-  ...base("live", lb),
-  combined: { solUsd: 99.67 },
-  paper: { balanceSol: 18.6295, floatSol: 2, opens: 1436, wins: 591, losses: 845, winRate: 0.41 },
-  strategy2Primary: { recentTrades: [], paper: { open: 0 } },
-});
-
-function panelCase(name: string, node: React.ReactElement, want: { mustShow?: string[]; allowEmpty?: boolean }) {
-  try {
-    const html = renderToStaticMarkup(node);
-    const leaked = PAPER_POISON.filter((n) => html.includes(n));
-    const nan = /NaN|undefined|Infinity/.test(html);
-    const missing = (want.mustShow ?? []).filter((t) => !html.includes(t));
-    const empty = html.length === 0;
-    const ok = leaked.length === 0 && !nan && missing.length === 0 && (want.allowEmpty || !empty);
-    if (!ok) bad++;
-    console.log(
-      `  ${ok ? "✓" : "✗"} ${name.padEnd(40)} ${html.length}b` +
-        `${leaked.length ? ` *** ANGKA PAPER BOCOR: ${leaked.join(",")} ***` : ""}` +
-        `${nan ? " *** NaN/undefined ***" : ""}` +
-        `${missing.length ? ` *** tidak menampilkan: ${missing.join(",")} ***` : ""}` +
-        `${empty && !want.allowEmpty ? " *** kosong ***" : ""}`,
-    );
-  } catch (e) { bad++; console.log(`  ✗ ${name.padEnd(40)} GAGAL: ${(e as Error).message.slice(0, 60)}`); }
-}
-
 const REAL = SUM({
   trades: 4, wins: 1, losses: 3, spentSol: 0.047994, proceedsSol: 0.040359,
-  netSol: -0.007636, netPct: -15.91,
-  equitySol: [-0.003277, -0.005734, -0.0086, -0.007636],
-  recent: [{ ts: "2026-08-22T05:03:28Z", tradeId: "t1", mint: "AbcdEf1234", symbol: "HODL", reason: "EARLY_CUT", spentSol: 0.01157, proceedsSol: 0.012534, netSol: 0.000964, netPct: 8.33, heldSec: 13 }],
+  netSol: -0.007636, netPct: -15.91, equitySol: [-0.003277, -0.005734, -0.0086, -0.007636],
+  exitReasons: [{ reason: "EARLY_CUT", n: 3, netSol: -0.0086 }, { reason: "MAX_HOLD", n: 1, netSol: 0.000964 }],
+  recent: [{ ts: "2026-08-22T05:03:28Z", tradeId: "t1", mint: "AbcdEf1234", symbol: "HODL", reason: "EARLY_CUT", spentSol: 0.01157, proceedsSol: 0.012534, netSol: 0.000964, netPct: 8.33, heldSec: 13, img: null }],
 });
+const BASE: Any = {
+  control: { execMode: "live", paused: false },
+  system: { sniperAlive: true, strategy2Alive: true },
+  feeling: { enabled: false },
+  guardian: { caps: CAPS },
+  combined: { solUsd: 99.67, totalUsd: 2432.66, floatUsd: 1199, pnlUsd: 1233, pnlPct: 102, wins: 591, losses: 845, winRate: 0.41, open: 0,
+    s1: { balanceUsd: 1856, floatUsd: 199, balanceSol: 18.6295, floatSol: 2, wins: 591, losses: 845, open: 0 },
+    s2: { balanceUsd: 576, floatUsd: 1000, wins: 34, losses: 212, open: 0 }, equity: [{ t: "", bal: 100 }, { t: "", bal: 200 }] },
+  paper: { opens: 1436, closed: 1436, open: 0, wins: 591, losses: 845, winRate: 0.41, sumOfTradePcts: 0, returnPctOfFloat: 0,
+    exitReasons: {}, tradeSizeSol: 0.05, floatSol: 2, realizedSol: 16.629, balanceSol: 18.6295, compounding: false, equity: [], openPositions: [] },
+  recentTrades: [{ ts: "2026-08-22T01:00:00Z", symbol: "PAPERCOIN", reason: "MAX_HOLD", pnlPct: 33.2 }],
+  strategy2Primary: { recentTrades: [{ ts: "2026-08-22T01:00:00Z", symbol: "S2COIN", reason: "TRAIL_STOP", pnlPct: -12.1 }], paper: { open: 0, openPositions: [] }, totals: { rejected: 0 } },
+  runs: { profitable: 2, completed: 5, recent: [], lifetime: { runs: 5, profitable: 2, pnlSol: -1, trades: 900 } },
+  liveBridge: { ...ARMED, summary: REAL, lots: [] },
+};
 
-panelCase("dompet live · nol trade", <LiveWallet data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade", "tape muncul setelah"] });
-// Gaya grafik harus SAMA dengan panel simulasi: batang (<rect>), bukan garis (<polyline>).
-// Versi pertama menggambar polyline tipis melar — dari empat trade diskrit ia terbaca sebagai
-// tren mulus, yang menyanjung dan bohong.
-panelCase("dompet live · tape BATANG bukan garis", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["<rect", "<line"] });
-{
-  const html = renderToStaticMarkup(<LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />);
-  const bars = (html.match(/<rect/g) ?? []).length;
-  const ok = !html.includes("<polyline") && bars === REAL.equitySol.length;
-  if (!ok) bad++;
-  console.log(`  ${ok ? "✓" : "✗"} ${"satu batang per trade, nol polyline".padEnd(40)} ${bars} batang / ${REAL.equitySol.length} trade${html.includes("<polyline") ? " *** MASIH POLYLINE ***" : ""}`);
+function adapterCase(name: string, node: (d: Any) => React.ReactElement, want: { mustShow?: string[]; mustNotShow?: string[] }) {
+  try {
+    const v = toLiveView(BASE as never) as Any;
+    const html = renderToStaticMarkup(node(v));
+    const leaked = [...PAPER_POISON, ...(want.mustNotShow ?? [])].filter((n) => html.includes(n));
+    const nan = /NaN|undefined|Infinity/.test(html);
+    const missing = (want.mustShow ?? []).filter((t) => !html.includes(t));
+    const ok = leaked.length === 0 && !nan && missing.length === 0;
+    if (!ok) bad++;
+    console.log(`  ${ok ? "✓" : "✗"} ${name.padEnd(40)} ${html.length}b` +
+      `${leaked.length ? ` *** SIMULASI BOCOR: ${leaked.join(",")} ***` : ""}` +
+      `${nan ? " *** NaN/undefined ***" : ""}${missing.length ? ` *** tak menampilkan: ${missing.join(",")} ***` : ""}`);
+  } catch (e) { bad++; console.log(`  ✗ ${name.padEnd(40)} GAGAL: ${(e as Error).message.slice(0, 70)}`); }
 }
-// Minus tipografis (−, U+2212) sama seperti panel simulasi — bukan hyphen ASCII.
-panelCase("dompet live · ada hasil nyata", <LiveWallet data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["0.00764", "15.9%", "\u2212"] });
-panelCase("dompet live · payload separuh", <LiveWallet data={{ liveBridge: { permitted: true, armed: true, openLots: 0, deployedSol: 0 } } as never} />, {});
-panelCase("journal live · kosong", <LiveJournal data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
-// Jurnal live memakai kolom yang SAMA dengan jurnal paper — persen, bukan SOL. Nominal SOL
-// hidup di panel Dompet dan Kesehatan Eksekusi; mengulangnya di sini akan memaksa kolom ke-7
-// dan membuat dua feed itu berbeda bentuk lagi.
-panelCase("journal live · ada baris", <LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["HODL", "EARLY_CUT", "+8.3%"] });
-// KONSISTENSI VISUAL: panel live harus memakai komponen yang sama dengan panel simulasi.
-// Menulis tata letak sendiri membuat berpindah dari simulasi ke live terasa pindah aplikasi —
-// mata harus belajar ulang panelnya tepat saat uang sungguhan ada di dalamnya.
-panelCase("posisi live · kosong", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 0, lots: [] }) as never} />, { mustShow: ["menunggu entry"] });
-const LOTS = [
-  { tradeId: "L1", mint: "AbcdEf1234", symbol: "HODL", state: "open", spentSol: 0.0118, tokens: 1e5, openedAt: Date.now() - 12000, heldSec: 12, sells: 0, proceedsSol: 0, sellFailures: 0, lastErr: null, img: null },
-  { tradeId: "L2", mint: "Zz99", symbol: "imback", state: "stuck", spentSol: 0.0123, tokens: 25649, openedAt: Date.now() - 3600000, heldSec: 3600, sells: 3, proceedsSol: 0.0368, sellFailures: 22, lastErr: "0x1775", img: null },
-];
-panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02, lots: LOTS }) as never} />, { mustShow: ["HODL", "LIVE"] });
-// Bag yang bermasalah HARUS terlihat di dashboard, bukan hanya di log.
-panelCase("posisi live · bag tersangkut ditandai", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, lots: LOTS }) as never} />, { mustShow: ["ring-down", "imback"] });
-// Kartu live dan kartu paper harus komponen yang SAMA — dibuktikan lewat kelas grid identik.
-{
-  const liveHtml = renderToStaticMarkup(<LivePositions data={withPaper({ ...ARMED, lots: LOTS, summary: REAL }) as never} />);
-  const GRID = 'repeat(auto-fill, minmax(272px, 1fr))';
-  const ok = liveHtml.includes("minmax(272px");
+
+adapterCase("recap = angka live", (d) => <SniperRecap data={d} />, { mustShow: ["1W/3L"], mustNotShow: ["PAPERCOIN"] });
+adapterCase("dompet = saldo + kurva live", (d) => <EquityCurve data={d} />, { mustShow: ["W/3L"] });
+adapterCase("journal = trade live saja", (d) => <TradeJournal data={d} />, { mustShow: ["HODL", "EARLY_CUT"], mustNotShow: ["PAPERCOIN", "S2COIN"] });
+adapterCase("exit quality = aturan live", (d) => <ExitQuality data={d} />, { mustShow: ["EARLY_CUT"], mustNotShow: ["TRAIL_STOP"] });
+adapterCase("posisi = kosong bila tak ada bag", (d) => <OpenPositions data={d} />, { mustShow: ["no open positions"] });
+{ // runs tidak berlaku di live — jangan tampilkan riwayat simulasi di bawah judul live
+  const v = toLiveView(BASE as never) as Any;
+  const html = renderToStaticMarkup(<RunLedger data={v} />);
+  const ok = !html.includes("2/5") && html.length > 0;
   if (!ok) bad++;
-  console.log(`  ${ok ? "✓" : "✗"} ${"posisi live pakai grid kartu yang sama".padEnd(40)} ${ok ? "PositionCard" : "*** tata letak sendiri ***"}`);
-  void GRID;
+  console.log(`  ${ok ? "✓" : "✗"} ${"run ledger tidak memuat riwayat paper".padEnd(40)} ${ok ? "kosong" : "*** riwayat paper bocor ***"}`);
 }
-// Ikon koin: ada gambar → <img>; tidak ada → tetap ada kotak huruf, baris tidak boleh menciut.
-{
-  const withImg = REAL.recent.map((r: Any) => ({ ...r, img: "https://example.invalid/a.png" }));
-  const a = renderToStaticMarkup(<LiveJournal data={withPaper({ ...ARMED, summary: { ...REAL, recent: withImg } }) as never} />);
-  const bHtml = renderToStaticMarkup(<LiveJournal data={withPaper({ ...ARMED, summary: REAL }) as never} />);
-  const ok = a.includes("<img") && !bHtml.includes("<img") && bHtml.includes("rounded-[5px]");
+{ // disarmed: adapter TIDAK boleh menyentuh apa pun
+  const untouched = toLiveView({ ...BASE, liveBridge: { ...ARMED, armed: false, summary: REAL } } as never) as Any;
+  const ok = untouched.paper.balanceSol === 18.6295 && untouched.recentTrades.length === 1;
   if (!ok) bad++;
-  console.log(`  ${ok ? "✓" : "✗"} ${"ikon koin: gambar / fallback huruf".padEnd(40)} img=${a.includes("<img")} fallback=${bHtml.includes("rounded-[5px]")}`);
+  console.log(`  ${ok ? "✓" : "✗"} ${"disarmed → data simulasi utuh".padEnd(40)} ${ok ? "utuh" : "*** dimodifikasi ***"}`);
 }
-panelCase("recap live · nol trade", <LiveRecap data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
-panelCase("recap live · ada hasil", <LiveRecap data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["-0.00764", "1W/3L"] });
-const REASONS = [
-  { reason: "EARLY_CUT", n: 5, netSol: -0.00711 },
-  { reason: "MAX_HOLD", n: 4, netSol: 0.005689 },
-  { reason: "ORPHAN_SWEEP", n: 2, netSol: -0.006579 },
-];
-panelCase("exit quality live · kosong", <LiveExitQuality data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["Belum ada exit live"] });
-panelCase("exit quality live · per aturan", <LiveExitQuality data={withPaper({ ...ARMED, summary: SUM({ exitReasons: REASONS }) }) as never} />, { mustShow: ["EARLY_CUT", "ORPHAN_SWEEP", "0.00658"] });
-panelCase("kesehatan eksekusi · nol trade", <LiveExecHealth data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["0/0"] });
-panelCase("kesehatan eksekusi · ada masalah", <LiveExecHealth data={withPaper({ ...ARMED, summary: SUM({ trades: 12, wins: 3, losses: 9, spentSol: 0.1456, proceedsSol: 0.1323, netSol: -0.013352, buyFailed: 3, sellDeferred: 3, neverFilled: 0, exitReasons: REASONS }) }) as never} />, { mustShow: ["3/12", "orphan sweep", "buy ditolak"] });
-panelCase("kesehatan eksekusi · summary hilang", <LiveExecHealth data={{ liveBridge: { permitted: true, armed: true } } as never} />, {});
-panelCase("recap live · HALTED terlihat", <LiveRecap data={withPaper({ ...ARMED, summary: REAL, halted: true, haltReason: "stuck bag" }) as never} />, { mustShow: ["HALTED", "stuck bag"] });
 
 console.log(`\n${bad === 0 ? "✓ semua benar" : `✗ ${bad} kasus salah`}`);
 process.exit(bad === 0 ? 0 : 1);

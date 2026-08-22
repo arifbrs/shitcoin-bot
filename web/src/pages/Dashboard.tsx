@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useLiveStats } from "@/hooks/useLiveStats";
+import { toLiveView } from "@/lib/liveView";
 import { TopBar } from "@/components/panels/TopBar";
 import { Tile } from "@/components/panels/Tile";
 import { Hero, heroMeta } from "@/components/panels/Hero";
@@ -17,14 +18,13 @@ import { PipelineFlow } from "@/components/panels/PipelineFlow";
 import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { RunLedger } from "@/components/panels/RunLedger";
 import { SniperRecap } from "@/components/panels/SniperRecap";
-import { LiveWallet } from "@/components/panels/LiveWallet";
-import { LiveJournal, LivePositions, LiveRecap } from "@/components/panels/LiveJournal";
-import { LiveExitQuality, LiveExecHealth } from "@/components/panels/LiveAnalytics";
 
 export default function Dashboard() {
   const { data, status } = useLiveStats();
-  // One switch for the whole layout: armed = show real money, archive the simulation.
+  // One switch for the whole layout: armed = feed every panel live data instead of simulation.
+  // The panels themselves are unchanged — see lib/liveView.
   const live = data?.liveBridge?.armed === true;
+  const view = data && live ? toLiveView(data) : data;
   const [controlOpen, setControlOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
 
@@ -59,7 +59,7 @@ export default function Dashboard() {
               className={`flex items-center rounded-xl border px-3.5 ${live ? "border-down/60 bg-down/5" : "border-border bg-card"}`}
               style={{ gridArea: "s1" }}
             >
-              {live ? <LiveRecap data={data} /> : <SniperRecap data={data} />}
+              <SniperRecap data={view!} />
             </div>
             <Tile area="hero" label="Pasar · langsung" right={heroMeta(data)} live={data.system.strategy2Alive}>
               <Hero data={data} />
@@ -74,7 +74,7 @@ export default function Dashboard() {
               label={live ? "Dompet LIVE · uang sungguhan" : "Dompet · satu saldo, dua denominasi"}
               live={live}
             >
-              {live ? <LiveWallet data={data} /> : <EquityCurve data={data} />}
+              <EquityCurve data={view!} />
             </Tile>
             <Tile area="pipe" label="Pipeline · langsung" live={data.system.strategy2Alive}>
               <PipelineFlow data={data} />
@@ -85,10 +85,10 @@ export default function Dashboard() {
             <Tile
               area="jour"
               label={live ? "Trade Journal LIVE · selesai" : "Trade Journal · closed"}
-              right={live ? `${data.liveBridge?.summary?.trades ?? 0} trade` : `${data.strategy2Primary?.recentTrades.length ?? 0} recent`}
+              right={`${view?.strategy2Primary?.recentTrades.length ?? 0} ${live ? "trade live" : "recent"}`}
               live={live}
             >
-              {live ? <LiveJournal data={data} /> : <TradeJournal data={data} />}
+              <TradeJournal data={view!} />
             </Tile>
             <Tile area="sig" label="Band Watch · jendela entry">
               <BandWatch data={data} />
@@ -96,10 +96,10 @@ export default function Dashboard() {
             <Tile
               area="pos"
               label={live ? "Posisi LIVE · bag nyata" : "Open Positions"}
-              right={live ? `${data.liveBridge?.openLots ?? 0} bag` : `${(data.strategy2Primary?.paper.open ?? 0) + (data.paper?.openPositions?.length ?? 0)} active`}
+              right={`${(view?.paper?.openPositions?.length ?? 0)} ${live ? "bag live" : "active"}`}
               live={live}
             >
-              {live ? <LivePositions data={data} /> : <OpenPositions data={data} />}
+              <OpenPositions data={view!} />
             </Tile>
             <Tile area="funnel" label="Scout — candidates" right={`${data.strategy2.count} kandidat`}>
               <ScoutPanel data={data} />
@@ -108,20 +108,18 @@ export default function Dashboard() {
               <GateFunnel data={data} />
             </Tile>
             <Tile area="post" label={live ? "Exit Quality LIVE · per aturan keluar" : "Exit Quality"} live={live}>
-              {live ? <LiveExitQuality data={data} /> : <ExitQuality data={data} />}
+              <ExitQuality data={view!} />
             </Tile>
             {/* Live has no "runs": there is no float to auto-refill, so the paper ledger's whole
                 question ("profit, or a refill?") does not exist. The slot carries the question
                 that DOES only exist live — is the plumbing costing money? */}
             <Tile
               area="runs"
-              label={live ? "Kesehatan eksekusi LIVE" : "Run Ledger · lintas reset float"}
-              right={live
-                ? `${data.liveBridge?.summary?.trades ?? 0} trade`
-                : `${data.runs?.profitable ?? 0}/${data.runs?.completed ?? 0} untung`}
+              label={live ? "Run Ledger — tidak berlaku di live" : "Run Ledger · lintas reset float"}
+right={live ? "" : `${data.runs?.profitable ?? 0}/${data.runs?.completed ?? 0} untung`}
               live={live}
             >
-              {live ? <LiveExecHealth data={data} /> : <RunLedger data={data} />}
+              <RunLedger data={view!} />
             </Tile>
           </div>
           </>
