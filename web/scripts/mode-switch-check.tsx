@@ -23,6 +23,7 @@ import { TradeJournal } from "../src/components/panels/TradeJournal";
 import { OpenPositions } from "../src/components/panels/OpenPositions";
 import { ExitQuality } from "../src/components/panels/ExitQuality";
 import { RunLedger } from "../src/components/panels/RunLedger";
+import { Tile } from "../src/components/panels/Tile";
 
 type Any = Record<string, any>;
 
@@ -160,6 +161,38 @@ adapterCase("posisi = kosong bila tak ada bag", (d) => <OpenPositions data={d} /
   if (!ok) bad++;
   console.log(`  ${ok ? "✓" : "✗"} ${"run ledger tidak memuat riwayat paper".padEnd(40)} ${ok ? "kosong" : "*** riwayat paper bocor ***"}`);
 }
+// ── MANA LIVE, MANA SIMULASI ─────────────────────────────────────────────────
+// Panelnya identik by design (komponen sama, sumber beda), jadi "ini uang sungguhan atau bukan"
+// harus terjawab TANPA membaca angkanya. Dipicu oleh panel P&L live yang duduk di bawah judul
+// "PAPER · Strategy 1" — label basi dari iterasi sebelumnya.
+{
+  const chip = (src: "live" | "sim" | "shared" | undefined) =>
+    renderToStaticMarkup(<Tile area="x" label="Uji" source={src}>{null}</Tile>);
+  const cases: Array<[string, "live" | "sim" | "shared" | undefined, string | null]> = [
+    ["sumber live → chip LIVE merah", "live", "LIVE"],
+    ["sumber bersama → chip BERSAMA", "shared", "BERSAMA"],
+    ["sumber simulasi → chip SIM", "sim", "SIM"],
+    ["tanpa sumber (mode simulasi) → tanpa chip", undefined, null],
+  ];
+  for (const [name, src, want] of cases) {
+    const html = chip(src);
+    const ok = want ? html.includes(`>${want}<`) : !/>(LIVE|SIM|BERSAMA)</.test(html);
+    if (!ok) bad++;
+    console.log(`  ${ok ? "✓" : "✗"} ${name.padEnd(40)} ${want ?? "polos"}`);
+  }
+  // Chip LIVE tidak boleh terlihat sama dengan yang lain.
+  const ok = chip("live").includes("text-down") && !chip("shared").includes("text-down");
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"chip LIVE beda warna dari yang lain".padEnd(40)} ${ok ? "merah" : "*** sama ***"}`);
+}
+{ // recap saat armed HARUS berkata live, bukan PAPER
+  const v = toLiveView(BASE as never) as Any;
+  const html = renderToStaticMarkup(<SniperRecap data={v} />);
+  const ok = !html.includes("PAPER") && html.toLowerCase().includes("uang sungguhan");
+  if (!ok) bad++;
+  console.log(`  ${ok ? "✓" : "✗"} ${"recap armed tidak berkata PAPER".padEnd(40)} ${ok ? "live" : "*** masih PAPER ***"}`);
+}
+
 { // disarmed: adapter TIDAK boleh menyentuh apa pun
   const untouched = toLiveView({ ...BASE, liveBridge: { ...ARMED, armed: false, summary: REAL } } as never) as Any;
   const ok = untouched.paper.balanceSol === 18.6295 && untouched.recentTrades.length === 1;

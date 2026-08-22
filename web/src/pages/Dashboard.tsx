@@ -61,7 +61,7 @@ export default function Dashboard() {
             >
               <SniperRecap data={view!} />
             </div>
-            <Tile area="hero" label="Pasar · langsung" right={heroMeta(data)} live={data.system.strategy2Alive}>
+            <Tile area="hero" label="Pasar · langsung" source={live ? "shared" : undefined} right={heroMeta(data)} live={data.system.strategy2Alive}>
               <Hero data={data} />
             </Tile>
             {/* LIVE REPLACES PAPER — it never sits next to it.
@@ -71,43 +71,46 @@ export default function Dashboard() {
                 out of the layout (still logged, still measured) whenever live is armed. */}
             <Tile
               area="equity"
-              label={live ? "Dompet LIVE · uang sungguhan" : "Dompet · satu saldo, dua denominasi"}
+              label={live ? "Dompet · uang sungguhan" : "Dompet · satu saldo, dua denominasi"}
+              source={live ? "live" : undefined}
               live={live}
             >
               <EquityCurve data={view!} />
             </Tile>
-            <Tile area="pipe" label="Pipeline · langsung" live={data.system.strategy2Alive}>
+            <Tile area="pipe" label="Pipeline · langsung" source={live ? "shared" : undefined} live={data.system.strategy2Alive}>
               <PipelineFlow data={data} />
             </Tile>
-            <Tile area="agent" label="Feeling Agent" live={data.feeling.enabled}>
+            <Tile area="agent" label="Feeling Agent" source={live ? "shared" : undefined} live={data.feeling.enabled}>
               <FeelingAgent data={data} />
             </Tile>
             <Tile
               area="jour"
-              label={live ? "Trade Journal LIVE · selesai" : "Trade Journal · closed"}
+              label={live ? "Trade Journal · selesai" : "Trade Journal · closed"}
+              source={live ? "live" : undefined}
               right={`${view?.strategy2Primary?.recentTrades.length ?? 0} ${live ? "trade live" : "recent"}`}
               live={live}
             >
               <TradeJournal data={view!} />
             </Tile>
-            <Tile area="sig" label="Band Watch · jendela entry">
+            <Tile area="sig" label="Band Watch · jendela entry" source={live ? "shared" : undefined}>
               <BandWatch data={data} />
             </Tile>
             <Tile
               area="pos"
-              label={live ? "Posisi LIVE · bag nyata" : "Open Positions"}
+              label={live ? "Posisi · bag nyata" : "Open Positions"}
+              source={live ? "live" : undefined}
               right={`${(view?.paper?.openPositions?.length ?? 0)} ${live ? "bag live" : "active"}`}
               live={live}
             >
               <OpenPositions data={view!} />
             </Tile>
-            <Tile area="funnel" label="Scout — candidates" right={`${data.strategy2.count} kandidat`}>
+            <Tile area="funnel" label="Scout — candidates" source={live ? "shared" : undefined} right={`${data.strategy2.count} kandidat`}>
               <ScoutPanel data={data} />
             </Tile>
-            <Tile area="gate" label="Admission — kenapa ditolak" right={`${data.strategy2Primary?.totals.rejected ?? 0} ditolak`}>
+            <Tile area="gate" label="Admission — kenapa ditolak" source={live ? "shared" : undefined} right={`${data.strategy2Primary?.totals.rejected ?? 0} ditolak`}>
               <GateFunnel data={data} />
             </Tile>
-            <Tile area="post" label={live ? "Exit Quality LIVE · per aturan keluar" : "Exit Quality"} live={live}>
+            <Tile area="post" label={live ? "Exit Quality · per aturan keluar" : "Exit Quality"} live={live} source={live ? "live" : undefined}>
               <ExitQuality data={view!} />
             </Tile>
             {/* Live has no "runs": there is no float to auto-refill, so the paper ledger's whole
