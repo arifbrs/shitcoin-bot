@@ -7,8 +7,8 @@ import { MomentumWatch } from "./discovery/momentum.js";
 import { BitqueryStream } from "./discovery/bitquery.js";
 import { LaunchObservatory } from "./discovery/launch-observatory.js";
 import { runGate, runSetupGate, markBadDeployer, shouldBlacklist } from "./gate.js";
-import { PaperTrader } from "./papertrader.js";
-import type { OpenResult } from "./papertrader.js";
+import { PaperTrader } from "./trader.js";
+import type { OpenResult } from "./trader.js";
 import { readControl } from "./control.js";
 import { flushActorMemory } from "./memory/actor-memory.js";
 import { notify, notifySync, notifyEnabled } from "./util/notify.js";
@@ -173,7 +173,7 @@ function main(): void {
     // candidate, which is the same resource that caused the entry backlog.
     const floor = config.gate.launchMcFloorSol;
     // FAIL CLOSED on a missing MC. `marketCapSol != null && ... < floor` let a null through the
-    // filter entirely — the same fail-open shape as the holder-gate P0 (papertrader.ts), on the
+    // filter entirely — the same fail-open shape as the holder-gate P0 (trader.ts), on the
     // gate that guards the measured poison zone (at/below the 27.96 launch base: 0 wins in 48
     // trades). Measured 0 nulls in 22,743 decisions, so this is latent today, not active — but
     // an unpriced launch is exactly the case we cannot verify and must not buy.

@@ -85,7 +85,7 @@ assert.equal(grad.terminal.quoteSource, "jupiter-amm");
 // quoteSource must not create an executable-value jump beyond the explicit fee-schedule
 // delta (curve fee vs AMM fee) plus the documented ATA-rent reclaim close() adds on any
 // final sale. The AMM leg is priced with an exact-size quote for remainingQty via the
-// same production helper papertrader.ts uses at graduation (syntheticAmmReservesFromQuote);
+// same production helper trader.ts uses at graduation (syntheticAmmReservesFromQuote);
 // curve reserves are NOT carried into the AMM leg.
 {
   const boundary = new ArmExitSimulation(entry);
@@ -179,7 +179,7 @@ assert.equal(grad.terminal.quoteSource, "jupiter-amm");
   );
 
   // Missing quote stays missing: the production helper refuses to fabricate reserves from a
-  // degenerate quote, so callers (papertrader tick()) must hold rather than feed a phantom mark.
+  // degenerate quote, so callers (trader tick()) must hold rather than feed a phantom mark.
   assert.equal(syntheticAmmReservesFromQuote(state.remainingQty, 0, quoteImpactPct), null);
   assert.equal(syntheticAmmReservesFromQuote(0, netSolOutMatched, quoteImpactPct), null);
 }

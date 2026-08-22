@@ -7,7 +7,7 @@
  * getTokenLargestAccounts. SELURUH entry berhenti 43 menit; jeda normal median 1,7 menit.
  *
  * Ini konflasi yang sama yang sudah dijaga di tempat lain: `drained` vs `readFail` pada harga,
- * `holders == null` vs `holders < min` di papertrader. Satu sumber yang buta tidak boleh
+ * `holders == null` vs `holders < min` di trader. Satu sumber yang buta tidak boleh
  * mengeluarkan angka yang terdengar pasti.
  */
 import { readFileSync } from "node:fs";
@@ -29,7 +29,7 @@ check("syarat panjang > 0 terpasang", src.includes("Array.isArray(accounts) && a
 check("jalur cadangan getTokenLargestAccounts masih ada",
   src.includes('rpc<LargestAccounts>("getTokenLargestAccounts"'), true);
 check("jalur cadangan GMGN masih ada", src.includes("holderCountViaGmgn"), true);
-check("kegagalan baca tetap mengembalikan null (bukan 0) di papertrader",
-  readFileSync("src/papertrader.ts","utf8").includes('return { opened: false, code: "HOLDER_DATA_UNAVAILABLE" }'), true);
+check("kegagalan baca tetap mengembalikan null (bukan 0) di trader",
+  readFileSync("src/trader.ts","utf8").includes('return { opened: false, code: "HOLDER_DATA_UNAVAILABLE" }'), true);
 console.log(fail === 0 ? "\nLULUS" : `\nGAGAL ${fail}`);
 process.exit(fail ? 1 : 0);

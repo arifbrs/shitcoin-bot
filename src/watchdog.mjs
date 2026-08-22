@@ -68,7 +68,7 @@ function newestMtime(prefix) {
  * until closed by hand. `lastPriceUsd` was still `null` after 635 seconds; the next-worst blind
  * window all day was 68 seconds.
  *
- * The fix belongs in papertrader.ts — but that file is inside `codeFingerprint`, so touching it
+ * The fix belongs in trader.ts — but that file is inside `codeFingerprint`, so touching it
  * resets the running cohort. This closes the position through exactly the path a human would use:
  * the same `control.json` command the dashboard's close button writes. No cohort cost, and the
  * trade is booked as MANUAL_CLOSE rather than silently vanishing.

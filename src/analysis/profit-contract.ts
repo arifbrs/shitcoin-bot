@@ -90,7 +90,7 @@ export interface PairedValidation {
 /**
  * Regimes whose quote/fill units are validated for the primary SOL-denominated experiment.
  *
- * GRADUATED_AMM is deliberately NOT here. PaperTrader's graduation handling (papertrader.ts
+ * GRADUATED_AMM is deliberately NOT here. PaperTrader's graduation handling (trader.ts
  * ~line 1015-1040) is the stronger of two designs we considered — it takes a REAL Jupiter sell
  * quote for our exact tokenQty at the moment of graduation and reconstructs a synthetic
  * constant-product model from it, rather than naively replaying reserve deltas across the

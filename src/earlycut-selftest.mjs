@@ -43,12 +43,12 @@ check("batas jendela persis 5000ms ikut diperiksa",
   run([{ heldMs: 5_000, execPnl: -20 }]), "EARLY_CUT");
 
 console.log("B. sumber asli");
-const pt = readFileSync("src/papertrader.ts", "utf8");
+const pt = readFileSync("src/trader.ts", "utf8");
 const cfg = readFileSync("src/config.ts", "utf8");
 const iEarly = pt.indexOf("heldMs <= early.withinMs && execPnl < early.pnlPct");
 const iNoDev = pt.indexOf("!pos.everDeveloped && heldMs >= noDev.afterMs");
 const iCata  = pt.indexOf('this.close(mint, pos, price, "CATASTROPHIC")');
-check("penjaga EARLY_CUT ada di papertrader", iEarly > -1, true);
+check("penjaga EARLY_CUT ada di trader", iEarly > -1, true);
 check("berjalan SESUDAH penjaga catastrophic", iCata > -1 && iEarly > iCata, true);
 check("berjalan SEBELUM NO_DEVELOPMENT", iNoDev > -1 && iEarly < iNoDev, true);
 check("memakai execPnl (eksekutabel), bukan P&L spot", pt.includes("execPnl < early.pnlPct"), true);

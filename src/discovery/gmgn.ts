@@ -6,7 +6,7 @@ import { ui } from "../util/log.js";
  * (gmgn-proxy.ts, its own process — see that file's header for why) instead of calling GMGN
  * directly. That process holds the one real OpenApiClient and the one real shared rate limiter;
  * this file only knows how to reach it over local HTTP. Used by: Strategy 2 Scout, the sniper's
- * post-open enrichment (cross-check only, never gates entry — see papertrader.ts), Strategy 2's
+ * post-open enrichment (cross-check only, never gates entry — see trader.ts), Strategy 2's
  * paper trader, KOL/Smart-money watch, and the multi-launchpad observatory.
  *
  * No API key or private key is loaded in THIS file at all (review fix, 2026-07-27) — only

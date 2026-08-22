@@ -8,7 +8,7 @@
  *
  * Dua lapis pemeriksaan, sengaja:
  *   A. mesin keadaan — meniru urutan tick sungguhan dan menguji hasilnya
- *   B. sumber asli — memastikan latch benar-benar ada DAN berada SEBELUM penjaga di papertrader.ts
+ *   B. sumber asli — memastikan latch benar-benar ada DAN berada SEBELUM penjaga di trader.ts
  * Lapis B ada karena lapis A menguji tiruan; tanpa B, kode asli bisa berubah tanpa test ini gagal.
  */
 import { readFileSync } from "node:fs";
@@ -58,8 +58,8 @@ check("berkembang TEPAT di ambang 5% ikut kebal", run([
   { heldMs: 40_000, proceeds: 0.70 },
 ]), null);
 
-console.log("B. sumber asli papertrader.ts");
-const src = readFileSync("src/papertrader.ts", "utf8");
+console.log("B. sumber asli trader.ts");
+const src = readFileSync("src/trader.ts", "utf8");
 const iLatch = src.indexOf("if (execPeakGainPct >= noDev.minPeakPct) pos.everDeveloped = true;");
 const iGuard = src.indexOf("!pos.everDeveloped && heldMs >= noDev.afterMs");
 check("latch everDeveloped ada", iLatch > -1, true);

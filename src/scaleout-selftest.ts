@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { clampedScaleSellQty } from "./papertrader.js";
+import { clampedScaleSellQty } from "./trader.js";
 
 const original = 100;
 let remaining = original;

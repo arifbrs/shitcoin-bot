@@ -732,7 +732,7 @@ async function closePosition(s: State, pos: OpenPosition, reason: string): Promi
   // IDEMPOTENT GUARD — set synchronously, before the first await, so a second concurrent caller
   // for the same mint bails out here instead of writing a duplicate close. Identity check as
   // well as presence: a stale `pos` whose mint was re-opened as a different position must not
-  // close the new one. Mirrors the sniper's close() guard (papertrader.ts).
+  // close the new one. Mirrors the sniper's close() guard (trader.ts).
   if (pos.closing) return;
   if (s.positions[pos.mint] !== pos) return;
   pos.closing = true;
@@ -963,7 +963,7 @@ async function attemptScaleOuts(s: State, pos: OpenPosition, mc: number): Promis
 }
 
 // FEELING AGENT for Strategy 2 (owner, 2026-07-30) — see config.ts's agentEnabled comment for
-// why this exists now. Logs a `type: "vibe"` event in the SAME shape src/papertrader.ts (the
+// why this exists now. Logs a `type: "vibe"` event in the SAME shape src/trader.ts (the
 // sniper) already uses, so server.ts's existing merge (E.vibe.all(), and the `beats` feed that
 // powers the dashboard's Feeling Agent bubble) picks these up with ZERO server.ts changes — that
 // merge was already source-agnostic, it just never had a second source calling it before.

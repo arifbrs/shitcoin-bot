@@ -713,7 +713,7 @@ export async function holderConcentration(mint: string, totalSupplyUi: number | 
  * 1,217 out of 1,217 calls, a clean 100%. Cause: QuickNode had been benched on
  * `daily-quota`, leaving Helius as the only live endpoint, and Helius's free tier does not
  * serve this method at all. Since the caller correctly fails CLOSED on a null (see
- * papertrader.ts's P0 fix), a 100% read failure meant Strategy 1 was rejecting candidates it
+ * trader.ts's P0 fix), a 100% read failure meant Strategy 1 was rejecting candidates it
  * could not see rather than candidates it had judged — 143 of 294 skips in one hour.
  *
  * Note the two sources are NOT the same measurement and must never be silently conflated:

@@ -406,7 +406,7 @@ export const config = {
       { gainFromEntryPct: 100, sellFractionOfOriginal: 0.33 },
       { gainFromEntryPct: 200, sellFractionOfOriginal: 0.33 },
     ] as Array<{ gainFromEntryPct: number; sellFractionOfOriginal: number }>,
-    // FEELING AGENT for Strategy 2 (owner, 2026-07-30): previously only src/papertrader.ts (the
+    // FEELING AGENT for Strategy 2 (owner, 2026-07-30): previously only src/trader.ts (the
     // now-archived sniper, Strategy 1) ever called judgeVibe — Strategy 2's exits were purely
     // mechanical (MC-based trailing stop/max-hold/scale-out above), and the dashboard's Feeling
     // Agent panel sat permanently empty as a result (nothing was ever calling it). This is NOT
@@ -865,7 +865,7 @@ export const config = {
     // "jangan lebih pendek dari 45s" di atas berlaku untuk uji puncak — memotong berdasarkan
     // puncak di detik ke-15 membunuh 35% runner karena runner sering belum sempat naik.
     // Posisi yang SUDAH −10% di 5 detik pertama adalah populasi yang berbeda jauh.
-    // Validasi lengkap ada di papertrader.ts pada blok EARLY CUT.
+    // Validasi lengkap ada di trader.ts pada blok EARLY CUT.
     earlyCut: {
       enabled: process.env.EARLY_CUT !== "false",
       withinMs: Number(process.env.EARLY_CUT_MS ?? 5_000),
@@ -1170,7 +1170,10 @@ function codeFingerprint(): string {
   try {
     const base = new URL(".", import.meta.url).pathname;
     const files = [
-      "config.ts", "papertrader.ts", "gate.ts", "index.ts", "control.ts",
+      // Renamed 2026-08-22: "trader" was never a simulator, it is the strategy engine.
+      // This list is BY NAME, so a rename that forgets it makes the fingerprint silently stop
+      // watching the very file whose changes must fork a cohort.
+      "config.ts", "trader.ts", "gate.ts", "index.ts", "control.ts",
       "discovery/pumpportal.ts", "discovery/bitquery.ts", "discovery/momentum.ts",
       "discovery/setup-filter.ts", "discovery/launch-observatory.ts", "discovery/devwatch.ts",
       "discovery/tradestream.ts", "discovery/narrative.ts",
@@ -1179,6 +1182,9 @@ function codeFingerprint(): string {
       "safety/pump-candles.ts", "safety/rugcheck.ts", "safety/metadata.ts", "safety/jupiter-token.ts",
       "execution/executor.ts", "execution/semantics.ts", "execution/jupiter.ts",
       "execution/feeling-agent.ts", "execution/guardian.ts", "execution/wallet.ts",
+      // Added with the live path: live-bridge feeds the REAL fill back into the position, so its
+      // logic changes what the strategy does — not merely how an order is sent.
+      "execution/live-bridge.ts", "execution/rpc.ts", "execution/keystore.ts",
       "execution/curve-math.ts",
       "experiments/arm-spec.ts", "experiments/arm-admission.ts",
       "experiments/arm-ledger.ts", "experiments/arm-exit.ts", "experiments/arm-coordinator.ts",

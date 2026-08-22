@@ -47,7 +47,7 @@ export interface ControlState {
   lastCommandId?: number; // highest command id the trader has already executed
   risk?: RiskOverrides; // live risk-parameter overrides (merged over config.risk at runtime)
   // Audit found (2026-07-29): Strategy 2 had NO emergency stop at all — `command` above is only
-  // ever read by the sniper's own papertrader.ts, so noManualClose positions genuinely had zero
+  // ever read by the sniper's own trader.ts, so noManualClose positions genuinely had zero
   // operator override. Separate namespace, same one-shot-by-id pattern, so both bots share this
   // file without stepping on each other's commands.
   strategy2Command?: ControlCommand | null;

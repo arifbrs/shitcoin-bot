@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import {
   syntheticAmmExitProceedsSol,
   syntheticAmmReservesFromQuote,
-} from "./papertrader.js";
+} from "./trader.js";
 
 const qty = 1_000;
 const quotedNetSol = 0.5;

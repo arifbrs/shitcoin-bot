@@ -2,7 +2,7 @@
  * bloXroute pump.fun swap RECORDER — passive measurement only.
  *
  * WHY THIS EXISTS
- * Our own price path is sampled by a 4-second polling tick (papertrader.ts `fastTimer`).
+ * Our own price path is sampled by a 4-second polling tick (trader.ts `fastTimer`).
  * Measured across 109 armed TRAIL_LOCK exits, the price moves a median of 17.2% in ONE tick
  * step, and the trail fires at the first observation past its band (median 0 ticks of lag).
  * So the exit is not late — the observation is coarse. A 6% trail band cannot be honoured when
@@ -130,7 +130,7 @@ function connectAndSubscribe(): void {
     if (!r?.mintAddress) return;
 
     // Rescale to the units this project already uses everywhere else. vSol arrives in lamports
-    // and vTokens in raw base units (6 decimals for pump.fun), so mcSol matches papertrader's
+    // and vTokens in raw base units (6 decimals for pump.fun), so mcSol matches trader's
     // `entryMcSol = (vSol / vTokens) * 1e9` — verified against the 27.96 launch constant.
     const vSolLamports = Number(r.virtualSolReserves ?? 0);
     const vTokensRaw = Number(r.virtualTokenReserves ?? 0);

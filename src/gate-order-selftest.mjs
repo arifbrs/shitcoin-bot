@@ -11,7 +11,7 @@
  * (yang memang wajib untuk mengetahui MC), TIDAK pada simulasi.
  */
 import { readFileSync } from "node:fs";
-const src = readFileSync("src/papertrader.ts", "utf8");
+const src = readFileSync("src/trader.ts", "utf8");
 const lines = src.split("\n");
 const at = (needle) => lines.findIndex(l => l.includes(needle)) + 1;
 let fail = 0;
