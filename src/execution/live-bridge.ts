@@ -209,8 +209,30 @@ export function deployedLiveSol(): number {
   return Math.max(0, s);
 }
 
-function liveSizeFor(paperSizeSol: number): number {
-  return Math.min(config.exec.live.sizeSol, config.exec.guard.maxPerTradeSol, paperSizeSol);
+/**
+ * How much REAL SOL this trade gets.
+ *
+ * Fixed clip by default. With LIVE_COMPOUND=true it becomes a percentage of the wallet, which
+ * is why the balance source matters: `expectedBalanceSol` is the snapshot taken after our own
+ * last transaction, so it already reflects every fill and every fee. Using the paper trader's
+ * balance instead would size off a notional 2 SOL float against a real 0.24 SOL wallet — an
+ * 8x over-size on the very first trade.
+ *
+ * When the balance is UNKNOWN (no transaction yet this process, or every RPC failed) it falls
+ * back to the fixed clip. It never guesses upward from an unknown: the guardian would catch an
+ * over-size, but a sizing rule that inflates on missing data is the wrong shape regardless.
+ *
+ * The guardian caps still apply on top, and `paperSizeSol` caps it too so live can never stake
+ * more than the model it is mirroring.
+ */
+function liveSizeFor(paperSizeSol: number, balanceSol: number | null = expectedBalanceSol): number {
+  const cfg = config.exec.live;
+  let base = cfg.sizeSol;
+  if (cfg.compound && balanceSol != null && balanceSol > 0) {
+    base = (balanceSol * cfg.riskPct) / 100;
+  }
+  base = Math.max(base, cfg.minSol);
+  return Math.min(base, config.exec.guard.maxPerTradeSol, paperSizeSol);
 }
 
 // ── OPEN ──────────────────────────────────────────────────────────────────────
@@ -652,6 +674,12 @@ export interface LiveSummary {
   neverFilled: number; // buys that never produced a bag — not trades, but worth seeing
   recent: LiveTradeRow[];  // newest first
   equitySol: number[];     // cumulative net after each trade, oldest first
+  // EXECUTION HEALTH — costs that exist only live and have no paper counterpart. Paper never
+  // fails to build a transaction and never has to defer a sell, so these are exactly the
+  // numbers that tell you whether the plumbing (not the strategy) is losing money.
+  buyFailed: number;
+  sellDeferred: number;
+  exitReasons: Array<{ reason: string; n: number; netSol: number }>;
 }
 
 /**
@@ -663,7 +691,7 @@ export interface LiveSummary {
  * for a number to quietly become wrong.
  */
 export function liveSummary(): LiveSummary {
-  const out: LiveSummary = { trades: 0, wins: 0, losses: 0, spentSol: 0, proceedsSol: 0, netSol: 0, netPct: null, neverFilled: 0, recent: [], equitySol: [] };
+  const out: LiveSummary = { trades: 0, wins: 0, losses: 0, spentSol: 0, proceedsSol: 0, netSol: 0, netPct: null, neverFilled: 0, recent: [], equitySol: [], buyFailed: 0, sellDeferred: 0, exitReasons: [] };
   type SettledRow = { ts?: string; type?: string; tradeId?: string; mint?: string; symbol?: string | null; reason?: string; spentSol?: number; proceedsSol?: number; rentReclaimedSol?: number; netSol?: number; netPct?: number | null; heldSec?: number };
   const seen = new Map<string, SettledRow>();
   const rows: SettledRow[] = [];
@@ -678,6 +706,8 @@ export function liveSummary(): LiveSummary {
       if (!line) continue;
       let r: SettledRow;
       try { r = JSON.parse(line) as SettledRow; } catch { continue; }
+      if (r.type === "buy-failed") { out.buyFailed++; continue; }
+      if (r.type === "sell-deferred") { out.sellDeferred++; continue; }
       if (r.type !== "settled") continue;
       // The log is append-only and is never rewritten, so the duplicate `settled` rows the
       // sweeper race already produced stay on disk as the honest record of what happened. The
@@ -708,6 +738,17 @@ export function liveSummary(): LiveSummary {
       netSol: net, netPct: r.netPct ?? null, heldSec: r.heldSec ?? 0,
     });
   }
+  // Per-reason attribution: which exit rule is actually costing or making the money.
+  const byReason = new Map<string, { n: number; netSol: number }>();
+  for (const t of out.recent) {
+    const e = byReason.get(t.reason) ?? { n: 0, netSol: 0 };
+    e.n++; e.netSol += t.netSol;
+    byReason.set(t.reason, e);
+  }
+  out.exitReasons = [...byReason.entries()]
+    .map(([reason, v]) => ({ reason, n: v.n, netSol: Number(v.netSol.toFixed(6)) }))
+    .sort((a, b) => b.n - a.n);
+
   out.recent.reverse();                       // newest first for the journal
   out.recent = out.recent.slice(0, 40);
   out.equitySol = out.equitySol.slice(-120);  // bound the payload
@@ -778,4 +819,5 @@ export async function __drainForTest(): Promise<void> {
 export const __sweepForTest = () => sweepTick();
 export const __reconcileForTest = () => reconcileTick();
 export const __liveSizeForTest = liveSizeFor;
+export function __setBalanceForTest(v: number | null): void { expectedBalanceSol = v; }
 export const __ataForTest = (owner: string, mint: string) => ataFor(new PublicKey(owner), new PublicKey(mint)).toBase58();

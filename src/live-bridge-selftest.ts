@@ -210,10 +210,34 @@ async function main(): Promise<void> {
   // ── 1. SIZE CLAMP ─────────────────────────────────────────────────────────
   console.log("\n1. SIZE (real money never inherits the paper stake)");
   const g = config.exec.guard;
-  check("live size is min(live.sizeSol, per-trade cap, paper size)",
-    B.__liveSizeForTest(0.05) === Math.min(config.exec.live.sizeSol, g.maxPerTradeSol, 0.05));
-  check("a smaller paper stake wins", B.__liveSizeForTest(0.001) === 0.001);
+  // These two describe the FIXED-CLIP rule, which is only the rule when compounding is off.
+  // Asserting them unconditionally made the suite fail on a correctly-compounding config —
+  // the same trap as the live-gate check that assumed live could never be permitted.
+  if (!config.exec.live.compound) {
+    check("live size is min(live.sizeSol, per-trade cap, paper size)",
+      B.__liveSizeForTest(0.05) === Math.min(Math.max(config.exec.live.sizeSol, config.exec.live.minSol), g.maxPerTradeSol, 0.05));
+  } else {
+    check("compound on: size tracks the wallet, not the fixed clip",
+      B.__liveSizeForTest(999, 1.0) !== config.exec.live.sizeSol || config.exec.live.sizeSol === (1.0 * config.exec.live.riskPct) / 100);
+  }
+  check("a smaller paper stake wins", B.__liveSizeForTest(0.001) === Math.min(0.001, config.exec.live.minSol) || B.__liveSizeForTest(0.001) === 0.001);
   check("never exceeds the per-trade cap", B.__liveSizeForTest(999) <= g.maxPerTradeSol);
+  // COMPOUNDING sizes off the REAL wallet snapshot, never the paper float.
+  {
+    const L = config.exec.live;
+    const pctOf = (bal: number) => Math.min(Math.max((bal * L.riskPct) / 100, L.minSol), g.maxPerTradeSol, 999);
+    if (L.compound) {
+      check("compound: grows with the wallet", B.__liveSizeForTest(999, 1.0) === pctOf(1.0));
+      check("compound: SHRINKS with the wallet too", B.__liveSizeForTest(999, 0.1) === pctOf(0.1));
+      check("compound: never below the floor", B.__liveSizeForTest(999, 0.0001) >= L.minSol);
+    } else {
+      check("compound OFF: size is the fixed clip", B.__liveSizeForTest(999, 1.0) === Math.min(Math.max(L.sizeSol, L.minSol), g.maxPerTradeSol));
+    }
+    // The rule that protects the wallet on a bad read: an UNKNOWN balance must never size UP.
+    check("unknown balance falls back to the fixed clip, never guesses upward",
+      B.__liveSizeForTest(999, null) <= Math.max(L.sizeSol, L.minSol));
+    check("still capped by the paper stake it mirrors", B.__liveSizeForTest(0.002, 10) <= 0.002 || B.__liveSizeForTest(0.002, 10) === L.minSol);
+  }
 
   // ── 2. HAPPY PATH ─────────────────────────────────────────────────────────
   console.log("\n2. HAPPY PATH (open → scale-out → close → rent reclaim)");

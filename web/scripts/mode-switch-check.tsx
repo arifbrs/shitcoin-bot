@@ -18,6 +18,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ModeSwitch } from "../src/components/panels/ModeSwitch";
 import { LiveWallet } from "../src/components/panels/LiveWallet";
 import { LiveJournal, LivePositions, LiveRecap } from "../src/components/panels/LiveJournal";
+import { LiveExitQuality, LiveExecHealth } from "../src/components/panels/LiveAnalytics";
 
 type Any = Record<string, any>;
 
@@ -87,7 +88,7 @@ try {
 // paper, jadi yang harus dijaga: tidak ada angka paper yang bocor ke dalamnya.
 console.log("\nPANEL LIVE (menggantikan paper)");
 const PAPER_POISON = ["18.629", "831.5", "2432", "16.629", "591", "845"];
-const SUM = (over: Any = {}): Any => ({ ...SUM0, recent: [], equitySol: [], ...over });
+const SUM = (over: Any = {}): Any => ({ ...SUM0, recent: [], equitySol: [], buyFailed: 0, sellDeferred: 0, exitReasons: [], ...over });
 const withPaper = (lb: Any | undefined): Any => ({
   ...base("live", lb),
   combined: { solUsd: 99.67 },
@@ -142,6 +143,16 @@ panelCase("posisi live · kosong", <LivePositions data={withPaper({ ...ARMED, su
 panelCase("posisi live · ada bag", <LivePositions data={withPaper({ ...ARMED, summary: REAL, openLots: 2, deployedSol: 0.02 }) as never} />, { mustShow: ["0.0200"] });
 panelCase("recap live · nol trade", <LiveRecap data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["belum ada trade live"] });
 panelCase("recap live · ada hasil", <LiveRecap data={withPaper({ ...ARMED, summary: REAL }) as never} />, { mustShow: ["-0.00764", "1W/3L"] });
+const REASONS = [
+  { reason: "EARLY_CUT", n: 5, netSol: -0.00711 },
+  { reason: "MAX_HOLD", n: 4, netSol: 0.005689 },
+  { reason: "ORPHAN_SWEEP", n: 2, netSol: -0.006579 },
+];
+panelCase("exit quality live · kosong", <LiveExitQuality data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["Belum ada exit live"] });
+panelCase("exit quality live · per aturan", <LiveExitQuality data={withPaper({ ...ARMED, summary: SUM({ exitReasons: REASONS }) }) as never} />, { mustShow: ["EARLY_CUT", "ORPHAN_SWEEP", "0.00658"] });
+panelCase("kesehatan eksekusi · nol trade", <LiveExecHealth data={withPaper({ ...ARMED, summary: SUM() }) as never} />, { mustShow: ["0/0"] });
+panelCase("kesehatan eksekusi · ada masalah", <LiveExecHealth data={withPaper({ ...ARMED, summary: SUM({ trades: 12, wins: 3, losses: 9, spentSol: 0.1456, proceedsSol: 0.1323, netSol: -0.013352, buyFailed: 3, sellDeferred: 3, neverFilled: 0, exitReasons: REASONS }) }) as never} />, { mustShow: ["3/12", "orphan sweep", "buy ditolak"] });
+panelCase("kesehatan eksekusi · summary hilang", <LiveExecHealth data={{ liveBridge: { permitted: true, armed: true } } as never} />, {});
 panelCase("recap live · HALTED terlihat", <LiveRecap data={withPaper({ ...ARMED, summary: REAL, halted: true, haltReason: "stuck bag" }) as never} />, { mustShow: ["HALTED", "stuck bag"] });
 
 console.log(`\n${bad === 0 ? "✓ semua benar" : `✗ ${bad} kasus salah`}`);

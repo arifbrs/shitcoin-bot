@@ -19,6 +19,7 @@ import { RunLedger } from "@/components/panels/RunLedger";
 import { SniperRecap } from "@/components/panels/SniperRecap";
 import { LiveWallet } from "@/components/panels/LiveWallet";
 import { LiveJournal, LivePositions, LiveRecap } from "@/components/panels/LiveJournal";
+import { LiveExitQuality, LiveExecHealth } from "@/components/panels/LiveAnalytics";
 
 export default function Dashboard() {
   const { data, status } = useLiveStats();
@@ -106,16 +107,21 @@ export default function Dashboard() {
             <Tile area="gate" label="Admission — kenapa ditolak" right={`${data.strategy2Primary?.totals.rejected ?? 0} ditolak`}>
               <GateFunnel data={data} />
             </Tile>
-            <Tile area="post" label="Exit Quality" live={false}>
-              <ExitQuality data={data} />
+            <Tile area="post" label={live ? "Exit Quality LIVE · per aturan keluar" : "Exit Quality"} live={live}>
+              {live ? <LiveExitQuality data={data} /> : <ExitQuality data={data} />}
             </Tile>
+            {/* Live has no "runs": there is no float to auto-refill, so the paper ledger's whole
+                question ("profit, or a refill?") does not exist. The slot carries the question
+                that DOES only exist live — is the plumbing costing money? */}
             <Tile
               area="runs"
-              label="Run Ledger · lintas reset float"
-              right={`${data.runs?.profitable ?? 0}/${data.runs?.completed ?? 0} untung`}
-              live={false}
+              label={live ? "Kesehatan eksekusi LIVE" : "Run Ledger · lintas reset float"}
+              right={live
+                ? `${data.liveBridge?.summary?.trades ?? 0} trade`
+                : `${data.runs?.profitable ?? 0}/${data.runs?.completed ?? 0} untung`}
+              live={live}
             >
-              <RunLedger data={data} />
+              {live ? <LiveExecHealth data={data} /> : <RunLedger data={data} />}
             </Tile>
           </div>
           </>

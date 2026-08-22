@@ -435,6 +435,9 @@ export interface LiveSummary {
   neverFilled: number;
   recent: LiveTradeRow[];
   equitySol: number[];
+  buyFailed: number;
+  sellDeferred: number;
+  exitReasons: Array<{ reason: string; n: number; netSol: number }>;
 }
 
 export interface LiveBridgeStatus {

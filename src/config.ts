@@ -1056,6 +1056,22 @@ export const config = {
      */
     live: {
       sizeSol: Number(process.env.LIVE_TRADE_SIZE_SOL ?? 0.02),
+      /**
+       * COMPOUNDING. Off by default, and that default is a risk decision rather than a
+       * convenience one: compounding multiplies whatever edge exists, INCLUDING a negative one.
+       * A fixed clip loses linearly; a compounding clip that is wrong about its edge loses
+       * faster on the way down than it gained on the way up. Turn it on once live EV is
+       * established, not before.
+       *
+       * Sizes off the REAL on-chain balance (the bridge's post-transaction snapshot), never off
+       * the paper float — the paper trader runs a notional 2 SOL and would size ~8x too large.
+       * It scales DOWN as well as up, which is the honest half of the same rule.
+       */
+      compound: process.env.LIVE_COMPOUND === "true",
+      riskPct: Number(process.env.LIVE_RISK_PCT ?? 5),
+      // Floor so a drawdown cannot shrink the clip into dust that no longer clears fees, and
+      // so a single bad streak does not silently stop the bot from trading at all.
+      minSol: Number(process.env.LIVE_MIN_SOL ?? 0.005),
       // Reconcile the on-chain balance against our own post-transaction snapshot. Any
       // unexplained move between our transactions → HALT (drainer / unknown spend / a
       // timed-out tx that landed after we gave up on it).
