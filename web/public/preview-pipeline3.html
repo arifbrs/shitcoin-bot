@@ -1,0 +1,301 @@
+<!doctype html><meta charset="utf-8"><title>Pipeline — pipa & taper</title>
+<style>
+ :root{--bg:#080a10;--tile:#0d1017;--line:#1b1f28;--fg:#e9ebee;--dim:#7c828d;--dimmer:#454a55;
+  --up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:82ch;line-height:1.65;margin-bottom:26px}
+ .sub b{color:var(--dim);font-weight:600}
+ .col{margin-bottom:28px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:10px;max-width:80ch}
+ .tile{width:860px;height:300px;background:var(--tile);border:1px solid var(--line);border-radius:14px;
+   position:relative;overflow:hidden}
+ svg,canvas{position:absolute;inset:0;width:100%;height:100%}
+ .hdr{position:absolute;left:16px;top:13px;z-index:3;display:flex;align-items:center;gap:7px;
+   font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--acid);box-shadow:0 0 6px var(--acid)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ text{font-family:var(--mono)}
+</style>
+<h1>Pipeline — model pipa &amp; taper</h1>
+<p class="sub">Dua arah yang kamu tunjukkan, dipakai pada data sebenarnya. Sumbernya ternyata
+<b>empat</b>, bukan satu: pumpportal (S1, 50.413 launch), new-launch dev-holding (4.528 mint),
+gmgn trending (265), dan solana-tracker yang <b>diam hari ini</b> — pipa keempat sengaja dibiarkan
+gelap, bukan disembunyikan, karena sumber mati adalah informasi.</p>
+<div id="out"></div>
+<script>
+const D = {"s1": {"gated": 50413, "passed": 50275, "bought": 1959, "skip": {"MC di luar band": 5593, "below-minimum": 1348, "zero-holders": 283, "holder-read-failed": 1}, "lat": {"n": 20, "pre": 0.1, "gate": 2.3, "open": 15.4, "total": 17}}, "s2": {"seen": 18641, "gated": 144, "passed": 47, "rejected": 97, "passRate": 0.3263888888888889, "rej": {"deadToken": 7, "staleMc": 5, "unroutable": 0, "bundle": 28, "ath": 57, "cost": 0}, "opens": 64, "closed": 64, "open": 0}, "exit": {"TRAIL_LOCK": 140, "NO_DEVELOPMENT": 117, "DEV_DUMP": 42, "MAX_HOLD": 37, "FALLBACK_STOP": 10, "CATASTROPHIC": 5}, "scan": ["SOLANA", "Hamhouse", "CETE", "Archer", "TNOS", "CETE", "CETE", "PUMP", "Hamhouse", "FATCAT", "SCATE", "3", "APP", "pkch", "CAT ", ":-)", "SOLGRID", "DATE COIN", "HAROLDE", "SOL"], "sources": [{"n": "pumpportal", "d": "WebSocket launch", "v": 50413, "eng": "S1"}, {"n": "new-launch dev-holding", "d": "polling", "v": 4528, "eng": "S2"}, {"n": "gmgn trending", "d": "polling", "v": 265, "eng": "S2"}, {"n": "solana-tracker", "d": "trending \u2014 diam hari ini", "v": 0, "eng": "S2"}]};
+const nf=v=>v==null?"\u2014":v.toLocaleString("id");
+const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const NS="http://www.w3.org/2000/svg";
+const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+function tile(t){const w=document.createElement("div");w.className="tile";
+  w.innerHTML=`<div class="hdr"><span class="dot"></span>${t}</div>`;return w}
+
+/* ═════ A · KONVERGENSI HAIRLINE ══════════════════════════════════
+   Versi ketiga. Ribbon tebal diganti berkas garis rambut yang
+   menyatu jadi jarum di gerbang, lalu membuka lagi ke jalur keluar.
+
+   Yang membuatnya bukan sekadar dekorasi: JUMLAH helai tiap sumber
+   sebanding pangsanya. pumpportal memang menguasai 91% arus, jadi
+   berkas emas memang mendominasi layar — kalau tiap sumber diberi
+   jumlah helai yang sama, gambarnya akan berbohong tentang dari mana
+   arus ini sebenarnya datang. Helai paling luar melengkung paling
+   jauh, seperti pada referensi, karena itulah yang membuat titik
+   temunya terbaca sebagai jepitan dan bukan sekadar simpul.
+
+   Canvas, bukan SVG: 74 helai × 40 titik yang bergerak tiap frame
+   akan membuat 3.000 node DOM ikut dihitung ulang terus-menerus. */
+function pipes(){
+  const el=tile("SUMBER → GERBANG → KELUAR");
+  const cv=document.createElement("canvas");el.appendChild(cv);
+  requestAnimationFrame(()=>{
+    const DPR=devicePixelRatio||1, r=el.getBoundingClientRect();
+    const W=r.width, H=r.height;
+    cv.width=W*DPR; cv.height=H*DPR;
+    const ctx=cv.getContext("2d"); ctx.scale(DPR,DPR);
+
+    const GX=W*0.60, GY=H*0.52;          // gerbang: titik temu
+    const LX=W*0.145, RX=W-92;
+    const S=D.sources.filter(s=>s.v>0), dead=D.sources.filter(s=>s.v<=0);
+    const stot=S.reduce((a,s)=>a+s.v,0);
+    const E=Object.entries(D.exit), etot=E.reduce((a,b)=>a+b[1],0);
+
+    // ── ALOKASI HELAI ∝ PANGSA (minimal 1, supaya sumber kecil tetap ada)
+    const N_IN=46, N_OUT=26;
+    const alloc=(items,total,n)=>{
+      const raw=items.map(v=>Math.max(1,Math.round(n*v/total)));
+      return raw;
+    };
+    const inN=alloc(S.map(s=>s.v),stot,N_IN);
+    const outN=alloc(E.map(e=>e[1]),etot,N_OUT);
+
+    const strands=[];
+    let k=0, tin=inN.reduce((a,b)=>a+b,0);
+    S.forEach((s,si)=>{
+      const col=s.eng==="S1"?[232,197,106]:[167,139,250];
+      for(let i=0;i<inN[si];i++,k++){
+        const u=tin<2?0.5:k/(tin-1);           // 0 = paling atas
+        const spread=(u-0.5)*2;                 // −1..1
+        // 0.42, bukan 0.62: pemeriksa canvas menangkap berkas meluber ke y −30..516
+        // pada tile setinggi 300, jadi helai terluar terpotong rata di tepi.
+        strands.push({side:1,col,spread,src:si,
+          y0:GY+spread*H*0.42, bow:Math.abs(spread)});
+      }
+    });
+    let k2=0, tout=outN.reduce((a,b)=>a+b,0);
+    E.forEach(([kk,v],ei)=>{
+      const col=kk==="TRAIL_LOCK"?[75,208,127]:kk==="NO_DEVELOPMENT"?[110,120,136]:[255,95,95];
+      for(let i=0;i<outN[ei];i++,k2++){
+        const u=tout<2?0.5:k2/(tout-1);
+        const spread=(u-0.5)*2;
+        strands.push({side:-1,col,spread,exit:ei,
+          y0:GY+spread*H*0.33, bow:Math.abs(spread)});
+      }
+    });
+
+    const bez=(a,b,c,d,t)=>{const u=1-t;return u*u*u*a+3*u*u*t*b+3*u*t*t*c+t*t*t*d};
+    const PTS=40;
+    function point(st,t,ph){
+      const x0=st.side>0?LX:GX, x1=st.side>0?GX:RX;
+      const y0=st.side>0?st.y0:GY, y1=st.side>0?GY:st.y0;
+      // napas: helai luar bergoyang lebih jauh, seperti berkas yang tertiup
+      const w=Math.sin(ph*0.9+st.spread*2.4)*st.bow*7;
+      const cx0=x0+(x1-x0)*0.42, cx1=x0+(x1-x0)*0.80;
+      const cy0=y0+w, cy1=y1;
+      return [bez(x0,cx0,cx1,x1,t), bez(y0,cy0,cy1,y1,t)];
+    }
+
+    // Fase awal disebar merata (deret emas), bukan acak: acak menggerombol dan meninggalkan celah.
+    const pulses=strands.map((_,i)=>(i*0.6180339887)%1);
+    const grads=[];
+    const PULSE_PER_SEC=0.30, PULSES_PER_STRAND=2;
+    let ph=0,lastT=0;
+    (function f(now){
+      const dt=lastT?Math.min(0.05,(now-lastT)/1000):0.016; lastT=now||0;
+      ph+=reduce?0:dt*0.72;
+      ctx.clearRect(0,0,W,H);
+
+      strands.forEach((st,si)=>{
+        // SATU stroke bergradien per helai. Versi pertama menggambar tiap helai
+        // sebagai 40 potong terpisah supaya alpha-nya bisa naik — 2.956 stroke per
+        // frame, terukur. Gradien sepanjang helai memberi peredupan yang sama
+        // persis dengan 74 stroke.
+        // Ujung helai tetap (bezier di t=0/t=1 mengembalikan titik awal/akhir apa adanya; napas
+        // hanya menggeser titik kendali), jadi gradiennya cukup dibuat sekali.
+        let gr=grads[si];
+        if(!gr){
+          const A=point(st,0,ph), Z=point(st,1,ph);
+          gr=ctx.createLinearGradient(A[0],A[1],Z[0],Z[1]);
+          const c0=`${st.col[0]},${st.col[1]},${st.col[2]}`;
+          const dim=st.side>0?0.05:0.62, lit=st.side>0?0.62:0.05;
+          gr.addColorStop(0,`rgba(${c0},${dim})`);
+          gr.addColorStop(0.55,`rgba(${c0},${(dim+lit)*0.42})`);
+          gr.addColorStop(1,`rgba(${c0},${lit})`);
+          grads[si]=gr;
+        }
+        ctx.strokeStyle=gr; ctx.lineWidth=1.05;
+        ctx.beginPath();
+        for(let seg=0;seg<=PTS;seg++){const p=point(st,seg/PTS,ph);
+          seg?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])}
+        ctx.stroke();
+        // denyut: potongan terang yang berjalan sepanjang helai
+        if(!reduce){
+          // ALIRAN MENYAMBUNG. Versi sebelumnya menjalankan kepala denyut 0 → 1,18 lalu melompat
+          // ke −0,1 dan hanya menggambar di 0..1 — tiap helai KOSONG 0,28 dari 1,28 siklus (22%).
+          // Itu jeda yang terlihat. Sekarang modulo 1 tanpa rentang mati, dua denyut berfase 0,5,
+          // dan peredupan tepi supaya pembungkusan tidak "pop".
+          const speed=PULSE_PER_SEC*(0.82+0.36*((si*37)%7)/7);
+          pulses[si]=(pulses[si]+dt*speed)%1;
+          const LEN=0.11;
+          for(let k=0;k<PULSES_PER_STRAND;k++){
+            const p=(pulses[si]+k/PULSES_PER_STRAND)%1;
+            const edge=Math.min(1,p/0.10,(1-p)/0.10);
+            if(edge<=0)continue;
+            const near=st.side>0?p:1-p;
+            for(let q=0;q<7;q++){
+              const t0=Math.max(0,p-LEN*(q/7)), t1=Math.max(0,p-LEN*((q+1)/7));
+              if(t1<=0&&t0<=0)break;
+              const a=point(st,t0,ph), b=point(st,t1,ph);
+              const al=(1-q/7)*(0.28+0.62*near)*edge;
+              ctx.strokeStyle=`rgba(255,255,255,${al*0.5})`;
+              ctx.lineWidth=1.5-q*0.13;
+              ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+            }
+          }
+        }
+      });
+
+      // sumber mati: satu helai kelabu putus-putus, tidak dihapus dari gambar
+      if(dead.length){
+        ctx.save();ctx.setLineDash([3,6]);ctx.strokeStyle="rgba(60,66,78,.85)";ctx.lineWidth=1;
+        ctx.beginPath();
+        for(let i=0;i<=PTS;i++){const p=point({side:1,spread:0.9,bow:0.9,y0:GY+H*0.40},i/PTS,ph);
+          i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])}
+        ctx.stroke();ctx.restore();
+      }
+
+      // jepitan di gerbang
+      const g=ctx.createRadialGradient(GX,GY,0,GX,GY,26);
+      g.addColorStop(0,"rgba(255,255,255,.92)");
+      g.addColorStop(.35,"rgba(201,240,74,.5)");
+      g.addColorStop(1,"rgba(201,240,74,0)");
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(GX,GY,26,0,7);ctx.fill();
+
+      // ── TEKS: tenang, karena berkasnya yang jadi tanda tangan ──
+      ctx.textBaseline="middle";
+      S.forEach((s,i)=>{
+        const y=GY+((i/(S.length-1||1))-0.5)*2*H*0.40;
+        ctx.font="10px ui-monospace,monospace";
+        ctx.fillStyle=s.eng==="S1"?"rgba(232,197,106,.95)":"rgba(167,139,250,.95)";
+        ctx.textAlign="right";ctx.fillText(s.n,LX-14,y-6);
+        ctx.font="8px ui-monospace,monospace";ctx.fillStyle="rgba(90,96,108,.9)";
+        ctx.fillText(s.d,LX-14,y+6);
+        ctx.font="11px ui-monospace,monospace";ctx.fillStyle="rgba(233,235,238,.95)";
+        ctx.textAlign="left";ctx.fillText(nf(s.v),16,y-6);
+        ctx.font="7.5px ui-monospace,monospace";ctx.fillStyle="rgba(69,74,85,.9)";
+        ctx.fillText((100*s.v/stot).toFixed(s.v/stot<0.01?1:0)+"%  ·  "+inN[i]+" helai",16,y+6);
+      });
+      dead.forEach((s,i)=>{
+        const y=H-26+i*14;
+        ctx.font="9.5px ui-monospace,monospace";ctx.fillStyle="rgba(58,63,74,1)";
+        ctx.textAlign="left";ctx.fillText(s.n+" — "+s.d,16,y);
+      });
+      ctx.textAlign="left";
+      E.forEach(([kk,v],i)=>{
+        const y=GY+((i/(E.length-1||1))-0.5)*2*H*0.40;
+        ctx.font="9.5px ui-monospace,monospace";ctx.fillStyle="rgba(154,161,173,.95)";
+        ctx.fillText(kk.toLowerCase().replace(/_/g," "),RX+12,y-5);
+        ctx.font="8px ui-monospace,monospace";ctx.fillStyle="rgba(69,74,85,1)";
+        ctx.fillText(nf(v)+"  ·  "+(100*v/etot).toFixed(0)+"%",RX+12,y+6);
+      });
+      ctx.textAlign="center";
+      ctx.font="13px ui-monospace,monospace";ctx.fillStyle="rgba(201,240,74,.95)";
+      ctx.fillText(nf(D.s1.bought+D.s2.passed),GX,GY-40);
+      ctx.font="7.5px ui-monospace,monospace";ctx.fillStyle="rgba(69,74,85,1)";
+      ctx.fillText("LOLOS GERBANG",GX,GY-27);
+      ctx.textAlign="left";ctx.textBaseline="alphabetic";
+      requestAnimationFrame(f);
+    })(0);
+  });
+  return el;
+}
+
+/* ═════ B · TAPER CAUSTIC ═════════════════════════════════════════
+   Referensi kedua: bidang warna lebar yang menyempit ke satu manik.
+   Di sini lebarnya bukan dekorasi — tinggi pita di tiap titik x adalah
+   fraksi arus yang MASIH hidup pada tahap itu, jadi jepitan tajam di
+   ujung memang bentuk sesungguhnya dari 3,9% yang lolos. Warna di
+   dalam pita adalah komposisi alasan keluar. */
+function taper(){
+  const el=tile("TAPER \u00b7 50.413 \u2192 1.959");
+  const cv=document.createElement("canvas");el.appendChild(cv);
+  requestAnimationFrame(()=>{
+    const DPR=devicePixelRatio||1, r=el.getBoundingClientRect();
+    cv.width=r.width*DPR;cv.height=r.height*DPR;
+    const ctx=cv.getContext("2d");ctx.scale(DPR,DPR);
+    const W=r.width,H=r.height,MY=H*0.52;
+    const sk=Object.entries(D.s1.skip), tot=D.s1.gated;
+    // profil sisa arus: mulai 1, turun di tiap gate, berakhir di rasio dibeli
+    const stops=[{x:0,f:1}];
+    let rem=tot;
+    sk.forEach((s,i)=>{rem-=s[1];stops.push({x:(i+1)/(sk.length+1),f:rem/tot})});
+    stops.push({x:1,f:D.s1.bought/tot});
+    const prof=x=>{for(let i=1;i<stops.length;i++){if(x<=stops[i].x){
+      const a=stops[i-1],b=stops[i],k=(x-a.x)/(b.x-a.x||1);
+      const e=k*k*(3-2*k);return a.f+(b.f-a.f)*e}}return stops[stops.length-1].f};
+    const E=Object.entries(D.exit),etot=E.reduce((a,b)=>a+b[1],0);
+    const hue={TRAIL_LOCK:145,NO_DEVELOPMENT:220,DEV_DUMP:355,MAX_HOLD:42,FALLBACK_STOP:10,CATASTROPHIC:0};
+    let t=0;
+    (function f(){
+      t+=reduce?0:.006;
+      ctx.clearRect(0,0,W,H);
+      const X0=26,X1=W-64,SPAN=X1-X0,MAXH=H*0.42;
+      for(let i=0;i<=260;i++){
+        const u=i/260, x=X0+SPAN*u;
+        const hh=Math.max(1.2,MAXH*Math.pow(prof(u),.42));
+        // pita: satu garis vertikal per langkah, warna dari campuran alasan keluar
+        const gr=ctx.createLinearGradient(0,MY-hh,0,MY+hh);
+        let acc=0;
+        E.forEach(([k,v])=>{
+          const w=v/etot, h0=acc, h1=acc+w; acc=h1;
+          const wob=Math.sin(u*7+t*2+hue[k]/40)*.05;
+          const light=52+22*Math.sin(u*4-t*1.6+hue[k]/28);
+          gr.addColorStop(Math.min(1,Math.max(0,h0+wob)),`hsla(${hue[k]??200},76%,${light}%,${.10+.62*(1-u*.55)})`);
+          gr.addColorStop(Math.min(1,Math.max(0,h1+wob)),`hsla(${hue[k]??200},76%,${light}%,${.10+.62*(1-u*.55)})`);
+        });
+        ctx.fillStyle=gr;ctx.fillRect(x,MY-hh,SPAN/260+1.2,hh*2);
+      }
+      // manik di ujung = yang benar-benar dibeli
+      const bx=X1+12;
+      const gg=ctx.createRadialGradient(bx,MY,0,bx,MY,13);
+      gg.addColorStop(0,"rgba(255,255,255,.96)");gg.addColorStop(.45,"rgba(201,240,74,.72)");
+      gg.addColorStop(1,"rgba(201,240,74,0)");
+      ctx.fillStyle=gg;ctx.beginPath();ctx.arc(bx,MY,13,0,7);ctx.fill();
+      ctx.font="10px ui-monospace,monospace";
+      ctx.fillStyle="rgba(233,235,238,.92)";
+      ctx.fillText(nf(D.s1.gated)+" dinilai",X0+4,MY-MAXH-12);
+      ctx.textAlign="right";
+      ctx.fillText(nf(D.s1.bought)+" dibeli",bx-20,MY-24);
+      ctx.fillStyle="rgba(69,74,85,1)";ctx.font="8.5px ui-monospace,monospace";
+      ctx.fillText((100*D.s1.bought/D.s1.gated).toFixed(1)+"% lolos",bx-20,MY-12);
+      ctx.textAlign="start";
+      sk.forEach((s,i)=>{const u=(i+1)/(sk.length+1),x=X0+SPAN*u;
+        ctx.fillStyle="rgba(255,95,95,.5)";ctx.fillRect(x,MY+MAXH*.55,1,10);
+        ctx.fillStyle="rgba(124,130,141,.85)";ctx.font="8px ui-monospace,monospace";
+        ctx.fillText(s[0],x+4,MY+MAXH*.55+8);
+        ctx.fillStyle="rgba(255,95,95,.8)";ctx.fillText("\u2212"+nf(s[1]),x+4,MY+MAXH*.55+18)});
+      requestAnimationFrame(f)})();
+  });
+  return el;
+}
+
+const out=document.getElementById("out");
+[["A \u00b7 Konvergensi hairline","Berkas garis rambut menyatu jadi jarum di gerbang, lalu membuka lagi ke jalur keluar. Jumlah helai tiap sumber sebanding pangsanya \u2014 pumpportal memang 91% arus, jadi berkas emas memang mendominasi; memberi tiap sumber jumlah helai yang sama akan berbohong soal dari mana arus ini datang.",pipes],
+ ["B \u00b7 Taper caustic","Referensi kedua. Tinggi pita di tiap titik adalah fraksi arus yang masih hidup di tahap itu, jadi jepitan tajam di ujung memang bentuk sesungguhnya dari 3,9% yang lolos. Warna di dalam pita adalah komposisi alasan keluar.",taper],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>

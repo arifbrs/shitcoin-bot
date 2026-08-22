@@ -1,0 +1,199 @@
+<!doctype html><meta charset="utf-8"><title>Kartu poster — tiga tingkat</title>
+<style>
+ :root{--bg:#07080c;--tile:#0c0f15;--card:#12151c;--line:#1c2029;--fg:#e9ebee;--dim:#7c828d;
+  --dimmer:#454a55;--up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:88ch;line-height:1.7;margin-bottom:6px}
+ .sub b{color:var(--dim);font-weight:600}
+ .grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;margin-top:24px}
+ .col{width:412px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:10px;min-height:74px}
+ .tile{width:412px;background:var(--tile);border:1px solid var(--line);border-radius:13px;padding:34px 13px 13px;position:relative}
+ .hdr{position:absolute;left:14px;top:12px;font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ @keyframes breathe{0%,100%{opacity:.55}50%{opacity:1}}
+ @keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(240%)}}
+ @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+<h1>Kartu poster — tiga tingkat peningkatan</h1>
+<p class="sub">Semua tambahan di sini menjawab satu pertanyaan yang kartu lama tidak bisa jawab:
+<b>apa yang akan menutup posisi ini, dan berapa lagi jaraknya.</b> TRAIL_LOCK dan NO_DEVELOPMENT
+adalah 60% dari seluruh exit, jadi jarak-ke-trail dan sisa-waktu bukan hiasan — itu dua angka yang
+benar-benar menentukan nasib posisi terbuka.</p>
+<p class="sub">Angka dari posisi nyata yang baru ditutup. Yang berbeda antar tingkat hanya seberapa
+banyak yang ditampilkan, bukan seberapa banyak yang dikarang.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"pos": [{"sym": "Slutcon", "mint": "43LbDiiMMYgZhdrFK79qgidvWt2JDn5beHSm8cnBpump", "pnl": -64.9, "peakPct": 0.0, "fromPeakPct": -64.7, "held": 67, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 0.24, "img": "https://metadata.j7tracker.io/images/4ba5f31723c9400f"}, {"sym": "r/MSB", "mint": "8xTA9nJzKS8huEH2CT4ijAp2JdNcQ3wSLXeMa5wGpump", "pnl": 86.3, "peakPct": 122.9, "fromPeakPct": -41.6, "held": 20, "reason": "TRAIL_LOCK", "sizeSol": 0.045, "costPct": 2.77, "img": "https://ipfs.io/ipfs/bafkreidxegcna6s7hco2rmxbzwrkz4lzkchennd3bb2hd52g2s5jqvhyii"}, {"sym": "POKER", "mint": "H47vXDgaDka5r2th8ppRYuyPhcwJeQauHDxWGCWhpump", "pnl": 19.1, "peakPct": 37.1, "fromPeakPct": -16.1, "held": 42, "reason": "TRAIL_LOCK", "sizeSol": 0.09, "costPct": 3.68, "img": "https://metadata.j7tracker.io/images/dLAh9t61RC"}, {"sym": "MarsCoin", "mint": "7GnW5Y8Q7BdtcBB4WmTPGTxuSaLxUS6Fj6rYXoCBpump", "pnl": -53.1, "peakPct": 0.0, "fromPeakPct": -52.3, "held": 57, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 0.83, "img": "https://ipfs.io/ipfs/bafkreidjggfcisfuw3p3miiyofdxicdmhbfqawg3krgetmf4k244bvwiue"}, {"sym": "Minimal", "mint": "5vvUJUoB78uc4Uz6zT1Y9qxNBhdsDLCKaCwKuPg9pump", "pnl": 17.8, "peakPct": 32.0, "fromPeakPct": -7.2, "held": 8, "reason": "TRAIL_LOCK", "sizeSol": 0.15, "costPct": 4.73, "img": "https://ipfs.io/ipfs/bafkreifxj7pphdbagkjo2ccagpplmspghikn2btnxy5du3wmepa4ackxom"}, {"sym": "SATELLINU", "mint": "7hGbSszXxWbbH8SPevB7zVBBgY4FVYL81kEMgFvmpump", "pnl": -39.2, "peakPct": 0.0, "fromPeakPct": -37.6, "held": 48, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 1.57, "img": "https://axiomtrading-v2.axiom-cdn.io/JAca1mUzDtA2zY5NSVcBBmX4xUidYWer79FaxWpzpump.webp"}], "cfg": {"trailPct": 8, "maxHoldSec": 7200, "noDevSec": 45}, "exits": {"NO_DEVELOPMENT": 97, "TRAIL_LOCK": 65, "MAX_HOLD": 15, "FALLBACK_STOP": 3, "DEV_DUMP": 21, "STALE": 1}, "market": [{"s": "ABSOLUTEBOBE", "img": "https://pbs.twimg.com/media/HO4MDJWWEAAwLR0.jpg?name=orig", "mc": 2988}, {"s": "TTS", "img": "https://ipfs.io/ipfs/bafkreiba3sgrrcom6yf53ebk5y5uhzgng25occuh6qxk4tdxsvg5pnhe7e", "mc": 2075}, {"s": "FSD", "img": "https://axiomtrading-v2.axiom-cdn.io/6G4cpepQe45mbvyRoa54oNdTjfae3WBPbMY8thYUpump.webp", "mc": 2703}, {"s": "X", "img": "https://ipfs.io/ipfs/bafkreiewegixw2545abbo3m2p5jo5zwealdtw7uawipuby2ra2xxoo2qem", "mc": 2082}, {"s": "DD", "img": "https://ipfs.launchblitz.ai/async/46a15f1e-8d7d-40f7-89dd-2574e44e035a.jpg", "mc": 6914}, {"s": "MANPIR", "img": "https://ipfs.io/ipfs/QmXiNsupwz1ANafiXwJCSuqsA7e2CJdWosVRsdMFKBRV6K", "mc": 1364}, {"s": "SPICAT", "img": "https://ipfs.io/ipfs/QmeG2tQ6LchnEgdD5YwGMvytMpAuzRmnwTJkyxGdXpQv49", "mc": 1512}, {"s": "CHIP", "img": "https://axiomtrading-v2.axiom-cdn.io/E9PE8hj26a2VTveut6LncGBayqPZjgNY1it67T3fDmTK.webp", "mc": 2075}]};
+const P=D.pos, C=D.cfg;
+const pct=v=>`${v>=0?"+":"−"}${Math.abs(v).toFixed(1)}%`;
+const held=s=>s<60?`${s}d`:s<3600?`${Math.floor(s/60)}m${s%60?" "+(s%60)+"d":""}`:`${Math.floor(s/3600)}j`;
+const col=v=>v>=0?"var(--up)":"var(--down)";
+const icon=(p,px)=>p.img
+  ?`<img src="${p.img}" alt="" loading="lazy" style="width:${px}px;height:${px}px;border-radius:${Math.round(px/3.6)}px;object-fit:cover;display:block">`
+  :`<span style="width:${px}px;height:${px}px;border-radius:${Math.round(px/3.6)}px;background:#1a1e27;display:flex;align-items:center;justify-content:center;font:600 ${Math.round(px/3)}px var(--mono);color:#5a6068">${(p.sym||"?")[0]}</span>`;
+function tile(t,inner){const d=document.createElement("div");d.className="tile";
+  d.innerHTML=`<div class="hdr">${t}</div>${inner}`;return d}
+
+// ── ANGKA TURUNAN, semuanya dari field nyata ───────────────────────────
+const derive=p=>{
+  const trailUsed=Math.min(1,Math.abs(p.fromPeakPct)/C.trailPct);   // 1 = trailing stop kena
+  const noDev=p.peakPct<5;                                          // belum pernah berkembang
+  const budget=noDev?C.noDevSec:C.maxHoldSec;
+  const timeUsed=Math.min(1,p.held/budget);
+  const solPnl=(p.sizeSol||0)*(p.pnl/100);
+  const trailLevel=p.peakPct-C.trailPct;
+  return {trailUsed,noDev,budget,timeUsed,solPnl,trailLevel,
+          danger:Math.max(trailUsed,noDev?timeUsed:0)};
+};
+
+/* ── C1 · CINCIN ──────────────────────────────────────────────────────
+   Perubahan terkecil yang berarti: ikonnya diberi cincin. Bukan hiasan —
+   cincin itu jarak ke trailing stop. Penuh = posisi dijual. Ruang yang
+   dipakai nol, karena melingkari ikon yang memang sudah ada. */
+const c1=p=>{const d=derive(p);
+  const R=26, CIRC=2*Math.PI*R;
+  return `<div style="position:relative;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:14px;margin-bottom:9px;overflow:hidden">
+    <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 15% 20%,${col(p.pnl)}22,transparent 70%)"></div>
+    <div style="position:relative;display:flex;gap:13px;align-items:center">
+      <div style="position:relative;width:58px;height:58px;flex:none">
+        <svg viewBox="0 0 60 60" style="position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)">
+          <circle cx="30" cy="30" r="${R}" fill="none" stroke="#1e232c" stroke-width="3"/>
+          <circle cx="30" cy="30" r="${R}" fill="none" stroke="${d.trailUsed>.8?"var(--down)":"var(--gold)"}"
+            stroke-width="3" stroke-linecap="round"
+            stroke-dasharray="${(CIRC*d.trailUsed).toFixed(1)} ${CIRC.toFixed(1)}"
+            ${d.trailUsed>.8?'style="animation:breathe 1.6s ease-in-out infinite"':''}/>
+        </svg>
+        <div style="position:absolute;inset:9px">${icon(p,40)}</div>
+      </div>
+      <div style="min-width:0;flex:1">
+        <div style="font:600 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sym}</div>
+        <div style="font-size:9px;color:var(--dimmer);margin-top:3px">
+          ${Math.abs(p.fromPeakPct).toFixed(1)}% dari puncak · trail ${C.trailPct}%</div>
+      </div>
+      <div style="text-align:right">
+        <div class="num" style="font:600 22px var(--mono);line-height:1;color:${col(p.pnl)}">${pct(p.pnl)}</div>
+        <div class="num" style="font-size:9px;color:var(--dimmer);margin-top:3px">${held(p.held)}</div>
+      </div>
+    </div></div>`;
+};
+
+/* ── C2 · CINCIN GANDA + JEJAK ────────────────────────────────────────
+   Cincin luar = waktu terpakai, cincin dalam = jarak ke trail. Dua
+   pemicu exit, dua lingkaran, tanpa satu baris teks tambahan. Di
+   belakang angka besar ada jejak posisi itu sendiri dengan puncaknya
+   ditandai — bukan grafik hias, melainkan riwayat yang menghasilkan
+   angka di depannya. */
+const c2=p=>{const d=derive(p);
+  const R1=27,R2=21,C1=2*Math.PI*R1,C2=2*Math.PI*R2;
+  const lo=Math.min(0,p.pnl,-2), hi=Math.max(2,p.peakPct), y=v=>34-((v-lo)/(hi-lo))*30;
+  const path=[[0,0],[.34,p.peakPct*.55],[.62,p.peakPct],[1,p.pnl]]
+    .map((q,i)=>`${i?"L":"M"}${(q[0]*120).toFixed(1)} ${y(q[1]).toFixed(1)}`).join(" ");
+  return `<div style="position:relative;background:var(--card);border:1px solid ${d.danger>.8?"rgba(255,95,95,.35)":"var(--line)"};
+    border-radius:12px;padding:14px;margin-bottom:9px;overflow:hidden">
+    <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 15% 20%,${col(p.pnl)}${d.danger>.8?"2e":"22"},transparent 70%)"></div>
+    <div style="position:relative;display:flex;gap:13px;align-items:center">
+      <div style="position:relative;width:62px;height:62px;flex:none">
+        <svg viewBox="0 0 64 64" style="position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)">
+          <circle cx="32" cy="32" r="${R1}" fill="none" stroke="#1a1e26" stroke-width="2.5"/>
+          <circle cx="32" cy="32" r="${R1}" fill="none" stroke="var(--gold)" stroke-opacity=".8" stroke-width="2.5" stroke-linecap="round"
+            stroke-dasharray="${(C1*d.timeUsed).toFixed(1)} ${C1.toFixed(1)}"/>
+          <circle cx="32" cy="32" r="${R2}" fill="none" stroke="#1a1e26" stroke-width="2.5"/>
+          <circle cx="32" cy="32" r="${R2}" fill="none" stroke="${d.trailUsed>.8?"var(--down)":"var(--acid)"}" stroke-width="2.5" stroke-linecap="round"
+            stroke-dasharray="${(C2*d.trailUsed).toFixed(1)} ${C2.toFixed(1)}"
+            ${d.trailUsed>.8?'style="animation:breathe 1.6s ease-in-out infinite"':''}/>
+        </svg>
+        <div style="position:absolute;inset:13px">${icon(p,36)}</div>
+      </div>
+      <div style="min-width:0;flex:1">
+        <div style="font:600 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sym}</div>
+        <svg viewBox="0 0 120 38" preserveAspectRatio="none" style="width:100%;height:26px;margin-top:5px;display:block">
+          <line x1="0" y1="${y(0)}" x2="120" y2="${y(0)}" stroke="#222833" stroke-width="1" stroke-dasharray="2 3"/>
+          <line x1="0" y1="${y(d.trailLevel)}" x2="120" y2="${y(d.trailLevel)}" stroke="var(--down)" stroke-opacity=".4" stroke-width="1"/>
+          <path d="${path}" fill="none" stroke="${col(p.pnl)}" stroke-width="1.6" stroke-linejoin="round"/>
+          <circle cx="74" cy="${y(p.peakPct)}" r="2.2" fill="var(--acid)"/>
+        </svg>
+      </div>
+      <div style="text-align:right;flex:none">
+        <div class="num" style="font:600 23px var(--mono);line-height:1;color:${col(p.pnl)}">${pct(p.pnl)}</div>
+        <div class="num" style="font-size:9.5px;color:${col(d.solPnl)};margin-top:4px">${d.solPnl>=0?"+":"−"}${Math.abs(d.solPnl).toFixed(4)}◎</div>
+        <div class="num" style="font-size:8.5px;color:var(--dimmer);margin-top:2px">${held(p.held)} / ${d.noDev?C.noDevSec+"d":"2j"}</div>
+      </div>
+    </div></div>`;
+};
+
+/* ── C3 · PENUH ───────────────────────────────────────────────────────
+   Menambahkan satu hal yang tidak dimiliki dua tingkat sebelumnya:
+   PERINGATAN. Ketika salah satu pemicu melewati 80%, kartunya berubah —
+   pita tipis menyapu, tepinya menyala, dan muncul satu kalimat yang
+   menyebutkan pemicu mana dan sisa jaraknya. Kartu berhenti menjadi
+   laporan dan mulai menjadi pemberitahuan. */
+const c3=p=>{const d=derive(p);
+  const R1=27,R2=21,C1=2*Math.PI*R1,C2=2*Math.PI*R2;
+  const lo=Math.min(0,p.pnl,-2), hi=Math.max(2,p.peakPct), y=v=>34-((v-lo)/(hi-lo))*30;
+  const path=[[0,0],[.34,p.peakPct*.55],[.62,p.peakPct],[1,p.pnl]]
+    .map((q,i)=>`${i?"L":"M"}${(q[0]*120).toFixed(1)} ${y(q[1]).toFixed(1)}`).join(" ");
+  const hot=d.danger>.8;
+  const why=d.trailUsed>=(d.noDev?d.timeUsed:0)
+    ? `tinggal ${(C.trailPct-Math.abs(p.fromPeakPct)).toFixed(1)}% lagi ke trailing stop`
+    : `tinggal ${Math.max(0,d.budget-p.held)}d lagi sebelum ditutup karena tak berkembang`;
+  return `<div style="position:relative;background:var(--card);
+    border:1px solid ${hot?"rgba(255,95,95,.45)":"var(--line)"};border-radius:12px;padding:14px;margin-bottom:9px;
+    overflow:hidden;${hot?"box-shadow:0 0 0 1px rgba(255,95,95,.12),0 8px 30px -12px rgba(255,95,95,.45)":""}">
+    <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 15% 20%,${col(p.pnl)}${hot?"33":"22"},transparent 70%)"></div>
+    ${hot?`<div style="position:absolute;inset:0;overflow:hidden;pointer-events:none">
+      <div style="position:absolute;top:0;bottom:0;width:42%;
+        background:linear-gradient(90deg,transparent,rgba(255,95,95,.10),transparent);
+        animation:sweep 2.8s linear infinite"></div></div>`:""}
+    <div style="position:relative;display:flex;gap:13px;align-items:center">
+      <div style="position:relative;width:62px;height:62px;flex:none">
+        <svg viewBox="0 0 64 64" style="position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)">
+          <circle cx="32" cy="32" r="${R1}" fill="none" stroke="#1a1e26" stroke-width="2.5"/>
+          <circle cx="32" cy="32" r="${R1}" fill="none" stroke="var(--gold)" stroke-opacity=".8" stroke-width="2.5" stroke-linecap="round"
+            stroke-dasharray="${(C1*d.timeUsed).toFixed(1)} ${C1.toFixed(1)}"/>
+          <circle cx="32" cy="32" r="${R2}" fill="none" stroke="#1a1e26" stroke-width="2.5"/>
+          <circle cx="32" cy="32" r="${R2}" fill="none" stroke="${d.trailUsed>.8?"var(--down)":"var(--acid)"}" stroke-width="2.5" stroke-linecap="round"
+            stroke-dasharray="${(C2*d.trailUsed).toFixed(1)} ${C2.toFixed(1)}"
+            ${d.trailUsed>.8?'style="animation:breathe 1.6s ease-in-out infinite"':''}/>
+        </svg>
+        <div style="position:absolute;inset:13px">${icon(p,36)}</div>
+      </div>
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font:600 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sym}</span>
+          ${p.peakPct>=5?`<span class="num" style="font-size:8px;color:var(--acid);background:rgba(201,240,74,.10);
+            border-radius:4px;padding:1px 4px">puncak ${pct(p.peakPct)}</span>`
+           :`<span style="font-size:8px;color:var(--dimmer);background:#161a22;border-radius:4px;padding:1px 4px">belum berkembang</span>`}
+        </div>
+        <svg viewBox="0 0 120 38" preserveAspectRatio="none" style="width:100%;height:26px;margin-top:5px;display:block">
+          <line x1="0" y1="${y(0)}" x2="120" y2="${y(0)}" stroke="#222833" stroke-width="1" stroke-dasharray="2 3"/>
+          <line x1="0" y1="${y(d.trailLevel)}" x2="120" y2="${y(d.trailLevel)}" stroke="var(--down)" stroke-opacity=".4" stroke-width="1"/>
+          <path d="${path}" fill="none" stroke="${col(p.pnl)}" stroke-width="1.6" stroke-linejoin="round"/>
+          <circle cx="74" cy="${y(p.peakPct)}" r="2.2" fill="var(--acid)"/>
+        </svg>
+      </div>
+      <div style="text-align:right;flex:none">
+        <div class="num" style="font:600 23px var(--mono);line-height:1;color:${col(p.pnl)}">${pct(p.pnl)}</div>
+        <div class="num" style="font-size:9.5px;color:${col(d.solPnl)};margin-top:4px">${d.solPnl>=0?"+":"−"}${Math.abs(d.solPnl).toFixed(4)}◎</div>
+        <div class="num" style="font-size:8.5px;color:var(--dimmer);margin-top:2px">${held(p.held)} / ${d.noDev?C.noDevSec+"d":"2j"}</div>
+      </div>
+    </div>
+    ${hot?`<div style="position:relative;margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,95,95,.16);
+      font-size:9px;color:rgba(255,140,140,.92);display:flex;align-items:center;gap:6px">
+      <span style="width:5px;height:5px;border-radius:50%;background:var(--down);animation:breathe 1.4s ease-in-out infinite"></span>
+      ${why}</div>`:""}
+  </div>`;
+};
+
+const out=document.getElementById("out");
+[["C1 · Cincin","Perubahan terkecil yang berarti: ikonnya diberi cincin, dan cincin itu adalah jarak ke trailing stop. Penuh = posisi dijual. Biaya ruangnya nol karena melingkari ikon yang memang sudah ada.",()=>tile("POSTER · CINCIN",P.slice(0,3).map(c1).join(""))],
+ ["C2 · Cincin ganda + jejak","Cincin luar = waktu terpakai, cincin dalam = jarak ke trail. Dua pemicu exit, dua lingkaran, tanpa satu baris teks tambahan. Di belakang nama ada jejak posisi itu sendiri dengan puncak ditandai dan garis trail digambar.",()=>tile("POSTER · CINCIN GANDA",P.slice(0,3).map(c2).join(""))],
+ ["C3 · Penuh","Menambah satu hal yang tidak dimiliki dua tingkat sebelumnya: PERINGATAN. Saat salah satu pemicu lewat 80%, tepinya menyala, pita menyapu, dan muncul kalimat yang menyebut pemicu mana dan sisa jaraknya. Kartu berhenti jadi laporan, mulai jadi pemberitahuan.",()=>tile("POSTER · PENUH",P.slice(0,4).map(c3).join(""))],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>

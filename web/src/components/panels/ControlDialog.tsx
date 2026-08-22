@@ -4,16 +4,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fetchWallet, postControl, withdrawWallet } from "@/lib/api";
-import type { WalletInfo } from "@/types/stats";
+import { ModeSwitch } from "@/components/panels/ModeSwitch";
+import type { StatsResponse, WalletInfo } from "@/types/stats";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  data: StatsResponse | null;
 }
 
 type WithdrawStep = "form" | "confirm" | "sending" | "done";
 
-export function ControlDialog({ open, onOpenChange }: Props) {
+export function ControlDialog({ open, onOpenChange, data }: Props) {
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [dest, setDest] = useState("");
   const [amount, setAmount] = useState("");
@@ -75,7 +77,9 @@ export function ControlDialog({ open, onOpenChange }: Props) {
           <DialogTitle className="font-mono text-sm tracking-widest">◈ CONTROL</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-1 text-[11px]">
+        <ModeSwitch data={data} walletFallback={wallet?.address} />
+
+        <div className="space-y-1 border-t border-border pt-4 text-[11px]">
           <div className="flex justify-between text-muted-foreground">
             <span>address</span>
             <span className="text-foreground">{wallet?.address.slice(0, 10) ?? "—"}…</span>

@@ -1,0 +1,146 @@
+<!doctype html><meta charset="utf-8"><title>Open Positions — variasi kartu</title>
+<style>
+ :root{--bg:#07080c;--tile:#0c0f15;--card:#12151c;--line:#1c2029;--fg:#e9ebee;--dim:#7c828d;
+  --dimmer:#454a55;--up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:86ch;line-height:1.7;margin-bottom:6px}
+ .sub b{color:var(--dim);font-weight:600}
+ .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-top:24px}
+ .col{width:392px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:10px;min-height:66px}
+ .tile{width:392px;background:var(--tile);border:1px solid var(--line);border-radius:13px;padding:34px 13px 13px;position:relative}
+ .hdr{position:absolute;left:14px;top:12px;font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ .ico{width:26px;height:26px;border-radius:7px;object-fit:cover;flex:none;background:#1a1e27}
+ .ico.sm{width:18px;height:18px;border-radius:5px}
+ .ico.lg{width:44px;height:44px;border-radius:11px}
+</style>
+<h1>Open Positions — empat kartu</h1>
+<p class="sub">Semua koin memakai ikon aslinya. Angkanya dari posisi nyata yang baru saja ditutup
+(saat ini nol posisi terbuka), jadi bentuk kartunya bisa dinilai pada data yang benar-benar terjadi.</p>
+<p class="sub">Yang membentuk keempatnya: <b>alasan keluar</b> yang sesungguhnya. TRAIL_LOCK dan
+NO_DEVELOPMENT saja sudah 60% dari semua exit — artinya dua hal yang paling menentukan nasib posisi
+terbuka adalah <b>jarak ke puncak</b> (trail 8%) dan <b>waktu tanpa perkembangan</b>. Kartu yang
+cuma menampilkan P&amp;L berjalan tidak memberitahu keduanya.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"pos": [{"sym": "Slutcon", "mint": "43LbDiiMMYgZhdrFK79qgidvWt2JDn5beHSm8cnBpump", "pnl": -64.9, "peakPct": 0.0, "fromPeakPct": -64.7, "held": 67, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 0.24, "img": "https://metadata.j7tracker.io/images/4ba5f31723c9400f"}, {"sym": "r/MSB", "mint": "8xTA9nJzKS8huEH2CT4ijAp2JdNcQ3wSLXeMa5wGpump", "pnl": 86.3, "peakPct": 122.9, "fromPeakPct": -41.6, "held": 20, "reason": "TRAIL_LOCK", "sizeSol": 0.045, "costPct": 2.77, "img": "https://ipfs.io/ipfs/bafkreidxegcna6s7hco2rmxbzwrkz4lzkchennd3bb2hd52g2s5jqvhyii"}, {"sym": "POKER", "mint": "H47vXDgaDka5r2th8ppRYuyPhcwJeQauHDxWGCWhpump", "pnl": 19.1, "peakPct": 37.1, "fromPeakPct": -16.1, "held": 42, "reason": "TRAIL_LOCK", "sizeSol": 0.09, "costPct": 3.68, "img": "https://metadata.j7tracker.io/images/dLAh9t61RC"}, {"sym": "MarsCoin", "mint": "7GnW5Y8Q7BdtcBB4WmTPGTxuSaLxUS6Fj6rYXoCBpump", "pnl": -53.1, "peakPct": 0.0, "fromPeakPct": -52.3, "held": 57, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 0.83, "img": "https://ipfs.io/ipfs/bafkreidjggfcisfuw3p3miiyofdxicdmhbfqawg3krgetmf4k244bvwiue"}, {"sym": "Minimal", "mint": "5vvUJUoB78uc4Uz6zT1Y9qxNBhdsDLCKaCwKuPg9pump", "pnl": 17.8, "peakPct": 32.0, "fromPeakPct": -7.2, "held": 8, "reason": "TRAIL_LOCK", "sizeSol": 0.15, "costPct": 4.73, "img": "https://ipfs.io/ipfs/bafkreifxj7pphdbagkjo2ccagpplmspghikn2btnxy5du3wmepa4ackxom"}, {"sym": "SATELLINU", "mint": "7hGbSszXxWbbH8SPevB7zVBBgY4FVYL81kEMgFvmpump", "pnl": -39.2, "peakPct": 0.0, "fromPeakPct": -37.6, "held": 48, "reason": "NO_DEVELOPMENT", "sizeSol": 0.15, "costPct": 1.57, "img": "https://axiomtrading-v2.axiom-cdn.io/JAca1mUzDtA2zY5NSVcBBmX4xUidYWer79FaxWpzpump.webp"}], "cfg": {"trailPct": 8, "maxHoldSec": 7200, "noDevSec": 45}, "exits": {"NO_DEVELOPMENT": 97, "TRAIL_LOCK": 65, "MAX_HOLD": 15, "FALLBACK_STOP": 3, "DEV_DUMP": 21, "STALE": 1}, "market": [{"s": "ABSOLUTEBOBE", "img": "https://pbs.twimg.com/media/HO4MDJWWEAAwLR0.jpg?name=orig", "mc": 2988}, {"s": "TTS", "img": "https://ipfs.io/ipfs/bafkreiba3sgrrcom6yf53ebk5y5uhzgng25occuh6qxk4tdxsvg5pnhe7e", "mc": 2075}, {"s": "FSD", "img": "https://axiomtrading-v2.axiom-cdn.io/6G4cpepQe45mbvyRoa54oNdTjfae3WBPbMY8thYUpump.webp", "mc": 2703}, {"s": "X", "img": "https://ipfs.io/ipfs/bafkreiewegixw2545abbo3m2p5jo5zwealdtw7uawipuby2ra2xxoo2qem", "mc": 2082}, {"s": "DD", "img": "https://ipfs.launchblitz.ai/async/46a15f1e-8d7d-40f7-89dd-2574e44e035a.jpg", "mc": 6914}, {"s": "MANPIR", "img": "https://ipfs.io/ipfs/QmXiNsupwz1ANafiXwJCSuqsA7e2CJdWosVRsdMFKBRV6K", "mc": 1364}, {"s": "SPICAT", "img": "https://ipfs.io/ipfs/QmeG2tQ6LchnEgdD5YwGMvytMpAuzRmnwTJkyxGdXpQv49", "mc": 1512}, {"s": "CHIP", "img": "https://axiomtrading-v2.axiom-cdn.io/E9PE8hj26a2VTveut6LncGBayqPZjgNY1it67T3fDmTK.webp", "mc": 2075}]};
+const P=D.pos, C=D.cfg;
+const pct=v=>`${v>=0?"+":"−"}${Math.abs(v).toFixed(1)}%`;
+const held=s=>s<60?`${s}d`:s<3600?`${Math.floor(s/60)}m ${s%60}d`:`${Math.floor(s/3600)}j`;
+const col=v=>v>=0?"var(--up)":"var(--down)";
+const icon=(p,cls)=>p.img?`<img class="ico ${cls||""}" src="${p.img}" alt="" loading="lazy"
+   onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ico ${cls||""}',style:'display:flex;align-items:center;justify-content:center;font:600 10px var(--mono);color:#5a6068',textContent:'${(p.sym||"?")[0]}'}))">`
+  :`<span class="ico ${cls||""}" style="display:flex;align-items:center;justify-content:center;font:600 10px var(--mono);color:#5a6068">${(p.sym||"?")[0]}</span>`;
+function tile(t,inner){const d=document.createElement("div");d.className="tile";
+  d.innerHTML=`<div class="hdr">${t}</div>${inner}`;return d}
+
+/* ── A · KARTU AMBANG ─────────────────────────────────────────────────
+   Dua batang: seberapa dekat posisi ke trailing stop, dan seberapa jauh
+   waktunya berjalan. Keduanya adalah pemicu exit yang sebenarnya, jadi
+   kartu ini menjawab "apa yang akan menutup posisi ini, dan kapan". */
+const cardA=p=>{
+  const trailUsed=Math.min(1,Math.abs(p.fromPeakPct)/C.trailPct);
+  const timeUsed=Math.min(1,p.held/C.maxHoldSec);
+  const noDev=p.peakPct<5?Math.min(1,p.held/C.noDevSec):0;
+  const danger=Math.max(trailUsed,noDev);
+  return `<div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:9px">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+      ${icon(p)}
+      <span style="font:600 12px var(--mono);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${p.sym}</span>
+      <span class="num" style="font:600 13px var(--mono);color:${col(p.pnl)}">${pct(p.pnl)}</span>
+    </div>
+    ${[["turun dari puncak",Math.abs(p.fromPeakPct).toFixed(1)+"% / "+C.trailPct+"%",trailUsed,"var(--down)"],
+       [p.peakPct<5?"belum berkembang":"umur posisi",
+        p.peakPct<5?held(p.held)+" / "+C.noDevSec+"d":held(p.held)+" / 2j",
+        p.peakPct<5?noDev:timeUsed,"var(--gold)"]].map(([l,r,u,c])=>`
+      <div style="margin-bottom:7px">
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--dimmer);margin-bottom:3px">
+          <span>${l}</span><span class="num">${r}</span></div>
+        <div style="height:4px;border-radius:2px;background:#161a22;overflow:hidden">
+          <div style="height:100%;width:${(100*u).toFixed(0)}%;background:${c};opacity:${.45+.5*u}"></div></div>
+      </div>`).join("")}
+    <div style="font-size:8.5px;color:var(--dimmer);margin-top:2px">
+      puncak ${pct(p.peakPct)} · ${danger>0.8?"<span style='color:var(--down)'>hampir ditutup</span>":"aman"}
+    </div></div>`;
+};
+
+/* ── B · BARIS PADAT ──────────────────────────────────────────────────
+   Satu baris per posisi. Saat ada 8 posisi sekaligus, kartu besar
+   memaksa scroll dan tidak ada yang terbaca sekilas; baris memberi
+   semuanya dalam satu pandangan, dengan ikon sebagai jangkar mata. */
+const cardB=p=>{
+  const w=Math.min(100,Math.abs(p.pnl));
+  return `<div style="display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid #14171e">
+    ${icon(p,"sm")}
+    <span style="font:600 10.5px var(--mono);width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sym}</span>
+    <span class="num" style="font-size:10px;color:${col(p.pnl)};width:54px;text-align:right">${pct(p.pnl)}</span>
+    <span style="flex:1;height:3px;border-radius:2px;background:#161a22;position:relative;overflow:hidden">
+      <span style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#242a34"></span>
+      <span style="position:absolute;${p.pnl>=0?"left:50%":"right:50%"};top:0;bottom:0;width:${w/2}%;background:${col(p.pnl)};opacity:.65"></span>
+    </span>
+    <span class="num" style="font-size:9px;color:var(--dimmer);width:38px;text-align:right">${held(p.held)}</span>
+    <span class="num" style="font-size:9px;color:${Math.abs(p.fromPeakPct)>=C.trailPct?"var(--down)":"var(--dimmer)"};width:44px;text-align:right">${p.fromPeakPct.toFixed(0)}%</span>
+  </div>`;
+};
+
+/* ── C · KARTU POSTER ─────────────────────────────────────────────────
+   Ikon besar, satu angka besar. Untuk saat posisi terbuka jarang dan
+   kamu ingin satu-satunya yang ada terasa hadir, bukan jadi baris tabel. */
+const cardC=p=>`
+  <div style="position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px;margin-bottom:9px;overflow:hidden">
+    <div style="position:absolute;inset:0;background:radial-gradient(120% 90% at 15% 20%,${col(p.pnl)}22,transparent 70%)"></div>
+    <div style="position:relative;display:flex;gap:12px;align-items:center">
+      ${icon(p,"lg")}
+      <div style="min-width:0;flex:1">
+        <div style="font:600 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sym}</div>
+        <div style="font-size:9px;color:var(--dimmer);margin-top:2px">${held(p.held)} · ukuran ${p.sizeSol}◎ · biaya ${p.costPct}%</div>
+      </div>
+      <div style="text-align:right">
+        <div class="num" style="font:600 22px var(--mono);line-height:1;color:${col(p.pnl)}">${pct(p.pnl)}</div>
+        <div style="font-size:8.5px;color:var(--dimmer);margin-top:3px">puncak ${pct(p.peakPct)}</div>
+      </div>
+    </div>
+  </div>`;
+
+/* ── D · KARTU JEJAK ──────────────────────────────────────────────────
+   Menggambar jalur posisi: entry, puncak, posisi sekarang, dan GARIS
+   TRAIL sebagai ambang yang terlihat. Menjawab pertanyaan yang paling
+   sering diajukan ke kartu posisi: "berapa jauh lagi sebelum dijual?" */
+const cardD=p=>{
+  const H=54, lo=Math.min(0,p.pnl,-2), hi=Math.max(2,p.peakPct);
+  const y=v=>H-((v-lo)/(hi-lo))*H;
+  const trailLevel=p.peakPct-C.trailPct;
+  const pts=[[0,0],[0.34,p.peakPct*0.55],[0.6,p.peakPct],[1,p.pnl]];
+  const d=pts.map((q,i)=>`${i?"L":"M"}${(q[0]*240).toFixed(1)} ${y(q[1]).toFixed(1)}`).join(" ");
+  return `<div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:9px">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">
+      ${icon(p)}<span style="font:600 12px var(--mono);flex:1">${p.sym}</span>
+      <span class="num" style="font:600 12px var(--mono);color:${col(p.pnl)}">${pct(p.pnl)}</span>
+    </div>
+    <svg viewBox="0 0 240 ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px;display:block">
+      <line x1="0" y1="${y(0)}" x2="240" y2="${y(0)}" stroke="#242a34" stroke-width="1" stroke-dasharray="2 3"/>
+      <line x1="0" y1="${y(trailLevel)}" x2="240" y2="${y(trailLevel)}" stroke="var(--down)" stroke-opacity=".45" stroke-width="1"/>
+      <path d="${d}" fill="none" stroke="${col(p.pnl)}" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="144" cy="${y(p.peakPct)}" r="2.6" fill="var(--acid)"/>
+      <circle cx="240" cy="${y(p.pnl)}" r="2.6" fill="${col(p.pnl)}"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:8.5px;color:var(--dimmer);margin-top:6px">
+      <span>entry</span><span style="color:var(--acid)">puncak ${pct(p.peakPct)}</span>
+      <span style="color:var(--down)">trail ${trailLevel.toFixed(0)}%</span><span>${held(p.held)}</span>
+    </div></div>`;
+};
+
+const out=document.getElementById("out");
+[["A · Kartu ambang","Dua batang: jarak ke trailing stop dan waktu yang sudah terpakai — dua pemicu exit yang sesungguhnya. Menjawab \u201capa yang akan menutup posisi ini, dan kapan\u201d, bukan cuma \u201cberapa untungnya sekarang\u201d.",()=>tile("OPEN POSITIONS · AMBANG",P.slice(0,3).map(cardA).join(""))],
+ ["B · Baris padat","Satu baris per posisi dengan ikon sebagai jangkar mata. Saat ada banyak posisi sekaligus, kartu besar memaksa scroll dan tak ada yang terbaca sekilas.",()=>tile("OPEN POSITIONS · PADAT",P.map(cardB).join(""))],
+ ["C · Kartu poster","Ikon besar, satu angka besar, aura mengikuti arah P&L. Untuk saat posisi terbuka jarang dan kamu ingin yang ada terasa hadir, bukan jadi baris tabel.",()=>tile("OPEN POSITIONS · POSTER",P.slice(0,3).map(cardC).join(""))],
+ ["D · Kartu jejak","Menggambar jalur posisi dengan GARIS TRAIL sebagai ambang yang terlihat \u2014 menjawab pertanyaan yang paling sering diajukan ke kartu posisi: berapa jauh lagi sebelum dijual.",()=>tile("OPEN POSITIONS · JEJAK",P.slice(0,3).map(cardD).join(""))],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>

@@ -1,0 +1,300 @@
+<!doctype html><meta charset="utf-8"><title>Band Watch — variasi</title>
+<style>
+ :root{--bg:#07080c;--tile:#0c0f15;--line:#1b1f28;--fg:#e9ebee;--dim:#7c828d;--dimmer:#454a55;
+  --up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--acid:#c9f04a;--cyan:#5ad9d0;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:88ch;line-height:1.7;margin-bottom:22px}
+ .sub b{color:var(--dim);font-weight:600}
+ .grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+ .col{width:430px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:10px;min-height:76px}
+ .tile{width:430px;height:560px;background:var(--tile);border:1px solid var(--line);border-radius:13px;
+   position:relative;overflow:hidden}
+ .hdr{position:absolute;left:14px;top:12px;z-index:5;font-size:8.5px;letter-spacing:.2em;
+   text-transform:uppercase;color:var(--dimmer)}
+ canvas{position:absolute;inset:0;width:100%;height:100%}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+<h1>Band Watch — empat variasi</h1>
+<p class="sub">Yang bikin versi sekarang kaku: 24 baris rel yang identik, titiknya menumpuk di
+sepertiga kiri karena hampir semua entry ada di 56–66 ◎, dan tidak ada satu pun yang bergerak
+padahal panel ini soal koin yang <b>tumbuh masuk</b> ke jendela. Keempat variasi memakai data yang
+sama persis — 24 entry nyata, 240 titik awan launch, band 55–74 ◎, lahir median 33,8 → beli 60,0.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"floorSol": 55, "ceilSol": 74, "source": "teramati", "cfgFloorSol": 30, "cfgCeilSol": 45, "drift": true, "launchMcSol": 27.96, "launchMedian": 33.75448670917235, "entryMedian": 60.04, "launches": [28.14338864462131, 29.83021808617079, 29.83021808617079, 29.83021808617079, 31.762049165059267, 29.83021808617079, 38.05529667598631, 38.05529667598631, 40.09543813285904, 35.91177384280832, 38.05529667598631, 38.05529667598631, 37.921181193072194, 35.807530718509945, 35.91177384280832, 31.811121466293816, 29.83021808617079, 28.88702997213311, 33.830382106244144, 40.11786896119472, 29.853991922957412, 34.24168996582783, 28.106461124277846, 29.853991922957412, 33.75448670917235, 35.91177384280832, 28.14338864462131, 28.1156907320884, 28.33308132160844, 31.811121466293816, 33.830382106244144, 29.6271489282386, 38.05529667598631, 28.145697421559486, 40.09543813285904, 28.14338864462131, 28.143388642751255, 37.921181193072194, 33.830382106244144, 35.821158355924766, 410.8801681200643, 35.91177384280832, 34.425255226495736, 44.85865175520346, 29.830218088096093, 28.143388642751255, 37.921181193072194, 37.921181193072194, 28.143388642751255, 28.143388642751255, 37.93910024286979, 35.91177384280832, 28.8987263125194, 34.425255226495736, 38.05529667598631, 38.05529667598631, 37.93910024286979, 33.830382106244144, 28.145697421559486, 29.830218088096093, 35.91177384280832, 30.78855782039593, 33.830382106244144, 28.127025359165494, 31.745527274939533, 33.75448670917235, 31.811121466293816, 33.830382106244144, 28.143388642751255, 29.189738013507206, 28.88702997213311, 33.830382106244144, 33.764043300359724, 29.85429291551478, 37.921181193072194, 33.830382106244144, 28.70009397328362, 35.91177384280832, 28.106461124277846, 29.830218088096093, 28.8988743784127, 30.788557818439926, 31.811121466293816, 31.176136163134608, 28.583226029181414, 29.853991922957412, 38.05529667598631, 32.75069212997136, 33.830382106244144, 37.23107146640168, 33.830382106244144, 28.887373048734336, 28.32838987952275, 38.05529667598631, 29.189738013507206, 35.821158355924766, 35.91177384280832, 88.59740794496216, 29.853991922957412, 33.75448670917235, 30.084178853018457, 29.85429291551478, 28.700210543278637, 31.762049165059267, 28.143388642751255, 34.44827586206895, 32.75069212795407, 28.88702997213311, 37.921181193072194, 29.853991922957412, 47.25069897483683, 30.6293880086984, 33.830382106244144, 31.79148799832682, 33.75448670917235, 31.811121466293816, 38.05529667598631, 28.8987263125194, 35.91177384280832, 29.830218088096093, 33.06976547009495, 29.451124646602683, 33.830382106244144, 31.835077843560843, 29.830218088096093, 40.09543813285904, 33.75448670917235, 33.830382106244144, 34.44827586206895, 40.09543813285904, 33.83038210624406, 32.75069212795407, 35.91177384280832, 29.853991922957412, 29.830218088096093, 33.830382106244144, 33.75448670917235, 38.05529667598631, 42.52873563218381, 35.91177384280832, 38.05529667598631, 37.921181193072194, 38.05529667598631, 38.05529667598631, 33.75448670917235, 30.82479030754892, 35.91177384280832, 29.853991922957412, 38.05529667598631, 33.830382106244144, 28.33308132160844, 31.811121466293816, 29.85429291551478, 33.830382106244144, 28.52105750204403, 28.421117769338302, 28.8988743784127, 38.05529667598631, 35.91177384280832, 33.830382106244144, 37.921181193072194, 35.91177384280832, 28.32838987952275, 35.91177384280832, 29.85429291551478, 40.09543813285904, 34.44827586206895, 37.921181193072194, 54.41371554129692, 33.75448670917235, 33.75448670917235, 33.75448670917235, 38.05529667598631, 29.830218088096093, 33.75448670917235, 29.279177277352133, 37.921181193072194, 33.830382106244144, 34.425255226495736, 29.853991922957412, 33.830382106244144, 49.70487729108407, 40.09543813285904, 28.426991720861285, 29.830218088096093, 31.745527274939533, 42.52873563218391, 41.68100985985412, 35.91177384280832, 29.830218088096093, 33.830382106244144, 28.106438081646345, 42.35746451089958, 30.788557816483983, 37.93910024286979, 42.52873563218391, 28.421117769338302, 37.86314796008624, 31.762049165059267, 28.145697421559426, 35.91177384280832, 30.69877624511719, 28.8988743784127, 31.811121466293816, 30.4522731547027, 35.91177384280832, 28.145697421559486, 28.70009397328362, 28.32838987952275, 33.83038210624406, 28.426991720861285, 37.93910024286979, 31.811121466293816, 33.830382106244144, 35.91177384280832, 31.811121466293816, 29.83021808617079, 28.33308132160844, 33.830382106244144, 32.75069212795407, 31.811121466293816, 33.75448670917235, 31.811121466293883, 38.05529667598631, 33.75448670917235, 28.700210543278637, 28.88702997213311, 29.830218088096093, 410.8801681200643, 28.700210543278637, 29.830218088096093, 33.83038210624406, 33.830382106244144, 31.762049165059267, 29.83021808617079, 30.788557816483983, 28.421117769338302, 28.145726644468567, 29.830218088096093, 32.75069212795407], "entries": [{"ts": "2026-08-09T13:46:54.438Z", "mint": "HXy9YKsJi7V9ppBeTc7jmf9HmVPftxbuBpEDgJ5Qpump", "sym": "Staredog", "mcSol": 59.4, "img": "https://axiomtrading-v2.axiom-cdn.io/A3NadoK1kpaRT9KfeUnuk14D6NDVP5rzuzN9SnxPpump.webp", "ageSec": 156}, {"ts": "2026-08-09T13:44:40.506Z", "mint": "8vK8vb5ziw5fBhNXbGUKu2N3pswhJasSfmH6a4Ugpump", "sym": "Terp", "mcSol": 59.27, "img": "https://axiomtrading-v2.axiom-cdn.io/AP74Dt1ZrMRnUqApfYkshWjJYfzr9y51RhzRPshUKc4y.webp", "ageSec": 290}, {"ts": "2026-08-09T13:44:29.135Z", "mint": "AP74Dt1ZrMRnUqApfYkshWjJYfzr9y51RhzRPshUKc4y", "sym": "Crashout", "mcSol": 59.08, "img": "https://md.sdfgsdfsdf.uk/static/images/ThlN06Rn.jpg", "ageSec": 301}, {"ts": "2026-08-09T13:44:06.552Z", "mint": "9V4DGYXbaJnNnesE2vpFmazTncScN1KzvkTfvRWDpump", "sym": "Honkler", "mcSol": 57.93, "img": "https://axiomtrading-v2.axiom-cdn.io/JqxJPT2E1wGkxte6WDpNSdGYsXrdg13ZvJXeSZMpump.webp", "ageSec": 324}, {"ts": "2026-08-09T13:40:52.924Z", "mint": "8b2zQc9vz7hWceyUgmXy3DtRDBfGtzfMhcaVgW5Xpump", "sym": "TOADABLE", "mcSol": 59.24, "img": "https://ipfs.io/ipfs/bafybeid62smm4vj7a7vmcnom5to2p3n2emgpc6z26hx2jmj6cdvtn24eeu", "ageSec": 517}, {"ts": "2026-08-09T13:39:57.956Z", "mint": "DcpnyWSZTGzaQRrEVT1eJJAEAXMMbqLf2bd2R7q1pump", "sym": "LOCKED", "mcSol": 64.31, "img": "https://axiomtrading-v2.axiom-cdn.io/FqCH8NUwBWKmM87otXMdNg3XycY9BVubHZhxJTsCWMQv.webp", "ageSec": 572}, {"ts": "2026-08-09T13:37:55.382Z", "mint": "J6VSQxFSUgg1GprzWgXTKk381ksDq7uNeRkHqadEpump", "sym": "tards", "mcSol": 56.33, "img": "https://api.vortexdeployer.com/image/524622b5-4572-4ed6-99e2-ad6f6becdd5d.webp", "ageSec": 695}, {"ts": "2026-08-09T13:32:53.011Z", "mint": "58sJ3KmkyTTnHvFmfmD477QxdeRbPwJUy6tGnm8cpump", "sym": "Cap", "mcSol": 64.5, "img": "https://axiomtrading-v2.axiom-cdn.io/76Qv2XnLpKV8BnpCR7cHPHE5TFQGmCWoAxwPfREPpump.webp", "ageSec": 997}, {"ts": "2026-08-09T13:30:19.111Z", "mint": "4Hy6BFyHYUb8EdU6t6mPPmnSpNbzq8dMz33BAKNJXBhP", "sym": "Peanut", "mcSol": 66.87, "img": "https://md.sdfgsdfsdf.uk/static/images/Z53X2tYQ.jpg", "ageSec": 1151}, {"ts": "2026-08-09T13:29:13.958Z", "mint": "B4JyEAvgHG6gAPJDofX2gYSJEPukaLFpFjwQweeipump", "sym": "TOADWHALE", "mcSol": 61.59, "img": "https://ipfs.io/ipfs/bafybeieuclhz3soub4jyu33mazgfqd5rx73xl336labtocalvmikvlrtja", "ageSec": 1216}, {"ts": "2026-08-09T13:28:38.848Z", "mint": "EM9fPaCFHx7zevRPmQNJxTLJthB2tunQr9MMYmH1pump", "sym": "Faucat", "mcSol": 57.24, "img": "https://metadata.j7tracker.io/images/ff4e4d023e184637", "ageSec": 1252}, {"ts": "2026-08-09T13:26:08.700Z", "mint": "GoAn8eWtLkCSR6KDeQL8Pw4h3pxtkS6kbqZhZ66dpump", "sym": "SANIC", "mcSol": 65.43, "img": "https://ipfs.io/ipfs/Qmebowb56Y9SdRTy9efx5p1bZuqKsxToFXERouCC63WVN4", "ageSec": 1402}, {"ts": "2026-08-09T13:23:46.562Z", "mint": "9tBtKA4jAt4fQzbMa4QN9oeoHdsJi7nsqwren2wtpump", "sym": "GOONER", "mcSol": 58.73, "img": "https://ipfs.io/ipfs/bafkreiapq43j4wkkqmc2euvehivxg6qc2tkijvpxs7gkzlf2cvzuxgexaa", "ageSec": 1544}, {"ts": "2026-08-09T13:23:11.303Z", "mint": "AiNJEvrZc4DtjCZ9yfL2rPmoF34dgTsHuzy84Doypump", "sym": "Haechi", "mcSol": 60.92, "img": "https://ipfs.launchblitz.ai/async/66e7696e-fdb6-4ab0-8bfe-d16cde9882b8.jpg", "ageSec": 1579}, {"ts": "2026-08-09T13:21:39.873Z", "mint": "ArMA3ebYDF74JtFxiDYcAaXBdhzTQZukQ7qdcFU7pump", "sym": "QUACKO", "mcSol": 69.35, "img": "https://ipfs.io/ipfs/bafybeifvgzqdmw6z3yznth7x4mlf6urdr3cxe3bzykmq5bxgykqbwvolhi", "ageSec": 1670}, {"ts": "2026-08-09T13:20:37.735Z", "mint": "12ezcmuPMXmG4wBpj12ZfqDVU3nWaazE2xayp9vnpump", "sym": "CRAB", "mcSol": 69.86, "img": "https://ipfs.io/ipfs/QmcWXQDMhZFJfqjTnLg5xF1DYksy4nfHYeDQjNbyH25Bto", "ageSec": 1733}, {"ts": "2026-08-09T13:19:19.682Z", "mint": "EibhRHce9DSkErqpHohdcUWNxLAkXo3mCD4uqGgDpump", "sym": "HUNGRY", "mcSol": 57.14, "img": "https://desperate-moccasin-minnow.myfilebase.com/ipfs/QmXXbi2iWGg8xjiNeg69BsvtBxWZQnNKwKJf46TxujqewT", "ageSec": 1811}, {"ts": "2026-08-09T13:17:11.833Z", "mint": "HFEEmZ4YcgBGdwLTwBaTUZZHH12wvXJzzK3LwEmLHSsQ", "sym": "PEPE", "mcSol": 57.07, "img": "https://ipfs.io/ipfs/bafkreieeioanmakxgt42onm7dq3cngo3lznkywyjzpg2z64rixjrd2vwgu", "ageSec": 1939}, {"ts": "2026-08-09T13:15:48.401Z", "mint": "BPfnaZDhU6cSh35EfYM2cPy6FNb8iB98ZFtj9YEZpump", "sym": "Forces", "mcSol": 57.48, "img": "https://desperate-moccasin-minnow.myfilebase.com/ipfs/QmUqLwVUs7hKfNp1JpoX9QHAbSVAN8ifcA7dyAGQePDSd5", "ageSec": 2022}, {"ts": "2026-08-09T13:12:56.363Z", "mint": "CjVNzn2iuc3x7ZYbPyi9ak9Dpk9s77gFa2WmxbuVpump", "sym": "puff", "mcSol": 65.27, "img": "https://ipfs.io/ipfs/bafkreigxzfvc6s3dtqoeumlzzgv5stsuflykwybqtxs27rbmb7keybptfu", "ageSec": 2194}, {"ts": "2026-08-09T13:12:10.152Z", "mint": "3JyFeu7nz1M6FuwWn1S9PBMGugzRA4V5wjbHymo5pump", "sym": "DODO", "mcSol": 64.23, "img": "https://axiomtrading-v2.axiom-cdn.io/HPoxqWoLJcNcnLZiiQ5kUDVW79XATDvHgpkCXXgNAas5.webp", "ageSec": 2240}, {"ts": "2026-08-09T13:08:54.152Z", "mint": "5D112SPG5xwhravJYq4h5cbnGrcPX3R9uU7xEJyypump", "sym": "Juvier", "mcSol": 55.93, "img": "https://metadata.j7tracker.io/images/8mUPSiKH6C", "ageSec": 2436}, {"ts": "2026-08-09T13:05:19.496Z", "mint": "28qr4uGboVM2HBUpZoiVpTV5QLucypMVcT8zdZgXpump", "sym": "ONETOAD", "mcSol": 72.77, "img": "https://ipfs.io/ipfs/bafybeiccxa7wy756xpqvae7sfyrsrdkgwn2tltc65ixvjf4o5yocxszj3i", "ageSec": 2651}, {"ts": "2026-08-09T13:02:51.457Z", "mint": "AMT4PbvJNSoADmQ2ugYcNuyW4jPsEcpCwSeP56AEpump", "sym": "Lomito", "mcSol": 73.14, "img": "https://axiomtrading-v2.axiom-cdn.io/8U53muZwAcZb7zgbsH9eKC6kftGHFhN99eGwcvo6TxQu.webp", "ageSec": 2799}]};
+const E = D.entries, L = D.launches;
+const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+const nf=v=>v.toLocaleString("id");
+const age=s=>s<60?s+"d":s<3600?Math.round(s/60)+"m":(s/3600).toFixed(1)+"j";
+const art=new Map();
+function icon(u){ if(!u) return null; let i=art.get(u); if(!i){i=new Image();i.src=u;art.set(u,i);} return i; }
+E.forEach(e=>icon(e.img));
+function tile(t){const w=document.createElement("div");w.className="tile";
+  w.innerHTML=`<div class="hdr">${t}</div>`;const c=document.createElement("canvas");w.appendChild(c);return w}
+function ctx2d(el){const cv=el.querySelector("canvas"),DPR=devicePixelRatio||1,r=el.getBoundingClientRect();
+  cv.width=r.width*DPR;cv.height=r.height*DPR;const c=cv.getContext("2d");c.scale(DPR,DPR);return{c,W:r.width,H:r.height}}
+function loop(fn){let last=0,t=0;(function f(now){const dt=last?Math.min(.05,(now-last)/1000):.016;last=now;t+=dt;fn(t,dt);if(!reduce)requestAnimationFrame(f)})(0)}
+function roundIcon(c,im,x,y,s){ if(!im||!im.complete||!im.naturalWidth) return false;
+  c.save();c.beginPath();c.roundRect(x,y,s,s,s*0.28);c.clip();c.drawImage(im,x,y,s,s);c.restore();return true; }
+
+/* ══ A · ARUS MASUK ═══════════════════════════════════════════════════════
+   Waktu jadi sumbu mendatar, MC jadi sumbu tegak. Koin masuk dari kanan saat
+   dibeli lalu hanyut ke kiri seiring menua — jadi panel ini akhirnya
+   menunjukkan hal yang namanya sudah menjanjikan: aliran masuk ke jendela,
+   bukan daftar diam. Pita band diarsir sebagai lorong; sekilas terlihat
+   apakah entry menempel di lantai atau menyebar. */
+function stream(){
+  const el=tile("BAND WATCH · ARUS MASUK");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const PAD=44, TOP=54, BOT=H-34;
+    const maxAge=Math.max(...E.map(e=>e.ageSec),600);
+    const lo=D.floorSol-3, hi=D.ceilSol+3;
+    const y=v=>Math.max(TOP,Math.min(BOT,BOT-((v-lo)/(hi-lo))*(BOT-TOP)));
+    const x=a=>Math.max(PAD,Math.min(W-18,PAD+(1-a/maxAge)*(W-PAD-18)));
+    loop(t=>{
+      c.clearRect(0,0,W,H);
+      // lorong band
+      c.fillStyle="rgba(201,240,74,.055)";
+      c.fillRect(PAD,y(D.ceilSol),W-PAD-8,y(D.floorSol)-y(D.ceilSol));
+      c.strokeStyle="rgba(201,240,74,.22)";c.lineWidth=1;
+      [D.floorSol,D.ceilSol].forEach(v=>{c.beginPath();c.moveTo(PAD,y(v));c.lineTo(W-8,y(v));c.stroke()});
+      c.font="8px ui-monospace,monospace";c.fillStyle="rgba(201,240,74,.6)";
+      c.fillText(D.ceilSol+"◎",6,y(D.ceilSol)+3); c.fillText(D.floorSol+"◎",6,y(D.floorSol)+3);
+      // garis lahir
+      c.strokeStyle="rgba(124,130,141,.25)";c.setLineDash([2,4]);
+      c.beginPath();c.moveTo(PAD,y(D.launchMcSol));c.lineTo(W-8,y(D.launchMcSol));c.stroke();c.setLineDash([]);
+      c.fillStyle="rgba(124,130,141,.7)";c.fillText("lahir "+D.launchMcSol.toFixed(0)+"◎",6,y(D.launchMcSol)+3);
+      // entry: makin baru makin ke kanan & makin terang
+      E.forEach((e,i)=>{
+        const drift=reduce?0:Math.sin(t*.5+i)*1.5;
+        const px=x(e.ageSec), py=y(e.mcSol)+drift;
+        const fresh=Math.max(0,1-e.ageSec/maxAge);
+        c.globalAlpha=.25+.75*fresh;
+        const im=icon(e.img), S=18;
+        if(!roundIcon(c,im,px-S/2,py-S/2,S)){ c.fillStyle="#1e232c";c.beginPath();c.arc(px,py,S/2,0,7);c.fill(); }
+        if(fresh>.72){ c.globalAlpha=(fresh-.72)/.28*.8;
+          c.strokeStyle="var(--acid)";c.strokeStyle="#c9f04a";c.lineWidth=1.4;
+          c.beginPath();c.arc(px,py,S/2+3+Math.sin(t*3)*1.5,0,7);c.stroke(); }
+        c.globalAlpha=1;
+      });
+      // label entry terbaru
+      const n=E[0];
+      c.font="9.5px ui-monospace,monospace";c.fillStyle="rgba(233,235,238,.95)";
+      c.fillText(n.sym+"  "+n.mcSol.toFixed(1)+"◎  "+age(n.ageSec),PAD,TOP-16);
+      c.font="8px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("← lebih tua",PAD,H-14); c.textAlign="right";
+      c.fillText("baru →",W-10,H-14); c.textAlign="left";
+    });
+  });
+  return el;
+}
+
+/* ══ B · KEPADATAN DI DALAM BAND ══════════════════════════════════════════
+   Pertanyaan yang tidak bisa dijawab daftar: entry menumpuk di MANA di dalam
+   jendela? Histogram tegak menjawabnya seketika — dan di data nyata terlihat
+   jelas condong ke lantai band. Ikon koin terbaru duduk di batangnya sendiri,
+   jadi ada yang bisa dikenali tanpa 24 baris. */
+function density(){
+  const el=tile("BAND WATCH · KEPADATAN");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const TOP=64, BOT=H-40, PAD=52;
+    const lo=D.floorSol, hi=D.ceilSol, BINS=10;
+    const bins=Array.from({length:BINS},()=>[]);
+    E.forEach(e=>{const k=Math.min(BINS-1,Math.floor((e.mcSol-lo)/(hi-lo)*BINS)); bins[k].push(e);});
+    const mx=Math.max(1,...bins.map(b=>b.length));
+    const bh=(BOT-TOP)/BINS;
+    let grow=0;
+    loop((t,dt)=>{
+      grow=Math.min(1,grow+dt*0.8);
+      c.clearRect(0,0,W,H);
+      bins.forEach((b,i)=>{
+        const yy=BOT-(i+1)*bh, w=Math.max(0,Math.min(W-PAD-70,(b.length/mx)*(W-PAD-70)*grow));
+        c.fillStyle=`rgba(201,240,74,${.10+.50*(b.length/mx)})`;
+        c.fillRect(PAD,yy+2,w,bh-4);
+        c.font="8px ui-monospace,monospace";c.fillStyle="rgba(124,130,141,.85)";
+        c.fillText((lo+(hi-lo)*i/BINS).toFixed(0)+"–"+(lo+(hi-lo)*(i+1)/BINS).toFixed(0)+"◎",6,yy+bh/2+3);
+        if(!b.length) return;
+        c.fillStyle="rgba(233,235,238,.9)";c.font="9px ui-monospace,monospace";
+        c.fillText(String(b.length),PAD+w+6,yy+bh/2+3);
+
+        // NAMA KOIN DI DALAM BATANG (owner). Yang muat dipasang, sisanya jadi "+n" — memotong
+        // nama di tengah batang akan membuat dua koin berbeda terbaca sama, dan di sini nama
+        // adalah satu-satunya identitas: simbol seperti "PEPE" berulang di mint yang tak
+        // berhubungan sepanjang hari.
+        const S=Math.min(bh-8,13), GAP=4, PADX=6;
+        c.font="8.5px ui-monospace,monospace";
+        const budget=w-PADX*2;
+        const chip=e=>S+3+c.measureText(e.sym.slice(0,9)).width;
+        let used=0, show=[];
+        for(const e of b){ const cw=chip(e)+(show.length?GAP:0); if(used+cw>budget) break; used+=cw; show.push(e); }
+        const extra=b.length-show.length;
+        if(extra>0){ const ew=c.measureText("+"+extra).width+GAP;
+          while(show.length && used+ew>budget){ const e=show.pop(); used-=chip(e)+(show.length?GAP:0); } }
+        if(show.length===0){
+          // Batang terlalu sempit untuk nama apa pun — taruh di luar, jangan dipaksa masuk.
+          c.fillStyle="rgba(154,161,173,.85)";
+          c.fillText(b.map(e=>e.sym.slice(0,8)).join(" ").slice(0,22),PAD+w+22,yy+bh/2+3);
+          return;
+        }
+        let cx=PAD+PADX+(budget-used-(extra>0?c.measureText("+"+extra).width+GAP:0))/2;
+        for(const e of show){
+          const im=icon(e.img);
+          if(!roundIcon(c,im,cx,yy+(bh-S)/2,S)){ c.fillStyle="rgba(255,255,255,.10)";
+            c.beginPath();c.roundRect(cx,yy+(bh-S)/2,S,S,3);c.fill(); }
+          c.fillStyle="rgba(12,15,21,.95)";
+          c.fillText(e.sym.slice(0,9),cx+S+3,yy+bh/2+3);
+          c.fillStyle="rgba(240,255,200,.95)";
+          c.fillText(e.sym.slice(0,9),cx+S+3,yy+bh/2+2.5);
+          cx+=chip(e)+GAP;
+        }
+        if(extra>0){ c.fillStyle="rgba(12,15,21,.85)";
+          c.fillText("+"+extra,cx,yy+bh/2+3); }
+      });
+
+      // penanda median
+      const med=[...E.map(e=>e.mcSol)].sort((a,b)=>a-b)[Math.floor(E.length/2)];
+      const my=BOT-((med-lo)/(hi-lo))*(BOT-TOP);
+      c.strokeStyle="rgba(90,217,208,.8)";c.lineWidth=1.2;c.setLineDash([3,3]);
+      c.beginPath();c.moveTo(PAD-6,my);c.lineTo(W-12,my);c.stroke();c.setLineDash([]);
+      c.font="8.5px ui-monospace,monospace";c.fillStyle="rgba(90,217,208,.95)";
+      c.textAlign="right";c.fillText("median beli "+med.toFixed(1)+"◎",W-12,my-5);c.textAlign="left";
+      c.font="10px ui-monospace,monospace";c.fillStyle="rgba(233,235,238,.95)";
+      c.fillText(E.length+" entry di jendela "+lo+"–"+hi+"◎",PAD,TOP-22);
+      c.font="8px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("lantai band di bawah · plafon di atas",PAD,H-16);
+    });
+  });
+  return el;
+}
+
+/* ══ C · TANGGA MASUK ═════════════════════════════════════════════════════
+   Tetap daftar — tapi dibaca sebagai tangga, bukan tabel. Tiap entry adalah
+   satu anak tangga yang panjangnya = posisinya di dalam band, disusun menurut
+   umur. Yang paling baru menyala dan berdenyut, lalu meredup seiring turun.
+   Hemat ruang, tetap bisa mengenali koin, dan matanya punya arah. */
+function ladder(){
+  const el=tile("BAND WATCH · TANGGA MASUK");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const TOP=58, rows=Math.min(E.length,16), rh=(H-TOP-26)/rows;
+    const lo=D.floorSol, hi=D.ceilSol;
+    loop(t=>{
+      c.clearRect(0,0,W,H);
+      c.font="9.5px ui-monospace,monospace";
+      for(let i=0;i<rows;i++){
+        const e=E[i], yy=TOP+i*rh+rh/2;
+        const frac=(e.mcSol-lo)/(hi-lo);
+        const x0=132, x1=W-64;
+        const len=(x1-x0)*Math.max(.04,frac);
+        const fresh=Math.max(0,1-i/rows);
+        const pulse=i===0&&!reduce?.75+.25*Math.sin(t*3.2):1;
+        // rel tipis
+        c.strokeStyle="rgba(255,255,255,.05)";c.lineWidth=1;
+        c.beginPath();c.moveTo(x0,yy);c.lineTo(x1,yy);c.stroke();
+        // tangga
+        const g=c.createLinearGradient(x0,0,x0+len,0);
+        g.addColorStop(0,`rgba(201,240,74,${.10+.25*fresh})`);
+        g.addColorStop(1,`rgba(201,240,74,${(.35+.55*fresh)*pulse})`);
+        c.fillStyle=g; c.fillRect(x0,yy-3,len,6);
+        c.fillStyle=`rgba(201,240,74,${pulse})`; c.beginPath();c.arc(x0+len,yy,3,0,7);c.fill();
+        const S=17, im=icon(e.img);
+        c.globalAlpha=.45+.55*fresh;
+        if(!roundIcon(c,im,10,yy-S/2,S)){c.fillStyle="#1e232c";c.fillRect(10,yy-S/2,S,S);}
+        c.globalAlpha=1;
+        c.fillStyle=`rgba(233,235,238,${.5+.5*fresh})`;
+        c.fillText(e.sym.slice(0,11),34,yy+3.5);
+        c.textAlign="right";
+        c.fillStyle=`rgba(201,240,74,${.6+.4*fresh})`;
+        c.fillText(e.mcSol.toFixed(1),x1+34,yy+3.5);
+        c.font="8px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+        c.fillText(age(e.ageSec),W-8,yy+3.5);
+        c.textAlign="left";c.font="9.5px ui-monospace,monospace";
+      }
+      c.font="8.5px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("panjang = posisi di dalam band "+lo+"–"+hi+"◎ · urut umur",10,H-10);
+    });
+  });
+  return el;
+}
+
+/* ══ D · JAM PASIR ════════════════════════════════════════════════════════
+   Awan kelahiran di kiri, jendela entry sebagai leher sempit di tengah, hasil
+   di kanan. Bentuknya sendiri menceritakan angka yang paling mengejutkan dari
+   panel ini: lahir median 33,8 ◎ tapi dibeli median 60,0 ◎ — koin tidak
+   dipilih karena lahir tinggi, mereka TUMBUH ke dalam jendela. */
+function hourglass(){
+  const el=tile("BAND WATCH · JAM PASIR");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const CX=W*0.5, TOP=70, BOT=H-52;
+    const lo=25, hi=Math.max(D.ceilSol*1.5,90);
+    // DIKURUNG. Awan launch memuat outlier nyata (dev membeli besar di blok pertama, terukur
+    // 411◎ terhadap plafon skala 111◎) — tanpa jepitan ia menggambar di y −313, jauh di luar tile.
+    const yRaw=v=>BOT-((Math.log(Math.max(v,lo))-Math.log(lo))/(Math.log(hi)-Math.log(lo)))*(BOT-TOP);
+    const y=v=>Math.max(TOP-2,Math.min(BOT+2,yRaw(v)));
+    const parts=L.slice(-120).map((mc,i)=>({mc,ph:i*0.137%1,off:yRaw(mc)>BOT+2||yRaw(mc)<TOP-2}));
+    loop((t,dt)=>{
+      c.clearRect(0,0,W,H);
+      // leher jendela
+      c.fillStyle="rgba(201,240,74,.07)";
+      c.fillRect(0,y(D.ceilSol),W,y(D.floorSol)-y(D.ceilSol));
+      c.strokeStyle="rgba(201,240,74,.3)";c.lineWidth=1;
+      [D.floorSol,D.ceilSol].forEach(v=>{c.beginPath();c.moveTo(0,y(v));c.lineTo(W,y(v));c.stroke()});
+      // awan kelahiran (kiri)
+      parts.forEach((p,i)=>{
+        p.ph=(p.ph+dt*0.06)%1;
+        const px=10+p.ph*(CX-40), py=y(p.mc)+Math.sin(i*2.1)*2;
+        // Yang di luar skala digambar sebagai penanda emas di tepi, bukan dipindahkan diam-diam.
+        c.fillStyle=p.off?"rgba(232,197,106,.55)":"rgba(124,130,141,.28)";
+        c.fillRect(px,py,p.off?2.4:1.6,p.off?2.4:1.6);
+      });
+      // entry naik ke leher (kanan)
+      E.forEach((e,i)=>{
+        const fresh=Math.max(0,1-i/E.length);
+        const px=CX+18+ (i%6)*((W-CX-46)/6);
+        const py=y(e.mcSol);
+        c.globalAlpha=.3+.7*fresh;
+        const S=16,im=icon(e.img);
+        if(!roundIcon(c,im,px-S/2,py-S/2,S)){c.fillStyle="#1e232c";c.beginPath();c.arc(px,py,S/2,0,7);c.fill();}
+        c.globalAlpha=1;
+      });
+      // dua median
+      [[D.launchMcSol,"rgba(124,130,141,.9)","lahir "+D.launchMedian.toFixed(0)+"◎",CX*0.5],
+       [D.entryMedian,"rgba(201,240,74,.95)","beli "+D.entryMedian.toFixed(0)+"◎",CX*1.5]].forEach(([v,col,lab,lx])=>{
+        c.strokeStyle=col;c.setLineDash([3,3]);c.lineWidth=1;
+        c.beginPath();c.moveTo(lx-46,y(v));c.lineTo(lx+46,y(v));c.stroke();c.setLineDash([]);
+        c.font="9px ui-monospace,monospace";c.fillStyle=col;c.textAlign="center";
+        c.fillText(lab,lx,y(v)-6);c.textAlign="left";
+      });
+      // panah pertumbuhan
+      c.strokeStyle="rgba(201,240,74,.45)";c.lineWidth=1.6;
+      const ay=y(D.launchMedian), by=y(D.entryMedian);
+      c.beginPath();c.moveTo(CX,ay-4);c.lineTo(CX,by+10);c.stroke();
+      c.beginPath();c.moveTo(CX-4,by+14);c.lineTo(CX,by+6);c.lineTo(CX+4,by+14);c.stroke();
+      c.font="8.5px ui-monospace,monospace";c.fillStyle="rgba(201,240,74,.8)";
+      c.textAlign="center";
+      c.fillText("+"+Math.round(100*(D.entryMedian/D.launchMedian-1))+"% tumbuh ke jendela",CX,(ay+by)/2+3);
+      c.textAlign="left";
+      c.font="8px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("kelahiran",10,H-14); c.textAlign="right"; c.fillText("dibeli",W-10,H-14); c.textAlign="left";
+    });
+  });
+  return el;
+}
+
+const out=document.getElementById("out");
+[["A · Arus masuk","Waktu jadi sumbu mendatar, MC jadi sumbu tegak. Koin masuk dari kanan lalu hanyut ke kiri seiring menua — akhirnya panel ini menunjukkan aliran, bukan daftar diam. Entry terbaru berdenyut.",stream],
+ ["B · Kepadatan + nama","Menjawab yang tidak bisa dijawab daftar: entry menumpuk di MANA di dalam jendela — dan sekarang nama koinnya ada di dalam batang, bukan cuma jumlahnya. Yang tidak muat jadi \"+n\".",density],
+ ["C · Tangga masuk","Tetap daftar, tapi dibaca sebagai tangga. Panjang anak tangga = posisi di dalam band; yang terbaru menyala dan berdenyut lalu meredup ke bawah.",ladder],
+ ["D · Jam pasir","Awan kelahiran di kiri, jendela sebagai leher, hasil di kanan. Bentuknya menceritakan angka paling mengejutkan panel ini: lahir 34◎ → beli 60◎, koin TUMBUH masuk.",hourglass],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>

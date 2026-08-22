@@ -144,6 +144,49 @@ export function FeelingAgent({ data }: { data: StatsResponse }) {
     dead: ["rgba(255,120,120,.85)", "rgba(150,110,140,.8)", "rgba(120,110,130,.75)", "rgba(200,150,160,.45)"],
   };
   const [a1, a2, a3, a4] = MOOD_COLORS[mood] ?? MOOD_COLORS.alive!;
+
+  /**
+   * EXPRESSION — BROWS ONLY.
+   *
+   * The face is fixed: two curved brows, two round dot eyes, one "L" nose. Nothing else, ever.
+   * A first attempt varied the mouth and squashed the eyes per expression and the owner rejected
+   * it outright — the dot eyes turned into flat ovals and a mouth appeared that the character
+   * never had. The eyes' only movement is cursor tracking and the blink; the nose never moves.
+   *
+   * So every feeling has to live in two eyebrow strokes. That is a real constraint and it is the
+   * right one: the character reads as itself in all five states instead of five different faces.
+   *
+   * Direction matters more than curvature here, and getting it backwards is invisible in code and
+   * obvious on screen — the first `sedih` brows sloped inner-end-DOWN, which is the anger shape,
+   * so the badge read "sedih" over a scowling face. In this coordinate system y grows downward,
+   * and for the LEFT brow x=54 is the outer end while x=69 is the inner end (toward the nose):
+   *
+   *   sad    inner end HIGH (small y), outer end low   →  ╱   ╲
+   *   angry  inner end LOW  (large y), outer end high  →  ╲   ╱
+   *
+   * Verdict mapping is the same one the exit logic reads, so a raised brow literally means the
+   * agent judged the position healthy, and a scowl means it called the coin dead.
+   */
+  const conf = data.feeling.last?.confidence ?? null;
+  const expression: "senang" | "netral" | "sedih" | "marah" | "bingung" =
+    mood === "dead" ? "marah"
+    : mood === "dying" ? "sedih"
+    : mood === "abstain" || mood === "neutral" ? "bingung"
+    : conf != null && conf >= 75 ? "senang"
+    : "netral";
+
+  // Only the two brow paths change. `netral` is the ported original, byte for byte.
+  const BROWS: Record<string, { l: string; r: string }> = {
+    netral:  { l: "M55 66 Q61 61 68 65", r: "M82 65 Q89 61 95 66" },
+    senang:  { l: "M54 63 Q61 55 69 61", r: "M81 61 Q89 55 96 63" },   // lifted higher, deeper arc
+    sedih:   { l: "M54 68 Q61 64 69 61", r: "M81 61 Q89 64 96 68" },   // inner end up, outer drooping
+    marah:   { l: "M54 61 Q61 63 69 68", r: "M81 68 Q89 63 96 61" },   // inner end down — the scowl
+    bingung: { l: "M55 66 Q61 61 68 65", r: "M82 60 Q89 53 95 59" },   // one brow up, one at rest
+  };
+  const brows = BROWS[expression]!;
+  const EXPRESSION_LABEL: Record<string, string> = {
+    senang: "senang", netral: "netral", sedih: "sedih", marah: "marah", bingung: "bingung",
+  };
   const sayRef = useAgentSay(beat?.say);
 
   return (
@@ -151,6 +194,7 @@ export function FeelingAgent({ data }: { data: StatsResponse }) {
       <span className={`absolute right-0 top-0 flex items-baseline gap-1.5 font-mono text-[9px] ${healthClass}`}>
         {healthLabel}
         {ageLabel && <span className="text-muted-foreground/60">{ageLabel}</span>}
+        <span className="text-muted-foreground/50">{EXPRESSION_LABEL[expression]}</span>
       </span>
       {/* Size ported 1:1 from the old #agent{ width:min(260px,68%) } (owner, 2026-07-30: a prior
           min(45cqw,45cqh) attempt was still "too small" per direct feedback — this is the
@@ -161,17 +205,23 @@ export function FeelingAgent({ data }: { data: StatsResponse }) {
         className="relative aspect-square overflow-visible transition-opacity duration-700"
         style={{
           width: "min(260px, 68%)",
-          // Dimmed while the verdict is stale — the aura keeps its mood colour so the last real
-          // opinion is still readable, it just stops claiming to be current.
-          opacity: stale ? 0.45 : 1,
+          // TIDAK PERNAH DIREDUPKAN. Sempat 0,45 saat putusan basi, dan itu meredupkan SELURUH
+          // wajah — aura, alis, mata, mulut — sehingga panel terbesar di layar jadi noda kelabu
+          // nyaris tak terbaca. Kejujuran soal umur putusan dibawa oleh badge "◐ IDLE 13j lalu"
+          // di pojok, yang menyampaikan hal yang sama tanpa membuang gambarnya.
+          opacity: 1,
           ["--a1" as string]: a1, ["--a2" as string]: a2, ["--a3" as string]: a3, ["--a4" as string]: a4,
         }}
       >
         <div className="agent-aura" />
         <div className="agent-aura2" />
         <svg viewBox="0 0 150 150" className="agent-face-svg absolute inset-0 h-full w-full overflow-visible">
-          <path d="M55 66 Q61 61 68 65" fill="none" stroke="#f2f7ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 0 4px rgba(200,225,255,.7))" }} />
-          <path d="M82 65 Q89 61 95 66" fill="none" stroke="#f2f7ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 0 4px rgba(200,225,255,.7))" }} />
+          {/* Brows morph between expressions rather than cutting — a face that snaps reads as a
+              different character each time, not as one character changing its mind. The eyes and
+              the nose below are the original paths, untouched: they carry the character's
+              identity, so nothing about a mood is allowed to reshape them. */}
+          <path d={brows.l} fill="none" stroke="#f2f7ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="agent-stroke" style={{ filter: "drop-shadow(0 0 4px rgba(200,225,255,.7))" }} />
+          <path d={brows.r} fill="none" stroke="#f2f7ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="agent-stroke" style={{ filter: "drop-shadow(0 0 4px rgba(200,225,255,.7))" }} />
           <ellipse cx={61 + pupil.x} cy={79 + pupil.y} rx="3.2" ry={3.2 * openness} fill="#f2f7ff" style={{ filter: "drop-shadow(0 0 3px rgba(200,225,255,.8))" }} />
           <ellipse cx={89 + pupil.x} cy={79 + pupil.y} rx="3.2" ry={3.2 * openness} fill="#f2f7ff" style={{ filter: "drop-shadow(0 0 3px rgba(200,225,255,.8))" }} />
           <path d="M75 80 L75 89 L82 89" fill="none" stroke="#f2f7ff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 0 4px rgba(200,225,255,.7))" }} />

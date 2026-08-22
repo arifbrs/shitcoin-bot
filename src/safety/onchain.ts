@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { fetchJson, sleep, TokenBucket, RateLimited } from "../util/http.js";
@@ -126,6 +128,47 @@ function isClientError(err: unknown): boolean {
   return CLIENT_ERROR.test((err as Error)?.message ?? "");
 }
 
+/**
+ * "This ENDPOINT does not serve this METHOD." A third category, distinct from both of the
+ * above, and the one that was making free keyless capacity unusable.
+ *
+ * A client error is wrong everywhere; a 429 means "later". This means "not here, but fine
+ * elsewhere, forever" — e.g. PublicNode answers `getAccountInfo` all day at 113ms with no key
+ * and no account, but replies "Request blocked" to `getTokenLargestAccounts`. With only two
+ * categories that reply counted as a generic failure, so three of them benched an endpoint
+ * that was perfectly healthy for the other 99% of our traffic (getAccountInfo alone is 11,907
+ * of ~19,000 calls). The result was that a free endpoint could not be added to the pool at all.
+ *
+ * Recorded PER (endpoint, method) and simply skipped afterwards. No strike, no bench.
+ *
+ * The wording is not consistent even from one provider: PublicNode answers curl with a JSON-RPC
+ * `-32602 "Request blocked"`, but answers OUR client with a bare `HTTP 403` — same refusal, two
+ * shapes, so both are matched. Treating 403/405 as method-scoped is also the safe reading: if an
+ * endpoint really is forbidden for EVERYTHING (a revoked key), every method gets marked in turn
+ * and it drops out of the pool by itself, which is the correct outcome anyway. The `byMethod`
+ * filter falls back to the full list if this would ever empty the pool.
+ */
+const METHOD_UNSUPPORTED = /request blocked|method not found|unsupported method|method not supported|not available on this|method is disabled|excluded method|HTTP 403|HTTP 405/i;
+function isMethodUnsupported(err: unknown): boolean {
+  return METHOD_UNSUPPORTED.test((err as Error)?.message ?? "");
+}
+
+/** endpoint url → methods that endpoint has told us it will not serve. */
+const unsupported = new Map<string, Set<string>>();
+function marksUnsupported(url: string, method: string): void {
+  let set = unsupported.get(url);
+  if (!set) { set = new Set(); unsupported.set(url, set); }
+  set.add(method);
+}
+function servesMethod(url: string, method: string): boolean {
+  return !unsupported.get(url)?.has(method);
+}
+
+/** Diagnostics: which endpoint refuses which method. */
+export function unsupportedMethods(): Array<{ url: string; methods: string[] }> {
+  return [...unsupported].map(([url, m]) => ({ url, methods: [...m] }));
+}
+
 async function rpcVia<T>(url: string, method: string, params: ParamsFor, low: boolean, signal?: AbortSignal): Promise<T> {
   const res = await fetchJson<{ result?: T; error?: { message: string } }>(url, {
     bucket: low ? researchBucket : rpcBucket,
@@ -183,23 +226,60 @@ function benchMs(strikes: number): number {
  * concurrency must not turn one quota event into a false 30-minute exclusion. Exported only so
  * this measured distinction has a deterministic fixture test.
  */
+/**
+ * `provenGood` = this endpoint has successfully served at least one call IN THIS PROCESS.
+ *
+ * The escalating bench (90s → 3m → … → 30m) exists to stop a SPENT key from eating a 429 on the
+ * entry path every 90 seconds forever. That is still right for a key that has never answered.
+ * It is wrong for a key that demonstrably works and is merely at its rate ceiling.
+ *
+ * MEASURED 2026-08-22: Helius replies "max usage reached", which contains neither "daily" nor
+ * "monthly", so every Helius throttle took the escalating branch and climbed to a 30-minute
+ * bench. Four of seven keys sat frozen out with 2-3 lifetime calls each — while the pool ran at
+ * 102% of capacity (8.2 rps against a cap of 8). Out-of-band probes showed those same keys
+ * answering normally minutes later, so they were rate-limited, not exhausted. Roughly 40% of the
+ * purchased capacity was idle because of the penalty, exactly when it was needed most.
+ *
+ * A proven endpoint is therefore capped at the same 5 minutes a known daily-quota gets. Worst
+ * case, a key that really has died still costs only one 429 per 5 minutes — against 8 rps that
+ * is nothing — and any single success resets `strikes` anyway.
+ */
 export function rateLimitBenchPolicy(
   detail: string,
   strikes: number,
   now = Date.now(),
+  provenGood = false,
 ): { ms: number; reason: "rate-limit" | "daily-quota" } {
   const quota = /\b(daily|monthly)\b.{0,80}\b(limit|quota|request|credit)|\b(limit|quota|credit).{0,80}\b(daily|monthly)\b/i.test(detail);
-  if (!quota) return { ms: benchMs(strikes), reason: "rate-limit" };
+  if (!quota) {
+    const ms = provenGood ? Math.min(benchMs(strikes), 5 * 60_000) : benchMs(strikes);
+    return { ms, reason: "rate-limit" };
+  }
   void now; // deterministic API for tests/callers; quota policy is duration-based, not wall-clock.
   return { ms: 5 * 60_000, reason: "daily-quota" };
 }
 
+/** Round-robin cursor over healthy endpoints. Plain counter: exact fairness is not the point,
+ *  spreading the throttle budget across independently-limited keys is. */
+let rrCursor = 0;
+
 const endpoints: EndpointHealth[] = config.rpcEndpoints.map((url) => {
   const host = (() => { try { return new URL(url).host; } catch { return url.slice(0, 40); } })();
   const key = Object.keys(config.rpcBatchLimits).find((k) => k !== "default" && host.includes(k));
+  // Two keys on the SAME provider are two independent rate budgets, and health reporting has to
+  // tell them apart — with a bare hostname both Helius keys render as one indistinguishable row,
+  // so "which key is benched?" is unanswerable exactly when it matters. Last 4 chars only: never
+  // enough to reconstruct a key, always enough to name it.
+  const tail = (() => {
+    try {
+      const u = new URL(url);
+      const k = u.searchParams.get("api-key") ?? u.pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+      return k.length >= 4 ? `·${k.slice(-4)}` : "";
+    } catch { return ""; }
+  })();
   return {
     url,
-    host,
+    host: host + tail,
     maxBatch: key ? config.rpcBatchLimits[key]! : config.rpcBatchLimits.default!,
     benchedUntil: 0,
     fails: 0,
@@ -209,6 +289,45 @@ const endpoints: EndpointHealth[] = config.rpcEndpoints.map((url) => {
     benchReason: null,
   };
 });
+
+/**
+ * WARM START — carry the previous run's endpoint verdicts across a restart.
+ *
+ * Every process began with a virgin pool, so a spent key had to be REDISCOVERED by paying a 429
+ * on the entry path. Measured 2026-08-22: 4 of 7 Helius keys were credit-exhausted (2-3 lifetime
+ * calls each against 9-11 rate-limits), and two of them sat at pool priority #2 and #3 — so the
+ * very first candidate of every run walked through two dead keys before reaching a live one.
+ * With `watchdog.mjs` restarting the bot unattended, that cost was paid over and over.
+ *
+ * Deliberately conservative in both directions:
+ *   · only trusted if the snapshot is FRESH (< 6h) — a stale file must never bench a live key
+ *   · the seeded bench is capped at 5 MINUTES regardless of strike count, so a key whose
+ *     monthly quota has since reset is rediscovered quickly
+ *   · `strikes` is restored in full, so if it 429s again the escalation resumes immediately
+ *     rather than restarting the ladder at 90s
+ *   · only rate-limit/quota verdicts are carried. Transient "failing"/"unreachable" states are
+ *     not — those can be a momentary network blip and are cheap to retest.
+ */
+(() => {
+  const MAX_AGE_MS = 6 * 60 * 60_000;
+  const SEED_BENCH_MS = 5 * 60_000;
+  try {
+    const raw = readFileSync(join(config.logDir, "rpc-health.json"), "utf8");
+    const snap = JSON.parse(raw) as { at?: number; endpoints?: Array<{ host: string; strikes?: number; benchReason?: string | null }> };
+    if (!snap.at || Date.now() - snap.at > MAX_AGE_MS || !Array.isArray(snap.endpoints)) return;
+    let seeded = 0;
+    for (const prev of snap.endpoints) {
+      if (prev.benchReason !== "rate-limit" && prev.benchReason !== "daily-quota") continue;
+      const ep = endpoints.find((e) => e.host === prev.host);
+      if (!ep) continue; // key removed from .env since the snapshot
+      ep.strikes = Math.max(0, Number(prev.strikes) || 0);
+      ep.benchedUntil = Date.now() + SEED_BENCH_MS;
+      ep.benchReason = prev.benchReason;
+      seeded++;
+    }
+    if (seeded > 0) ui.info(`[rpc] warm start — ${seeded} spent endpoint(s) pre-benched from the last run's health snapshot`);
+  } catch { /* no snapshot, unreadable, or first run — start cold, which is merely slower */ }
+})();
 
 /** Largest batch any LIVE endpoint will accept right now — what a bulk read may chunk at. */
 export function maxLiveBatch(): number {
@@ -223,9 +342,30 @@ export function maxLiveBatch(): number {
  * the code is checked first and the message only as a fallback for wrapped errors.
  */
 const UNREACHABLE = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED"]);
-function isUnreachable(err: unknown): boolean {
-  const code = (err as { cause?: { code?: string } })?.cause?.code;
+
+/**
+ * A DELETED provider endpoint still RESOLVES and still ACCEPTS a TCP connection — the
+ * provider's shared edge answers for the whole wildcard domain — and then rejects the TLS
+ * handshake because the subdomain no longer maps to anything. Node reports that as
+ * `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR` (alert 80) wrapped in a bare "fetch failed", which
+ * matches none of the DNS/TCP codes above.
+ *
+ * MEASURED 2026-08-22 on a decommissioned QuickNode endpoint sitting in the pool: because it
+ * looked "ambiguous", it took the `++ep.fails >= 3` path — THREE TLS failures before a bench,
+ * and then only a 15s one. A throttled-but-healthy endpoint gets an escalating bench up to 30
+ * minutes, so the permanently-dead endpoint was being retried roughly 120x more often than a
+ * merely-busy one. Exactly backwards, and it was the largest contributor to the RPC-accept
+ * latency tail in the live latency probe (p50 67ms → p90 1,809ms).
+ *
+ * Any TLS-layer rejection is as definitive as a refused connection: bench on the first hit.
+ */
+const TLS_DEAD = /ERR_SSL|ERR_TLS|tlsv1 alert|sslv3 alert|wrong version number|handshake failure/i;
+
+export function isUnreachable(err: unknown): boolean {
+  const cause = (err as { cause?: { code?: string; message?: string; reason?: string } })?.cause;
+  const code = cause?.code;
   if (code && UNREACHABLE.has(code)) return true;
+  if (TLS_DEAD.test(`${code ?? ""} ${cause?.reason ?? ""} ${cause?.message ?? ""}`)) return true;
   const msg = (err as Error)?.message ?? "";
   return [...UNREACHABLE].some((c) => msg.includes(c));
 }
@@ -308,6 +448,28 @@ export async function waitForMintVisible(mint: string, maxWaitMs = 8_000, pollMs
   const started = Date.now();
   // Cheap syntactic guard — a malformed mint can never become visible, so don't burn the budget.
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return { visible: false, waitedMs: 0 };
+  /**
+   * JEDA BERTINGKAT, bukan tetap 250ms (2026-08-17).
+   *
+   * TERUKUR pada 26.111 mint-settle: mint muncul p50 328ms, p75 639ms — mayoritas CEPAT.
+   * Tapi ekornya panjang (p90 8,9 detik, p99 159 detik), dan polling tetap 250ms membayar
+   * ekor itu dengan tarif penuh: rata-rata 36,3 panggilan per kandidat. Itu 68% dari SELURUH
+   * konsumsi RPC bot, dan kuota Helius gratis hanya menyediakan 0,386 kredit/detik.
+   *
+   * Jeda kini melebar (×1,6, dibatasi 2,5 detik). Kasus cepat — yang mayoritas — hampir tidak
+   * berubah latensinya karena polling awal tetap rapat; yang ditekan justru ekor yang menunggu
+   * lama dan selama ini dipoll sia-sia. Turun ke ~4 panggilan per kandidat, hemat 89%.
+   *
+   * Ini penjadwalan, BUKAN gerbang keamanan: hasilnya tetap fail-open dan simulasi beli tetap
+   * jadi penentu sebenarnya, jadi melonggarkan jeda tidak bisa meloloskan koin yang buruk.
+   */
+  // TIGA polling pertama tetap rapat 250ms, baru sesudahnya melebar.
+  // Alasannya terukur: p50 mint muncul 328ms dan p75 639ms, jadi MAYORITAS ketemu dalam tiga
+  // polling pertama — melebarkan jeda di sana justru MENAMBAH satu panggilan (model: 2,5 lawan
+  // 2,2) tanpa manfaat. Pelebaran hanya berguna di ekor, dan di situlah ia menghemat besar
+  // (36,2 → ~4 panggilan saat propagasi lambat, yaitu persis saat RPC sedang kelaparan dan
+  // penghematan paling dibutuhkan). Jadi: cepat = sama seperti sebelumnya, lambat = jauh hemat.
+  let delay = 250, polls = 0;
   for (;;) {
     try {
       const res = await pooledRpc<{ value: { owner?: string } | null }>("getAccountInfo", [mint, { encoding: "base64", commitment: "processed" }]);
@@ -315,7 +477,8 @@ export async function waitForMintVisible(mint: string, maxWaitMs = 8_000, pollMs
       if (owner && TOKEN_PROGRAMS.has(owner)) return { visible: true, waitedMs: Date.now() - started };
     } catch { /* transport hiccup — keep waiting until the cap, then fail open */ }
     if (Date.now() - started >= maxWaitMs) return { visible: false, waitedMs: Date.now() - started };
-    await sleep(pollMs);
+    await sleep(Math.min(delay, Math.max(0, maxWaitMs - (Date.now() - started))));
+    if (++polls >= 3) delay = Math.min(Math.round(delay * 1.6), 2_500);
   }
 }
 
@@ -339,11 +502,30 @@ async function rpc<T>(method: string, params: ParamsFor, needBatch = 0, signal?:
     // Endpoints that cannot take this batch size are not "unhealthy" — they are simply the
     // wrong tool for THIS call. Filtering here (rather than letting them error) is what keeps
     // a 5-account provider from taking an undeserved strike on a 100-account read.
-    const capable = endpoints.filter((e) => e.maxBatch >= needBatch);
+    // Same idea applies to METHOD support: an endpoint that has told us it will not serve this
+    // method is the wrong tool for THIS call, not an unhealthy endpoint. Filter it out here so
+    // it keeps carrying everything else. If that leaves nobody, fall back to the unfiltered set
+    // rather than failing outright — a remembered verdict must never be able to empty the pool.
+    const byMethod = endpoints.filter((e) => servesMethod(e.url, method));
+    const capable = (byMethod.length ? byMethod : endpoints).filter((e) => e.maxBatch >= needBatch);
     let pool = capable.filter((e) => e.benchedUntil <= now);
     if (!pool.length) {
       const from = capable.length ? capable : endpoints;
       pool = [from.reduce((a, b) => (a.benchedUntil <= b.benchedUntil ? a : b))];
+    } else if (pool.length > 1) {
+      // ROUND-ROBIN ACROSS HEALTHY ENDPOINTS (2026-08-04, owner asked for every key with credit
+      // to be rotated). Failover already existed and worked, but it only ever moved traffic AFTER
+      // an endpoint was benched — so with the pool walked in a fixed order, endpoint #1 absorbed
+      // essentially all of it. Measured before this change: Helius carried 74% of calls and
+      // nearly every rate-limit strike, while the second endpoint sat idle.
+      //
+      // Two free Helius keys throttle INDEPENDENTLY, so spreading calls across them roughly
+      // doubles the rate ceiling before anyone gets benched — and RPC starvation is the single
+      // largest latency regression this project has measured (entry 64.4s → 15.5s when it was
+      // fixed). Rotating the START of the walk keeps failover semantics exactly as they were:
+      // whoever is picked first, every remaining healthy endpoint is still tried after it.
+      const start = rrCursor++ % pool.length;
+      pool = pool.slice(start).concat(pool.slice(0, start));
     }
     let lastErr: unknown;
     for (const ep of pool) {
@@ -374,10 +556,16 @@ async function rpc<T>(method: string, params: ParamsFor, needBatch = 0, signal?:
         lastErr = err;
         if (err instanceof ResearchYield) throw err; // budget yield, not an endpoint fault
         if (isClientError(err)) throw err; // our request is malformed — no strike, and no point asking anyone else
+        if (isMethodUnsupported(err)) {
+          // Not a fault. Remember it and move to the next endpoint without penalising this one.
+          marksUnsupported(ep.url, method);
+          if (endpoints.length > 1) ui.info(`[rpc] ${ep.host} does not serve ${method} — remembered, rotating`);
+          continue;
+        }
         if (err instanceof RateLimited) {
           stats.rateLimited++;
           ep.rateLimits++;
-          const policy = rateLimitBenchPolicy(err.detail, ++ep.strikes);
+          const policy = rateLimitBenchPolicy(err.detail, ++ep.strikes, Date.now(), ep.calls > 0);
           const ms = policy.ms;
           ep.benchedUntil = Date.now() + ms;
           ep.benchReason = policy.reason;
@@ -386,13 +574,21 @@ async function rpc<T>(method: string, params: ParamsFor, needBatch = 0, signal?:
             ui.warn(`[rpc] ${ep.host} ${label} — benched ${Math.round(ms / 1000)}s, rotating`);
           }
         } else if (isUnreachable(err)) {
-          // DNS/TCP-level failure: the host does not resolve or refuses connections. That is
-          // DEFINITIVE, not ambiguous, so bench on the FIRST occurrence. Waiting for 3 strikes
-          // cost ~1.5s on every call in the meantime (measured) — unacceptable on the entry path.
-          ep.benchedUntil = Date.now() + Math.min(config.rpcCooldownMs, 15_000);
+          // DNS/TCP/TLS-level failure: the host does not resolve, refuses connections, or
+          // rejects the handshake. That is DEFINITIVE, not ambiguous, so bench on the FIRST
+          // occurrence. Waiting for 3 strikes cost ~1.5s on every call in the meantime
+          // (measured) — unacceptable on the entry path.
+          //
+          // The bench also ESCALATES, for the same reason a spent quota does. A flat 15s meant
+          // a permanently decommissioned endpoint was retried every 15 seconds forever, paying
+          // a full connect+handshake failure each time. Escalating backs a genuinely dead host
+          // off to 30 minutes while still letting a transient network blip return in 15s,
+          // because any success resets `strikes`.
+          const ms = Math.min(15_000 * 2 ** Math.max(0, ep.strikes++), 30 * 60_000);
+          ep.benchedUntil = Date.now() + ms;
           ep.fails = 0;
           ep.benchReason = "unreachable";
-          if (endpoints.length > 1) ui.warn(`[rpc] ${ep.host} unreachable — benched 15s, rotating`);
+          if (endpoints.length > 1) ui.warn(`[rpc] ${ep.host} unreachable — benched ${Math.round(ms / 1000)}s, rotating`);
         } else if (++ep.fails >= 3) {
           // Ambiguous failures (5xx, timeouts, a single bad response) — these are usually
           // transient, and benching a healthy endpoint costs us its speed, so require repeats.
@@ -560,7 +756,15 @@ const HOLDER_PAGE = 60;
 interface DasTokenAccounts { token_accounts?: Array<{ amount?: number; owner?: string }> }
 
 export async function holderCountWithSource(mint: string): Promise<{ count: number | null; source: "rpc" | "das" | "gmgn" | null }> {
-  try {
+  // DAS DIMATIKAN 2026-08-15. Dua alasan, keduanya terukur:
+  //   1. RUSAK — sejak 2026-08-12 DAS Helius mengembalikan array kosong untuk mint baru; 5 koin
+  //      yang ditolak "0 holder" ternyata punya 2/19/12/20/2 pemegang menurut sumber lain.
+  //   2. MAHAL — DAS berharga 10 kredit lawan 1 kredit metode biasa, jadi ia memakan 22,3% dari
+  //      seluruh anggaran kredit hanya dari 2,8% panggilan. Seperlima kredit terbakar untuk
+  //      memanggil sumber rusak yang jawabannya dibuang.
+  // Jalur cadangan (getTokenLargestAccounts → GMGN → kurva) sudah terpasang dan terbukti bekerja.
+  // Hidupkan lagi dengan DAS_HOLDERS=true kalau Helius memperbaiki indeksnya.
+  if (process.env.DAS_HOLDERS === "true") try {
     // Per-provider shape — see the ParamsFor note on rpcVia. Keyed on the host so a new endpoint
     // defaults to the Helius spelling (the DAS spec Metaplex published); only QuickNode's variant
     // is special-cased, because that is the one measured to differ.
@@ -569,7 +773,14 @@ export async function holderCountWithSource(mint: string): Promise<{ count: numb
         ? { mintAddress: mint, limit: HOLDER_PAGE, options: { showZeroBalance: false } }
         : { mint, limit: HOLDER_PAGE, options: { showZeroBalance: false } });
     const accounts = das?.token_accounts;
-    if (Array.isArray(accounts)) {
+    // KOSONG ≠ NOL. Array kosong dari DAS berarti "indeks belum punya mint ini", BUKAN "tidak ada
+    // pemegang" — dan `Math.max(0, owners.size - 1)` di bawah mengubah keduanya jadi angka 0 yang
+    // sama-sama meyakinkan. TERUKUR 2026-08-12: DAS Helius berhenti mengindeks mint baru sekitar
+    // 03:50 UTC; 5 koin yang ditolak "0 holder" ternyata punya 2/19/12/20/2 pemegang menurut
+    // getTokenLargestAccounts pada mint yang sama. Akibatnya SELURUH entry berhenti — 43 menit
+    // tanpa satu pun pembelian, padahal jeda normal antar-pembelian median 1,7 menit.
+    // Array kosong sekarang jatuh ke jalur berikutnya, bukan dipercaya sebagai nol.
+    if (Array.isArray(accounts) && accounts.length > 0) {
       // Distinct OWNERS, not accounts — one wallet can hold several token accounts for a mint,
       // and counting those separately would inflate "how many people hold this".
       const owners = new Set(accounts.filter((a) => (a.amount ?? 0) > 0).map((a) => a.owner ?? ""));

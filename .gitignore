@@ -2,5 +2,14 @@ node_modules/
 dist/
 logs/
 .env
+# Rotating .env backups carry live API keys — the base rule does not match them.
+# Verified 2026-08-22: 10 such files were untracked and would have committed every
+# Helius + QuickNode key into history.
+.env.*
+!.env.example
 .keys/
 backups/
+
+# Local rotating backups (bot.sh.bak-160354, run-*.sh.bak-*, *.ws-bak — your own convention)
+*.bak-*
+*.ws-bak

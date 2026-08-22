@@ -177,7 +177,11 @@ export const config = {
   // now carries a Solana Tracker risk block for later correlation. Mixing these with s2e15 would
   // blend three different admission rules into one win rate.
   strategy2Epoch: "s2e16-2026-07-31",
-  dryRun: true as const, // MVP is dry-run only; there is no live path in this codebase
+  // Historically this comment read "there is no live path in this codebase" — true until
+  // 2026-08-22, when execution/live-bridge.ts wired liveBuy/liveSell (which had existed with
+  // ZERO callers) into the paper trader's open/partial/close. Real spending is still inert
+  // unless EXEC_MODE=live AND LIVE_TRADING_CONFIRMED=yes. Nothing reads this flag.
+  dryRun: true as const,
   rpcEndpoints: rpcPool,
   rpcUrl: rpcPool[0]!,
   rpcBackupUrl: rpcPool[1],
@@ -348,6 +352,11 @@ export const config = {
     // buy-flow data to show real recent demand (net buyers > 0, buy volume > sell volume) before
     // admitting a candidate. Config-gated since Jupiter 5m-stats coverage for this token class
     // hasn't been measured at scale yet — a one-line toggle if it turns out too strict.
+    // Saat data permintaan Jupiter TIDAK ADA (bukan lemah — benar-benar tidak tersedia), terima
+    // kandidatnya dan tandai. Diukur 2026-08-11: cakupan Jupiter cuma 30% untuk kelas token ini,
+    // jadi gagal-tertutup membuang 70% kandidat tanpa bukti apa pun. Lihat blok demandConfirmed
+    // di strategy2-papertrader.ts. Setel "false" untuk kembali ke gagal-tertutup.
+    admitUnknownDemand: process.env.S2_ADMIT_UNKNOWN_DEMAND !== "false",
     requireDemandConfirmation: (process.env.STRATEGY2_REQUIRE_DEMAND ?? "true") !== "false",
     // Audit fix (2026-07-29): "cost-aware admission" — measured round-trip friction (entry+exit
     // combined) averaged ~3-4% across real closes. Reject an entry if the REAL quote's own
@@ -417,6 +426,21 @@ export const config = {
     url: process.env.FEELING_LLM_URL?.trim() || undefined,
     key: process.env.FEELING_LLM_KEY?.trim() || undefined,
     model: process.env.FEELING_LLM_MODEL?.trim() || "MiniMax-M3",
+    /**
+     * MODEL CHAIN, tried in order — a pinned model alone is a single point of failure.
+     *
+     * Measured 2026-08-09 against the real agent prompt: `auto` failed 3 of 4 calls (hanging past
+     * 30s) while `step-3.5-flash` answered in 14,0s and 15,6s with valid JSON, comfortably inside
+     * the 22s timeout. `DeepSeek-V4-Flash` and `MiniMax-M3` both timed out at 25s, `Qwen3.6-35B-A3B`
+     * returned 429.
+     *
+     * But pinning is exactly what this relay punishes: a retired model answers HTTP 410 and the
+     * agent goes fully dark — that already happened with `Qwen3.5-397B-A17B`. So the fast model
+     * leads and `auto` stays the backstop, keeping the relay's own routing as the last line
+     * rather than the first.
+     */
+    modelChain: (process.env.FEELING_LLM_MODELS?.trim() || "step-3.5-flash,auto")
+      .split(",").map((m) => m.trim()).filter(Boolean),
     // TOKEN BUDGET + TIMEOUT for the LLM call. The relay's `auto` routing is NON-DETERMINISTIC:
     // one call lands on a fast non-reasoning model (agnes-2.0-flash: ~50 tokens, 1.4s), the next
     // on a REASONING model (stepfun step-3.7-flash: emits `reasoning_content` first, `content`
@@ -496,6 +520,26 @@ export const config = {
     // not a momentum wait — no time is spent, we just refuse curves nobody has bought.
     // HONEST: every band is still net negative. This halves the bleed, it does not create edge —
     // and n is small above the floor. Re-derive once the latency fix produces truly fresh entries.
+    /**
+     * DEV'S OWN BUY AT LAUNCH — reject above this.
+     *
+     * Measured 2026-08-10 across 1.689 band-cohort trades, then re-validated inside the live
+     * cohort alone (`qdoru7`, n=1.002) before shipping: dev buys under 3 SOL returned +2,28%
+     * against −3,79% above it, a 6,07-point gap at t=+1,61 with split-half winning 95% of 400
+     * resamples. It is INDEPENDENT of the MC-band lever (correlation +0,073) and survives inside
+     * every MC slice, so it is a second axis rather than a rediscovery of the first.
+     *
+     * The mechanism is not hit rate — that is 44% vs 45%, identical. It is magnitude: winners
+     * average +54,9% vs +44,9% and losers −41,5% vs −45,4%. A dev who buys heavily into his own
+     * launch owns supply that has to be sold into whatever rally follows.
+     *
+     * NOT monotonic at the bottom: the 0–1 SOL bucket (+1,71%) is weaker than 1–2 (+9,93%) and
+     * 2–3 (+8,61%), which reads as "no skin in the game" also being a warning. Only the ceiling
+     * is enforced; do not add a floor without measuring that separately.
+     *
+     * Costs ~54% of entries, so data accrues about twice as slowly. Set 0 to disable.
+     */
+    entryDevBuyMaxSol: Number(process.env.ENTRY_DEV_BUY_MAX_SOL ?? 0),
     entryMcBandSol: {
       floor: Number(process.env.ENTRY_MC_FLOOR_SOL ?? 30),   // ~1.07× launch — demand actually showed up
       ceiling: Number(process.env.ENTRY_MC_CEIL_SOL ?? 45),  // ~1.6× launch — don't buy the pump
@@ -521,6 +565,14 @@ export const config = {
     // BANYAK" — small MC + many holders is the BEST case; a SOL floor wrongly killed
     // it). Enter at ANY marketcap, but only once real buyers show up (holders=1 is
     // just the dev = dead-on-arrival). Live holder count from getTokenLargestAccounts.
+    // Cadangan saat hitungan holder TIDAK TERBACA: pakai pembelian non-dev dari kurva segar
+    // (entryVSol − 30 − devInitialBuySol). Dipasang 2026-08-12 setelah DAS Helius berhenti
+    // mengindeks mint baru dan laju entry jatuh dari ~17/jam ke 1/jam. Ambang sengaja RENDAH —
+    // tugasnya cuma menolak yang benar-benar mati (cuma dev), bukan menyeleksi kualitas.
+    holderFallback: {
+      enabled: process.env.HOLDER_FALLBACK !== "false",
+      minOtherBuySol: Number(process.env.HOLDER_FALLBACK_MIN_SOL ?? 0.5),
+    },
     minHoldersToSnipe: Number(process.env.MIN_HOLDERS_SNIPE ?? 10), // ≥ this many real buyers = demand
   },
 
@@ -808,6 +860,17 @@ export const config = {
       afterMs: Number(process.env.NO_DEV_MS ?? 45_000),
       minPeakPct: Number(process.env.NO_DEV_PEAK_PCT ?? 5), // executable peak gain it must have printed by then
     },
+    // EARLY CUT (2026-08-11). BEDA JENIS dari noDevelopment di atas: yang itu menguji PUNCAK
+    // ("belum pernah naik"), yang ini menguji HARGA SEKARANG ("sudah jatuh"). Peringatan
+    // "jangan lebih pendek dari 45s" di atas berlaku untuk uji puncak — memotong berdasarkan
+    // puncak di detik ke-15 membunuh 35% runner karena runner sering belum sempat naik.
+    // Posisi yang SUDAH −10% di 5 detik pertama adalah populasi yang berbeda jauh.
+    // Validasi lengkap ada di papertrader.ts pada blok EARLY CUT.
+    earlyCut: {
+      enabled: process.env.EARLY_CUT !== "false",
+      withinMs: Number(process.env.EARLY_CUT_MS ?? 5_000),
+      pnlPct: Number(process.env.EARLY_CUT_PCT ?? -10), // dikunci −10, bukan −5 yang optimum di grid
+    },
     // NOTE: the exit is the DYNAMIC TRAIL (dynamicTrail above) + catastrophic + dev-dump + agent —
     // NOT a fixed stop or a take-profit target. Removed dead config (trailArmPct/trailingStopPct/
     // *Fast/stopLossPct/targetTpPct) that looked active but was never read (they misled analysis —
@@ -982,6 +1045,36 @@ export const config = {
     // requires this out-of-band env flag, which a browser can never set. Both locks
     // must be open. Default: closed.
     liveConfirmed: process.env.LIVE_TRADING_CONFIRMED === "yes",
+    /**
+     * LIVE BRIDGE — the module that mirrors the paper trader's decisions onto the real
+     * chain (execution/live-bridge.ts). It only ever runs when EXEC_MODE=live AND
+     * LIVE_TRADING_CONFIRMED=yes, i.e. behind the same double lock as everything else.
+     *
+     * `sizeSol` is deliberately SEPARATE from paperTradeSizeSol: the paper trader keeps
+     * running its own (larger) size for measurement continuity while real money goes out
+     * in a much smaller clip. It is additionally clamped to guard.maxPerTradeSol.
+     */
+    live: {
+      sizeSol: Number(process.env.LIVE_TRADE_SIZE_SOL ?? 0.02),
+      // Reconcile the on-chain balance against our own post-transaction snapshot. Any
+      // unexplained move between our transactions → HALT (drainer / unknown spend / a
+      // timed-out tx that landed after we gave up on it).
+      reconcileMs: Number(process.env.LIVE_RECONCILE_MS ?? 60_000),
+      // Sweep: sell any real bag whose paper position is already gone, retry stuck sells,
+      // and reclaim ATA rent. This is what makes a timed-out buy safe — a bag that lands
+      // after we stopped waiting is found and liquidated instead of sitting untracked.
+      sweepMs: Number(process.env.LIVE_SWEEP_MS ?? 45_000),
+      // How long to keep polling for tokens after a buy whose confirmation timed out.
+      // A timeout is NOT a failure — the tx may still land. Never assume "no position".
+      buySettleMs: Number(process.env.LIVE_BUY_SETTLE_MS ?? 180_000),
+      // Reclaim the ~0.00204 SOL ATA rent after a bag is fully sold. At a 0.02 SOL clip
+      // that rent is ~10% of the stake — leaving it on the table would make live P&L
+      // diverge from the paper model, which books the reclaim.
+      closeAta: process.env.LIVE_CLOSE_ATA !== "false",
+      // Consecutive failed sells on one lot before the kill switch trips. A bag we cannot
+      // sell is the one failure mode that turns a bounded loss into an unbounded one.
+      maxSellFailures: Number(process.env.LIVE_MAX_SELL_FAILURES ?? 6),
+    },
     // GUARDIAN caps — the blast-radius limits on real money. Deliberately tiny;
     // raise only once the live edge is proven. Every real spend is gated by these
     // (execution/guardian.ts), fail-closed, and persisted so a crash can't reset them.

@@ -8,11 +8,13 @@
  *      demonstrates the bot signs with its own key, instantly, with no approval.
  */
 import { existsSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { guardBuy, recordSpend, spentLast24h, halt, resume, isHalted, reconcile, liveAllowed } from "./execution/guardian.js";
 import { devnetPlumbingTest } from "./execution/executor.js";
-import { botPubkey } from "./execution/wallet.js";
+import { botPubkey, walletSource } from "./execution/wallet.js";
+import { keychainRead, keychainWrite, keychainDelete, keySource } from "./execution/keystore.js";
 
 const GUARD_PATH = join(config.logDir, "guard.json");
 let pass = 0;
@@ -68,7 +70,41 @@ async function main(): Promise<void> {
   console.log("\n2. LIVE GATE (real-money double-lock)");
   const gate = liveAllowed();
   check("live is BLOCKED without opt-in", !gate.ok, `(${gate.reason})`);
+  // Regression guard: the gate must accept a keychain-stored key. It previously required the
+  // key FILE to exist, so migrating the key off disk silently blocked live execution forever.
+  check("the live gate is not blocked by a missing key FILE",
+    gate.reason?.includes("signing key") !== true || keySource() === "none",
+    `(${gate.reason})`);
   check("EXEC_MODE is not live in .env", config.exec.mode !== "live" || !config.exec.liveConfirmed);
+
+  // ── 2b. KEY STORAGE ────────────────────────────────────────────────────
+  console.log("\n2b. KEY STORAGE (keychain first, file fallback)");
+  const addr = botPubkey(); // forces the load so walletSource() is populated
+  console.log(`  in use: ${walletSource()} · address ${addr.slice(0, 10)}…`);
+  check("the bot resolves a wallet address", addr.length >= 32);
+  check("keySource() agrees with what botWallet() actually used", keySource() === walletSource());
+  if (process.platform === "darwin") {
+    // Round-trip against a THROWAWAY item — the real wallet item is never touched.
+    const svc = "micincloud-bot-selftest";
+    const acct = "throwaway";
+    const secret = `selftest-${Date.now()}`;
+    keychainDelete(svc, acct);
+    check("keychain read of a missing item returns null", keychainRead(svc, acct) === null);
+    const w = keychainWrite(secret, svc, acct);
+    check("keychain write succeeds", w.ok, `(${w.err ?? ""})`);
+    check("keychain read-back is byte-identical", keychainRead(svc, acct) === secret);
+    // Unattended restart is the whole point: a FRESH process must read it with no prompt.
+    const child = spawnSync(process.execPath, [...process.execArgv, "-e",
+      `const {spawnSync}=require("node:child_process");const r=spawnSync("security",["find-generic-password","-s","${svc}","-a","${acct}","-w"],{encoding:"utf8"});process.stdout.write("CHILD:"+(r.stdout??"").trim());`],
+      { encoding: "utf8", timeout: 15_000 });
+    check("a FRESH process reads it without a prompt", `${child.stdout ?? ""}`.includes(`CHILD:${secret}`), "(unattended restart depends on this)");
+    check("keychain delete removes it", keychainDelete(svc, acct) && keychainRead(svc, acct) === null);
+  } else {
+    console.log("  ⚠ not macOS — keychain round-trip skipped");
+  }
+  if (walletSource() === "file") {
+    console.log(`  ⚠ the live key is still a plaintext file — run: npm run wallet keychain-import`);
+  }
 
   // ── 3. DEVNET PLUMBING (real automatic signing, fake money) ────────────
   console.log("\n3. DEVNET PLUMBING — automatic signing, NO approval, faucet SOL");

@@ -3,28 +3,48 @@ import bs58 from "bs58";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.js";
+import { keychainRead, type KeySource } from "./keystore.js";
 
 /**
  * Dedicated BOT wallet (separate from any main/Phantom wallet — CONCEPT.md D5).
  *
- * Storage: for devnet + simulate (worthless devnet SOL / never-spent simulate
- * float) the key lives in a gitignored file with 0600 perms. **LIVE mode must
- * use the OS keychain and is hard-blocked here** until that is built — never
- * run real money from a plaintext key file.
+ * Storage, in priority order (execution/keystore.ts):
+ *   1. macOS keychain  — where the key belongs once real money is involved
+ *   2. gitignored 0600 file — the fallback, and still fine for devnet/simulate
+ *   3. generate a new one — first run only
+ *
+ * The keychain is checked FIRST, so after `npm run wallet keychain-import` a stale key file
+ * left on disk can never silently take precedence over the copy you migrated to.
  */
 let cached: Keypair | null = null;
+let cachedSource: KeySource = "none";
+
+function fromSecret(secret: string): Keypair {
+  return Keypair.fromSecretKey(bs58.decode(secret.trim()));
+}
 
 export function botWallet(): Keypair {
   if (cached) return cached;
-  if (existsSync(config.exec.keyFile)) {
-    cached = Keypair.fromSecretKey(bs58.decode(readFileSync(config.exec.keyFile, "utf8").trim()));
+  const fromKeychain = keychainRead();
+  if (fromKeychain) {
+    cached = fromSecret(fromKeychain);
+    cachedSource = "keychain";
+  } else if (existsSync(config.exec.keyFile)) {
+    cached = fromSecret(readFileSync(config.exec.keyFile, "utf8"));
+    cachedSource = "file";
   } else {
     cached = Keypair.generate();
     mkdirSync(dirname(config.exec.keyFile), { recursive: true });
     writeFileSync(config.exec.keyFile, bs58.encode(cached.secretKey));
     chmodSync(config.exec.keyFile, 0o600);
+    cachedSource = "generated";
   }
   return cached;
+}
+
+/** Where the in-use key came from. Empty until botWallet() has been called at least once. */
+export function walletSource(): KeySource {
+  return cachedSource;
 }
 
 export function botPubkey(): string {

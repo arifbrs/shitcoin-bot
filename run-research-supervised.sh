@@ -25,7 +25,14 @@ sleep 3  # let the proxy bind its port before anything tries to call it
 supervise "strategy2-scout" npm run strategy2:scout &
 supervise "strategy2-outcome" npm run strategy2:outcome &
 supervise "strategy2-paper" npm run strategy2:paper &
-supervise "gmgn-kol-watch" npm run gmgn:kol-watch &
-supervise "gmgn-launchpads" npm run gmgn:launchpads &
+# DIMATIKAN 2026-08-15. Terbukti populasi SALAH: dari 25 nama teratas leaderboard pump.fun,
+# hanya 4 yang ada di 637 wallet semesta GMGN, dan dari 9.445 sampel probe tidak satu pun
+# berasal dari nama leaderboard. Ia memakan kuota RPC/GMGN untuk mengukur kerumunan yang bukan
+# target kita. Hidupkan lagi: hapus komentar di baris berikut.
+# supervise "gmgn-kol-watch" npm run gmgn:kol-watch &
+# DIMATIKAN 2026-08-15. Riset murni — mengamati peluncuran yang TIDAK kita beli. Jasanya besar
+# (dari sinilah lever entry-MC ditemukan), tapi lever itu sudah dinyatakan HABIS, jadi ia kini
+# membayar sewa tanpa menghasilkan. Kuota dialihkan ke sniper yang mencetak 172 trade/hari.
+# supervise "gmgn-launchpads" npm run gmgn:launchpads &
 
 wait

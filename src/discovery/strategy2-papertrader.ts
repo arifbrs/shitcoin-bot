@@ -47,6 +47,9 @@ interface OpenPosition {
   entryHolders: number; entryLiqUsd: number; entrySource: string;
   entryChange1h: number | null; entryChange24h: number | null;
   entrySmartDegenCount: number | null; entryRenownedCount: number | null;
+  // Apakah permintaan Jupiter 5m TERBACA saat masuk. Tanpa ini, kandidat yang diterima
+  // karena datanya hilang tidak bisa dibedakan dari yang permintaannya terbukti kuat.
+  entryDemandKnown: boolean;
   entryRugRatio: number | null; entryIsWashTrading: boolean | null;
   // Review fix (2026-07-27, follow-up audit): the epoch/cfg active WHEN THIS POSITION WAS
   // OPENED — a position can stay open across a later epoch/cfg change, and the close/outcome
@@ -296,10 +299,30 @@ function freshCandidates(everSeen: Set<string>): CandidateRow[] {
   // hardcoded law) because Jupiter 5m-stats coverage for this token class hasn't been measured
   // yet at scale — if it turns out to reject nearly everything, that's itself a measurement,
   // not just a bug, and the flag makes it a one-line toggle rather than a code change.
+  /**
+   * DIUKUR 2026-08-11, menjawab pertanyaan yang ditinggalkan komentar di atas.
+   *
+   * Cakupan Jupiter 5m untuk kelas token ini ternyata hanya 30%. Dari 239 kandidat yang lolos
+   * semua gerbang statis dalam 2 hari, 168 (70%) gugur karena DATANYA HILANG dan hanya 28 karena
+   * permintaannya benar-benar lemah. Gagal-tertutup jadi memotong tujuh dari sepuluh kandidat
+   * atas dasar ketiadaan data, bukan atas dasar bukti — dan menahan S2 di ~5 trade/hari, terlalu
+   * sedikit untuk pernah menyimpulkan apa pun (59 trade seumur hidup).
+   *
+   * Sekarang "buruk" dan "tidak diketahui" dipisahkan, persis seperti yang kita lakukan di
+   * tempat lain (drained vs readFail pada harga, misalnya):
+   *   - data ADA dan permintaan lemah  → TOLAK (bukti negatif, tetap dihormati)
+   *   - data HILANG                    → terima, TAPI ditandai
+   *
+   * Penandanya wajib: tanpa `entryDemandKnown` di catatan penutupan, kedua populasi menyatu dan
+   * kelonggaran ini tidak akan pernah bisa dinilai. Dengan penanda, "apakah yang tak terkonfirmasi
+   * berkinerja lebih buruk?" terjawab sendiri dari data.
+   */
+  const demandKnown = (c: CandidateRow): boolean =>
+    c.netBuyers5m != null && c.buyVolume5m != null && c.sellVolume5m != null;
   const demandConfirmed = (c: CandidateRow): boolean => {
     if (!config.strategy2Paper.requireDemandConfirmation) return true;
-    if (c.netBuyers5m == null || c.buyVolume5m == null || c.sellVolume5m == null) return false;
-    return c.netBuyers5m > 0 && c.buyVolume5m > c.sellVolume5m;
+    if (!demandKnown(c)) return config.strategy2Paper.admitUnknownDemand;
+    return c.netBuyers5m! > 0 && c.buyVolume5m! > c.sellVolume5m!;
   };
 
   const candidates = [...seen.values()].filter((c) =>
@@ -627,6 +650,7 @@ async function openPosition(s: State, c: CandidateRow, exposureCapUsd: number): 
     peakMcUsd: live.mcUsd, currentMcUsd: live.mcUsd, openedAt: Date.now(), entryHolders: live.holders ?? c.holders,
     entryLiqUsd: live.liqUsd, entrySource: c.source, entryChange1h: c.change1h, entryChange24h: c.change24h,
     entrySmartDegenCount: c.smartDegenCount, entryRenownedCount: c.renownedCount,
+    entryDemandKnown: c.netBuyers5m != null && c.buyVolume5m != null && c.sellVolume5m != null,
     entryRugRatio: c.rugRatio, entryIsWashTrading: c.isWashTrading,
     openedEpoch: config.strategy2Epoch, openedCfg: configHash,
     decimals: live.decimals, supply: live.supply,
@@ -644,6 +668,7 @@ async function openPosition(s: State, c: CandidateRow, exposureCapUsd: number): 
     entryHolders: live.holders ?? c.holders, entryLiqUsd: live.liqUsd, entrySource: c.source,
     entryChange1h: c.change1h, entryChange24h: c.change24h,
     entrySmartDegenCount: c.smartDegenCount, entryRenownedCount: c.renownedCount,
+    entryDemandKnown: c.netBuyers5m != null && c.buyVolume5m != null && c.sellVolume5m != null,
     entryRugRatio: c.rugRatio, entryIsWashTrading: c.isWashTrading,
     // Kept alongside the live figures (audit 2026-07-31) so the size of the staleness problem
     // stays measurable in the log rather than being silently corrected away.
@@ -765,6 +790,7 @@ async function closePositionInner(s: State, pos: OpenPosition, reason: string): 
       entryHolders: pos.entryHolders ?? null, entryLiqUsd: pos.entryLiqUsd ?? null, entrySource: pos.entrySource ?? null,
       entryChange1h: pos.entryChange1h ?? null, entryChange24h: pos.entryChange24h ?? null,
       entrySmartDegenCount: pos.entrySmartDegenCount ?? null, entryRenownedCount: pos.entryRenownedCount ?? null,
+      entryDemandKnown: pos.entryDemandKnown ?? null,
       entryRugRatio: pos.entryRugRatio ?? null, entryIsWashTrading: pos.entryIsWashTrading ?? null,
     });
     return;
@@ -868,6 +894,7 @@ async function closePositionInner(s: State, pos: OpenPosition, reason: string): 
     entryHolders: pos.entryHolders ?? null, entryLiqUsd: pos.entryLiqUsd ?? null, entrySource: pos.entrySource ?? null,
     entryChange1h: pos.entryChange1h ?? null, entryChange24h: pos.entryChange24h ?? null,
     entrySmartDegenCount: pos.entrySmartDegenCount ?? null, entryRenownedCount: pos.entryRenownedCount ?? null,
+    entryDemandKnown: pos.entryDemandKnown ?? null,
     entryRugRatio: pos.entryRugRatio ?? null, entryIsWashTrading: pos.entryIsWashTrading ?? null,
   });
   const line = `[strategy2-paper] CLOSE ${pos.sym} (${reason}) = ${pnlUsd >= 0 ? "+" : ""}$${pnlUsd.toFixed(2)} | ${s.wins}W/${s.losses}L, equity $${s.equityUsd.toFixed(2)}`;

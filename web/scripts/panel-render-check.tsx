@@ -13,6 +13,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { EquityCurve } from "../src/components/panels/EquityCurve";
+import { Hero } from "../src/components/panels/Hero";
 
 const data = JSON.parse(readFileSync("/tmp/st.json", "utf8"));
 const cases: Array<[string, any]> = [
@@ -27,6 +28,22 @@ const cases: Array<[string, any]> = [
   ["pita 1 titik", { ...data, combined: { ...data.combined, equity: [{ bal: 100 }] } }],
 ];
 let bad = 0;
+// Hero: tidak boleh ada satu pun tanda mata uang — Dompet yang memegang uang.
+for (const [label, d] of [["hero data asli", data], ["hero tanpa launchField", { ...data, launchField: [] }], ["hero tanpa scan", { ...data, scan: [] }]] as Array<[string, any]>) {
+  try {
+    const html = renderToStaticMarkup(<Hero data={d} />);
+    // Aturannya BUKAN "tidak boleh ada tanda dolar" — MC koin memang diminta tampil.
+    // Yang dilarang adalah uang DOMPET: saldo gabungan dan P&L, yang sudah dipegang panel Dompet.
+    const c = (d as any).combined ?? {};
+    const forbidden = [c.totalUsd, c.pnlUsd, c.floatUsd, c.s1?.balanceUsd, c.s2?.balanceUsd]
+      .filter((v: unknown): v is number => typeof v === "number")
+      .map((v: number) => Math.abs(v).toFixed(2));
+    const money = forbidden.some((f: string) => html.includes(f));
+    const nan = /NaN|undefined|Infinity/.test(html);
+    console.log(`  ${label.padEnd(20)} ${String(html.length).padStart(5)} byte · ${money ? "*** ADA UANG DOMPET ***" : "tanpa uang dompet"} · ${nan ? "*** RUSAK ***" : "bersih"}`);
+    if (money || nan) bad++;
+  } catch (e) { console.log(`  ${label.padEnd(20)} *** GAGAL: ${(e as Error).message.slice(0,60)}`); bad++; }
+}
 for (const [label, d] of cases) {
   try {
     const html = renderToStaticMarkup(<EquityCurve data={d} />);

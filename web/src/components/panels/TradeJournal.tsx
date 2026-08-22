@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
 
 function fmtAgo(ts: string): string {
@@ -14,7 +15,7 @@ function fmtAgo(ts: string): string {
  * needed for this, both strategies already log closes independently; this just combines the two
  * existing feeds client-side instead of showing Strategy 2 only).
  */
-export function TradeJournal({ data }: { data: StatsResponse }) {
+function TradeJournalInner({ data }: { data: StatsResponse }) {
   const s2 = (data.strategy2Primary?.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason, pnlPct: t.pnlPct, tag: "S2" as const }));
   const s1 = (data.recentTrades ?? []).map((t) => ({ ts: t.ts, symbol: t.symbol, reason: t.reason ?? "?", pnlPct: t.pnlPct, tag: "S1" as const }));
   const trades = [...s1, ...s2].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, 30);
@@ -53,3 +54,14 @@ export function TradeJournal({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const TradeJournal = panelMemo(TradeJournalInner, (d) => [
+  d.strategy2Primary?.recentTrades?.length, d.strategy2Primary?.recentTrades?.[0]?.ts,
+  d.recentTrades?.length, d.recentTrades?.[0]?.ts,
+  // Coin art resolves ASYNCHRONOUSLY — `img` lands on a row that is otherwise unchanged, so a
+  // fingerprint of lengths and timestamps alone would freeze every icon out of existence.
+  // memo:check caught this as 6 real pushes whose visible output changed without a repaint.
+  d.strategy2Primary?.recentTrades?.filter((t) => t.img).length,
+  d.recentTrades?.filter((t) => t.img ?? t.image).length,
+]);

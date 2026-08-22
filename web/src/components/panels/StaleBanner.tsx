@@ -27,6 +27,36 @@ function humanAge(sec: number): string {
 }
 
 export function StaleBanner({ data }: { data: StatsResponse }) {
+  /**
+   * TRADING-PATH STALL takes precedence over the heartbeat.
+   *
+   * The heartbeat only says the Strategy 2 process is looping. On 2026-08-07 the sniper stopped
+   * trading for 4 hours with every green light still lit — launches arriving, logs writing,
+   * heartbeat fresh — because the RPC semaphore had deadlocked and nothing downstream of intake
+   * could run. A banner that watches liveness cannot see that; one that watches whether intake
+   * still produces decisions can.
+   */
+  const stall = data.stall;
+  if (stall?.stalled) {
+    const why = stall.deadlocked
+      ? "semafor RPC buntu — izin konkurensi penuh tanpa lalu lintas"
+      : `launch masuk tapi tidak ada keputusan ${humanAge(stall.decisionAgeSec ?? 0)}`;
+    return (
+      <div role="status" className="mx-auto mb-3 flex max-w-[1700px] flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-down/50 bg-down/10 px-3.5 py-2 font-mono text-[11px] text-down">
+        <span className="font-semibold tracking-wide">■ JALUR TRADING MACET</span>
+        <span className="text-foreground/80">{why}</span>
+        <span className="text-muted-foreground">
+          Proses masih hidup dan log tetap ditulis — jangan percaya lampu hijau lain. Watchdog akan
+          menghidupkan ulang sniper setelah 3 pemeriksaan berturut-turut.
+        </span>
+      </div>
+    );
+  }
+
+  // Kalau S2 tidak berjalan, server TIDAK mengirim strategy2Primary sama sekali (lihat
+  // server.ts), jadi `age` di bawah menjadi null dan banner ini otomatis diam. Jalur sniper
+  // tetap diawasi oleh `data.stall` di atas — umur peluncuran, umur keputusan, dan deadlock
+  // semafor RPC — yang justru pengawas yang benar untuknya.
   const age = data.strategy2Primary?.paper.heartbeatAgeSec ?? null;
   if (age == null || age < WARN_AFTER_SEC) return null;
 

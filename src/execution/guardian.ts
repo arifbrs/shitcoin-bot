@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { keyAvailable } from "./keystore.js";
 
 /**
  * GUARDIAN — the money-safety layer. EVERY real-SOL spend must pass through here.
@@ -143,14 +144,14 @@ export function reconcile(expectedSol: number, actualSol: number): GuardVerdict 
 /**
  * The master live gate. Real mainnet spending needs BOTH locks open:
  *   1. LIVE_TRADING_CONFIRMED=yes  (out-of-band env; a browser can never set it)
- *   2. the bot key file exists
+ *   2. a signing key is reachable — keychain OR file (execution/keystore.ts)
  * and the kill switch must not be tripped. Any failure → not allowed.
  */
 export function liveAllowed(): GuardVerdict {
   if (!config.exec.liveConfirmed) {
     return { ok: false, reason: "LIVE not confirmed — set LIVE_TRADING_CONFIRMED=yes in .env (out-of-band)" };
   }
-  if (!existsSync(config.exec.keyFile)) return { ok: false, reason: "bot key file missing" };
+  if (!keyAvailable()) return { ok: false, reason: "no signing key (neither keychain nor key file)" };
   const h = isHalted();
   if (h.halted) return { ok: false, reason: `HALTED: ${h.reason}` };
   return { ok: true };

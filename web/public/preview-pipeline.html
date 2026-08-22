@@ -1,0 +1,167 @@
+<!doctype html><meta charset="utf-8"><title>Pipeline — variasi</title>
+<style>
+ :root{--bg:#06070a;--tile:#0b0d12;--line:#1a1d24;--line2:#14161c;--fg:#e9ebee;--dim:#7c828d;
+  --dimmer:#40444d;--up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:system-ui,-apple-system,sans-serif}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:var(--sans);padding:32px 28px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:74ch;line-height:1.6;margin-bottom:28px}
+ .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+ .col{width:500px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:600;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:9px}
+ .tile{width:500px;height:250px;background:var(--tile);border:1px solid var(--line);border-radius:12px;
+   padding:14px 16px;position:relative;overflow:hidden;display:flex;flex-direction:column}
+ .hdr{display:flex;align-items:center;gap:7px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:10px}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--acid);box-shadow:0 0 6px var(--acid)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ canvas{position:absolute;inset:0;width:100%;height:100%}
+</style>
+<h1>Pipeline — empat model</h1>
+<p class="sub">Semua angka dari engine yang berjalan, tidak ada dummy. Sniper: 50.413 launch dinilai →
+1.959 dibeli. Scout: 18.641 dilihat → 144 dinilai → 47 masuk. Alasan skip dan alasan exit diambil
+dari log hari ini. Ukuran tile 500×250, sama seperti slot pipeline di dashboard.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"s1": {"gated": 50413, "passed": 50275, "bought": 1959, "skip": {"MC di luar band": 5593, "below-minimum": 1348, "zero-holders": 283, "holder-read-failed": 1}, "lat": {"n": 20, "pre": 0.1, "gate": 2.3, "open": 15.4, "total": 17}}, "s2": {"seen": 18641, "gated": 144, "passed": 47, "rejected": 97, "passRate": 0.3263888888888889, "rej": {"deadToken": 7, "staleMc": 5, "unroutable": 0, "bundle": 28, "ath": 57, "cost": 0}, "opens": 64, "closed": 64, "open": 0}, "exit": {"TRAIL_LOCK": 140, "NO_DEVELOPMENT": 117, "DEV_DUMP": 42, "MAX_HOLD": 37, "FALLBACK_STOP": 10, "CATASTROPHIC": 5}, "scan": ["SOLANA", "Hamhouse", "CETE", "Archer", "TNOS", "CETE", "CETE", "PUMP", "Hamhouse", "FATCAT", "SCATE", "3", "APP", "pkch", "CAT ", ":-)", "SOLGRID", "DATE COIN", "HAROLDE", "SOL"]};
+const $=h=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
+const R=(c,n)=>{const x=document.createElement("div");x.className="col";
+  x.innerHTML=`<div class="cap"><b>${c}</b><span>${n}</span></div>`;return x};
+const nf=v=>v==null?"—":v.toLocaleString("id");
+const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ── A · TANGGA SUSUT ────────────────────────────────────────────
+   Dua jalur mesin berdampingan, tiap anak tangga menyusut menurut
+   log jumlahnya. Susutnya terbaca sebagai bentuk, bukan angka. */
+function stairs(){
+  const S1=[["launch dinilai",D.s1.gated],["lolos gerbang",D.s1.passed],["dibeli",D.s1.bought]];
+  const S2=[["dilihat scout",D.s2.seen],["dinilai",D.s2.gated],["masuk",D.s2.passed]];
+  const mx=Math.max(D.s1.gated,D.s2.seen);
+  const w=n=>Math.max(7,(Math.log10(n+1)/Math.log10(mx+1))*100);
+  const lane=(t,rows,col)=>`<div style="flex:1;min-width:0">
+    <div style="font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:${col};margin-bottom:7px">${t}</div>
+    ${rows.map(([l,n],i)=>`<div style="margin-bottom:7px">
+      <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--dim);margin-bottom:3px">
+        <span>${l}</span><span class="num" style="color:var(--fg)">${nf(n)}</span></div>
+      <div style="height:9px;border-radius:2px;background:var(--line2);overflow:hidden">
+        <div style="height:100%;width:${w(n)}%;background:${col};opacity:${.65-i*.13}"></div></div>
+    </div>`).join("")}</div>`;
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PIPELINE · DUA MESIN</div>
+    <div style="display:flex;gap:18px;flex:1">${lane("S1 sniper",S1,"var(--gold)")}${lane("S2 scout",S2,"var(--scout)")}</div>
+    <div style="display:flex;gap:16px;margin-top:4px;font-size:9px;color:var(--dimmer)">
+      <span>sniper ${(100*D.s1.bought/D.s1.gated).toFixed(1)}% jadi beli</span>
+      <span>scout ${(100*D.s2.passed/D.s2.gated).toFixed(0)}% lolos</span>
+      <span style="margin-left:auto" class="num">skala log</span>
+    </div></div>`);
+}
+
+/* ── B · SUNGAI PARTIKEL ─────────────────────────────────────────
+   Partikel mengalir melewati tiga gerbang nyata sniper: band MC,
+   holder, lalu eksekusi. Yang tersaring mengelupas dengan proporsi
+   sesuai cacah skip hari ini. */
+function river(){
+  const sk=D.s1.skip, tot=Object.values(sk).reduce((a,b)=>a+b,0)||1;
+  const keys=Object.keys(sk);
+  const el=$(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PIPELINE · ARUS SNIPER</div>
+    <canvas></canvas>
+    <div style="position:absolute;right:16px;top:34px;z-index:2;text-align:right">
+      ${keys.map(k=>`<div style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:4px">
+        <span style="font-size:9px;color:var(--dimmer)">${k}</span>
+        <span class="num" style="font-size:10px;color:var(--down);width:44px;text-align:right">${nf(sk[k])}</span></div>`).join("")}
+    </div>
+    <div style="position:absolute;left:16px;bottom:12px;z-index:2;display:flex;gap:20px">
+      <div><div class="num" style="font-size:18px;color:var(--acid)">${nf(D.s1.gated)}</div><div style="font-size:8.5px;color:var(--dimmer);letter-spacing:.1em">DINILAI</div></div>
+      <div><div class="num" style="font-size:18px;color:var(--up)">${nf(D.s1.bought)}</div><div style="font-size:8.5px;color:var(--dimmer);letter-spacing:.1em">DIBELI</div></div>
+      <div><div class="num" style="font-size:18px">${D.s1.lat.total??"—"}<span style="font-size:10px;color:var(--dimmer)">s</span></div><div style="font-size:8.5px;color:var(--dimmer);letter-spacing:.1em">DETEKSI→ENTRY</div></div>
+    </div></div>`);
+  requestAnimationFrame(()=>{
+    const cv=el.querySelector("canvas"),ctx=cv.getContext("2d"),DPR=devicePixelRatio||1;
+    const r=cv.getBoundingClientRect();cv.width=r.width*DPR;cv.height=r.height*DPR;ctx.scale(DPR,DPR);
+    const W=r.width,H=r.height,LANE=H*0.44,G=W*0.34;
+    const keep=D.s1.bought/D.s1.gated;
+    const lanes=keys.map((_,i)=>LANE+30+i*15);
+    const ps=Array.from({length:130},()=>({x:Math.random()*W,y:LANE+(Math.random()-.5)*20,
+      pass:Math.random()<keep,lane:Math.floor(Math.random()*keys.length),v:.45+Math.random()*1.0}));
+    function f(){
+      ctx.clearRect(0,0,W,H);
+      ctx.strokeStyle="rgba(26,29,36,1)";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(G,LANE-30);ctx.lineTo(G,H-46);ctx.stroke();
+      ctx.fillStyle="rgba(124,130,141,.5)";ctx.font="8px ui-monospace,monospace";
+      ctx.fillText("gerbang",G+5,LANE-34);
+      ps.forEach(p=>{p.x+=p.v;
+        if(p.x>W+8){p.x=-8;p.y=LANE+(Math.random()-.5)*20;p.pass=Math.random()<keep;p.lane=Math.floor(Math.random()*keys.length)}
+        if(p.x>G&&!p.pass)p.y+=(lanes[p.lane]-p.y)*.05; else if(p.x<=G)p.y+=(LANE-p.y)*.04;
+        const rj=p.x>G&&!p.pass;
+        ctx.globalAlpha=rj?.26:(p.x>G?.9:.4);
+        ctx.fillStyle=rj?css("--down"):(p.x>G?css("--up"):"#7f8a96");
+        ctx.beginPath();ctx.arc(p.x,p.y,rj?1:1.6,0,7);ctx.fill()});
+      ctx.globalAlpha=1;if(!reduce)requestAnimationFrame(f)}
+    requestAnimationFrame(f)});
+  return el;
+}
+
+/* ── C · JALUR EXIT ──────────────────────────────────────────────
+   Bagian pipeline yang tidak pernah ditampilkan: apa yang terjadi
+   SESUDAH masuk. Enam alasan exit nyata dari cohort berjalan. */
+function exits(){
+  const e=D.exit, tot=Object.values(e).reduce((a,b)=>a+b,0)||1;
+  const col={TRAIL_LOCK:"var(--up)",NO_DEVELOPMENT:"var(--dimmer)",DEV_DUMP:"var(--down)",
+             MAX_HOLD:"var(--gold)",FALLBACK_STOP:"var(--down)",CATASTROPHIC:"var(--down)"};
+  const nm={TRAIL_LOCK:"kunci profit",NO_DEVELOPMENT:"tak bergerak",DEV_DUMP:"dev buang",
+            MAX_HOLD:"batas waktu",FALLBACK_STOP:"stop cadangan",CATASTROPHIC:"stop darurat"};
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PIPELINE · JALUR KELUAR</div>
+    <div style="display:flex;height:13px;border-radius:3px;overflow:hidden;margin-bottom:12px">
+      ${Object.entries(e).map(([k,v])=>`<div style="width:${100*v/tot}%;background:${col[k]||"var(--dim)"};opacity:.7"></div>`).join("")}
+    </div>
+    ${Object.entries(e).map(([k,v])=>`<div style="display:flex;align-items:center;gap:9px;margin-bottom:6px">
+      <span style="width:9px;height:9px;border-radius:2px;background:${col[k]||"var(--dim)"};opacity:.8"></span>
+      <span style="font-size:10px;color:var(--dim);width:96px">${nm[k]||k}</span>
+      <div style="flex:1;height:4px;border-radius:2px;background:var(--line2);overflow:hidden">
+        <div style="height:100%;width:${100*v/tot}%;background:${col[k]||"var(--dim)"};opacity:.55"></div></div>
+      <span class="num" style="width:30px;text-align:right;font-size:10px">${v}</span>
+      <span class="num" style="width:34px;text-align:right;font-size:9px;color:var(--dimmer)">${(100*v/tot).toFixed(0)}%</span>
+    </div>`).join("")}
+    <div style="margin-top:auto;font-size:9px;color:var(--dimmer)">${tot} posisi ditutup di cohort berjalan</div>
+  </div>`);
+}
+
+/* ── D · RANTAI WAKTU ────────────────────────────────────────────
+   Pipeline sebagai anggaran waktu: berapa detik dihabiskan tiap
+   tahap dari deteksi sampai posisi terbuka. Angka latensi nyata. */
+function timeline(){
+  const L=D.s1.lat, segs=[["pra-gerbang",L.pre],["gerbang",L.gate],["buka posisi",L.open]];
+  const tot=segs.reduce((s,[,v])=>s+(v||0),0)||1;
+  const cols=["var(--scout)","var(--gold)","var(--acid)"];
+  return $(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PIPELINE · ANGGARAN WAKTU</div>
+    <div style="display:flex;align-items:baseline;gap:9px;margin-bottom:13px">
+      <div class="num" style="font-size:30px;line-height:1">${L.total??"—"}<span style="font-size:13px;color:var(--dim)">s</span></div>
+      <div style="font-size:10.5px;color:var(--dim)">deteksi → posisi terbuka</div>
+    </div>
+    <div style="display:flex;height:16px;border-radius:3px;overflow:hidden;margin-bottom:11px">
+      ${segs.map(([,v],i)=>`<div style="width:${100*(v||0)/tot}%;background:${cols[i]};opacity:.65"></div>`).join("")}
+    </div>
+    ${segs.map(([k,v],i)=>`<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+      <span style="width:9px;height:9px;border-radius:2px;background:${cols[i]};opacity:.8"></span>
+      <span style="font-size:10px;color:var(--dim);width:92px">${k}</span>
+      <span class="num" style="font-size:12px;width:46px">${v??"—"}s</span>
+      <span class="num" style="font-size:9px;color:var(--dimmer)">${(100*(v||0)/tot).toFixed(0)}%</span>
+    </div>`).join("")}
+    <div style="margin-top:auto;font-size:9px;color:var(--dimmer);line-height:1.45">
+      ~12s dari &ldquo;buka posisi&rdquo; adalah lantai chain — pembelian pump.fun baru bisa disimulasikan
+      saat token berumur 12–15 detik.
+    </div></div>`);
+}
+
+const out=document.getElementById("out");
+[["A · Tangga susut","Dua mesin berdampingan, tiap anak tangga menyusut menurut log jumlahnya. Susutnya terbaca sebagai bentuk.",stairs],
+ ["B · Arus sniper","Partikel melewati gerbang; yang tersaring mengelupas dengan proporsi sesuai cacah skip hari ini.",river],
+ ["C · Jalur keluar","Bagian pipeline yang belum pernah ditampilkan: apa yang terjadi SESUDAH masuk posisi.",exits],
+ ["D · Anggaran waktu","Pipeline sebagai detik: ke mana waktu dari deteksi sampai posisi terbuka habis.",timeline],
+].forEach(([t,n,f])=>{const c=R(t,n);c.appendChild(f());out.appendChild(c)});
+</script>

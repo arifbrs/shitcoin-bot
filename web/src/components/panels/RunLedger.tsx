@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
 
 /**
@@ -9,7 +10,7 @@ import type { StatsResponse } from "@/types/stats";
  * runs could scroll past unseen and a refill read as a gain. This panel is the one place the
  * whole history is stated, with the refill named as a refill.
  */
-export function RunLedger({ data }: { data: StatsResponse }) {
+function RunLedgerInner({ data }: { data: StatsResponse }) {
   const r = data.runs;
   if (!r) return <p className="font-mono text-xs text-muted-foreground">Belum ada data run.</p>;
 
@@ -93,3 +94,6 @@ export function RunLedger({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const RunLedger = panelMemo(RunLedgerInner, (d) => [d.runs?.recent?.length, d.runs?.lifetime?.trades]);

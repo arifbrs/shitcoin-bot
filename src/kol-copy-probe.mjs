@@ -1,0 +1,191 @@
+/**
+ * KOL COPY PROBE — mengamati wallet leaderboard pump.fun secara REAL-TIME lewat Helius.
+ *
+ * Menjawab pertanyaan yang tidak bisa dijawab probe GMGN: berapa imbal hasil dari
+ * BELI-KOL sampai JUAL-KOL? Bukan sampai jam dinding yang kita tentukan sendiri.
+ *
+ * KENAPA BUKAN GMGN: daftar KOL GMGN dan leaderboard pump.fun adalah dua populasi berbeda —
+ * dari 25 nama teratas leaderboard, hanya 4 yang pernah muncul di 637 wallet semesta GMGN.
+ * Dan feed GMGN telat median 32 detik lalu kena ban IP. logsSubscribe tidak punya dua masalah itu.
+ *
+ * Filter `mentions` SUDAH DIVERIFIKASI benar-benar menyaring (2026-08-11): wallet mati dan
+ * wallet rank-18 sama-sama 0 pesan/detik, sementara nyhrox 27/detik. Jadi volume itu nyata,
+ * bukan firehose yang bocor — mayoritas transaksi GAGAL milik bot penyalin yang saling balap.
+ *
+ * Nol modal, nol keputusan trading, di luar codeFingerprint.
+ */
+import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+
+const LOG_DIR = "logs";
+// Anggaran kredit RPC dijaga ketat: bot trading berbagi kolam Helius yang sama, dan pengamat
+// tidak boleh membuat pengambil keputusan kelaparan. Hanya transaksi SUKSES ber-pump.fun yang
+// ditarik detailnya — beberapa per menit, bukan puluhan per detik.
+const FETCH_RPS = 2;
+// Program token. Filter ini BUKAN tebakan venue — ia LOSSLESS secara logis: handle() hanya
+// menghasilkan baris kalau saldo token wallet berubah, dan saldo token TIDAK BISA berubah
+// tanpa salah satu program ini dipanggil. Jadi tidak ada trade yang bisa hilang karenanya.
+//
+// Kenapa perlu: tanpa filter, 36.406 transaksi ditarik lewat getTransaction dalam 2 jam dan
+// hanya 43 yang benar-benar trade — hasil guna 0,118%, membakar kredit Helius yang langka.
+// Penyebabnya transaksi "sukses" yang isinya cuma System + ComputeBudget + program tip.
+//
+// CATATAN: percobaan pertama menyaring program pump.fun dan memberi 0 dari 7 sukses, lalu saya
+// simpulkan penyaringan per-program salah. Sampel 7 itu terlalu kecil; kesimpulannya keliru.
+// Filter ini tetap tidak memakai daftar venue, jadi kekeliruan itu tidak bisa terulang.
+const TOKEN_PROGRAMS = [
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   // SPL Token
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",   // Token-2022
+];
+// Antrean dibatasi. Ia pernah membengkak ke 30.086 dan butuh ~8 jam untuk surut; pekerjaan
+// setua itu sudah tidak berguna, dan memori tumbuh tanpa batas.
+const QUEUE_MAX = 500;
+
+const env = Object.fromEntries(readFileSync(".env","utf8").split("\n")
+  .filter(l => l.includes("=") && !l.startsWith("#"))
+  .map(l => [l.slice(0,l.indexOf("=")).trim(), l.slice(l.indexOf("=")+1).trim()]));
+const allUrls = (env.RPC_URLS||"").split(",").map(s=>s.trim()).filter(Boolean);
+const heliusUrls = allUrls.filter(u => u.includes("helius"));
+// KUOTA WEBSOCKET TERPISAH dari kuota RPC. Terukur 2026-08-15: kedua kunci Helius menolak
+// logsSubscribe dengan 429 sementara panggilan HTTP-nya masih dilayani normal — jadi "kunci
+// hidup" TIDAK berarti "websocket hidup", dan mengujinya lewat getSlot menyesatkan.
+// QuickNode menerima langganan, jadi WS memakai daftar sendiri yang mengutamakannya.
+const wsUrls = [...allUrls.filter(u => u.includes("quiknode")), ...heliusUrls];
+if (!wsUrls.length) { console.error("[kol-copy] tidak ada endpoint untuk websocket"); process.exit(1); }
+// getTransaction tetap ke Helius (QuickNode terbukti tidak melayaninya untuk Token-2022).
+const httpUrl = heliusUrls[0] ?? allUrls[0];
+// Endpoint DIROTASI tiap percobaan sambung. Satu kunci yang sedang 429 tidak boleh mengunci
+// seluruh probe — 2026-08-15 probe terjebak 38 jam pada satu endpoint yang menolak.
+
+
+// Batas jumlah wallet yang dipantau. Tiap langganan adalah aliran terpisah, dan wallet terkenal
+// sendirian bisa 27 pesan/detik (nyhrox). 50 langganan melebihi kapasitas kunci gratis setelah
+// kolam RPC dipangkas dari 6 ke 3 endpoint. Diambil dari peringkat teratas, yang paling relevan.
+const MAX_SUBS = Number(process.env.KOL_MAX_SUBS ?? 25);
+
+const loadWl = () => JSON.parse(readFileSync("config/kol-watchlist.json","utf8")).entries;
+let wl = loadWl();
+let nameOf = Object.fromEntries(wl.map(e => [e.wallet, e.username]));
+let wlKey = wl.map(e => e.wallet).sort().join(",");
+
+const out = (name, row) => {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(join(LOG_DIR, `${name}-${new Date().toISOString().slice(0,10)}.jsonl`),
+      JSON.stringify({ ts: new Date().toISOString(), ...row }) + "\n");
+  } catch {}
+};
+const say = m => console.log(`[kol-copy] ${new Date().toISOString()} ${m}`);
+
+let queue = [], draining = false;
+async function drain() {
+  if (draining) return; draining = true;
+  while (queue.length) {
+    const job = queue.shift();
+    await handle(job).catch(() => {});
+    await new Promise(r => setTimeout(r, 1000 / FETCH_RPS));
+  }
+  draining = false;
+}
+
+async function handle({ sig, wallet, seenAt }) {
+  const res = await fetch(httpUrl, { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ jsonrpc:"2.0", id:1, method:"getTransaction",
+      params:[sig, { maxSupportedTransactionVersion:0, encoding:"jsonParsed" }] }) });
+  const tx = (await res.json())?.result;
+  if (!tx) return;
+  const pre = tx.meta?.preTokenBalances ?? [], post = tx.meta?.postTokenBalances ?? [];
+  // Sisi trade ditentukan dari PERUBAHAN SALDO TOKEN wallet itu sendiri, bukan dari menebak
+  // teks log — instruksi pump.fun bisa terbungkus CPI dan namanya tidak selalu muncul.
+  const delta = new Map();
+  for (const b of pre)  if (b.owner === wallet) delta.set(b.mint, -(b.uiTokenAmount?.uiAmount ?? 0));
+  for (const b of post) if (b.owner === wallet) delta.set(b.mint, (delta.get(b.mint) ?? 0) + (b.uiTokenAmount?.uiAmount ?? 0));
+  for (const [mint, d] of delta) {
+    if (Math.abs(d) < 1e-9) continue;
+    out("kol-copy", { wallet, username: nameOf[wallet] ?? null, sig, mint,
+      side: d > 0 ? "buy" : "sell", tokenDelta: d,
+      blockTime: tx.blockTime, slot: tx.slot,
+      // Selisih ini yang menentukan apakah "per detik" itu nyata bagi kita.
+      detectLagSec: tx.blockTime ? +(seenAt/1000 - tx.blockTime).toFixed(2) : null });
+    say(`${nameOf[wallet]} ${d > 0 ? "BELI " : "JUAL "} ${mint.slice(0,10)}… lag ${tx.blockTime ? (seenAt/1000 - tx.blockTime).toFixed(1) : "?"}s`);
+  }
+}
+
+
+/**
+ * MODE POLLING — menggantikan websocket per 2026-08-15.
+ *
+ * Kenapa: kapasitas websocket HABIS di kedua penyedia. Helius menolak logsSubscribe dengan 429
+ * meski panggilan HTTP-nya masih dilayani normal (kuota WS TERPISAH dari kuota RPC — "kunci
+ * hidup" tidak berarti "websocket hidup"). QuickNode menerima 1 langganan tapi menolak 7 dari 7
+ * lalu menutup koneksi dengan "upstream went away". Versi websocket sempat terjebak 38 jam
+ * menyambung ulang tiap 5 detik: 20.277 error, dan hantaman itu sendiri memperpanjang limitnya.
+ *
+ * ONGKOSNYA JUJUR: lag deteksi naik dari p50 0,8 detik ke sekitar setengah interval poll.
+ * Untuk MENGUKUR (apakah KOL punya edge, berapa lama bertahan) itu tidak masalah — yang
+ * dibutuhkan round-trip beli→jual, bukan kecepatan. Untuk MENGEKSEKUSI setara KOL, sub-detik
+ * tetap butuh endpoint berbayar. Itu temuan, bukan kegagalan.
+ *
+ * Anggaran RPC dijaga: 25 wallet / 45 detik = 0,56 permintaan/detik, jauh di bawah kapasitas,
+ * dan tiap wallet hanya mengambil signature BARU (limit kecil, dedupe lewat seenSig).
+ */
+const POLL_MS = Number(process.env.KOL_POLL_MS ?? 45_000);
+const SIG_LIMIT = Number(process.env.KOL_SIG_LIMIT ?? 10);
+const seenSig = new Set();
+
+async function rpc(method, params) {
+  const res = await fetch(httpUrl, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+  return (await res.json())?.result;
+}
+
+let polls = 0, seenTx = 0, queued = 0;
+/**
+ * Sapuan PERTAMA hanya menyemai, tidak memproses.
+ *
+ * Saat mulai, seenSig kosong sehingga SELURUH riwayat yang dikembalikan getSignaturesForAddress
+ * terlihat "baru" — terukur 2026-08-15: entri pertama tercatat dengan lag 22.424 detik (6 jam).
+ * Itu bukan deteksi lambat, itu transaksi lama. Membiarkannya masuk akan merusak justru angka
+ * yang paling penting dari probe ini: berapa cepat kita melihat KOL bergerak.
+ */
+let warmedUp = false;
+async function sweep() {
+  polls++;
+  const subs = wl.slice(0, MAX_SUBS);
+  for (const e of subs) {
+    let sigs;
+    try { sigs = await rpc("getSignaturesForAddress", [e.wallet, { limit: SIG_LIMIT }]); }
+    catch { continue; }
+    for (const s of sigs ?? []) {
+      if (s.err || seenSig.has(s.signature)) continue;   // gagal = bot penyalin kalah balap
+      seenSig.add(s.signature);
+      seenTx++;
+      if (!warmedUp) continue;              // semai saja: tandai terlihat, jangan proses
+      if (queue.length >= QUEUE_MAX) continue;
+      queue.push({ sig: s.signature, wallet: e.wallet, seenAt: Date.now() });
+      queued++;
+    }
+    await new Promise(r => setTimeout(r, 250));          // sebar beban, jangan meledak sekaligus
+  }
+  if (seenSig.size > 20_000) seenSig.clear();
+  if (!warmedUp) { warmedUp = true; say(`penyemaian selesai · ${seenSig.size} signature lama diabaikan`); }
+  void drain();
+}
+
+setInterval(() => say(`ringkas: ${polls} poll · ${seenTx} tx baru · ${queued} diantre · antrean ${queue.length}`),
+  Number(process.env.KOL_SUMMARY_MS ?? 300_000));
+say(`mulai · MODE POLLING · ${Math.min(MAX_SUBS, wl.length)}/${wl.length} wallet tiap ${POLL_MS/1000}s`);
+void sweep();
+setInterval(() => void sweep(), POLL_MS);
+
+// Leaderboard bergulir: muat ulang daftar supaya nama baru ikut dipantau.
+setInterval(() => {
+  try {
+    const next = loadWl();
+    const key = next.map(e => e.wallet).sort().join(",");
+    if (key === wlKey) return;
+    wl = next; nameOf = Object.fromEntries(wl.map(e => [e.wallet, e.username])); wlKey = key;
+    say(`watchlist berubah → ${wl.length} wallet`);
+  } catch { /* biarkan daftar lama */ }
+}, 60_000);

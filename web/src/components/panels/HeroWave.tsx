@@ -1,6 +1,17 @@
 import { useEffect, useRef } from "react";
+import type { MarketCoin } from "@/types/stats";
 
-interface Blip { sym: string; pass: boolean; gx: number; gy: number; age: number }
+interface Blip { sym: string; pass: boolean; gx: number; gy: number; age: number; img?: string; mc?: number }
+
+/** Logos are remote pump.fun URLs; cache the Image objects so a blip never re-requests art. */
+const artCache = new Map<string, HTMLImageElement>();
+function art(url: string): HTMLImageElement {
+  let im = artCache.get(url);
+  if (!im) { im = new Image(); im.src = url; artCache.set(url, im); }
+  return im;
+}
+const short = (v: number): string =>
+  v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `$${Math.round(v / 1e3)}k` : `$${Math.round(v)}`;
 
 /**
  * FAITHFUL port (owner, 2026-07-30 — a prior "reimagined" version was rejected as looking
@@ -11,10 +22,14 @@ interface Blip { sym: string; pass: boolean; gx: number; gy: number; age: number
  * dot-rendering math, translated 1:1 into a React canvas ref + effect instead of re-derived from
  * scratch. `energy`/`amp` targets react to pnlPct/momentum exactly as the old version's amp/en did.
  */
-export function HeroWave({ pnlPct, confirmed, scan }: { pnlPct: number; confirmed: number; scan: Array<{ s: string; p: boolean }> }) {
+export function HeroWave({ pnlPct, confirmed, scan, coins = [] }: {
+  pnlPct: number; confirmed: number; scan: Array<{ s: string; p: boolean }>; coins?: MarketCoin[];
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scanRef = useRef(scan);
   scanRef.current = scan;
+  const coinsRef = useRef(coins);
+  coinsRef.current = coins;
   const targetsRef = useRef({ ampT: 1.4, enT: 0.6 });
   // Exact original formula (app.html line 1077): ampT reacts to confirmed-momentum volume + pnl%,
   // enT reacts to confirmed mod 12 (a cheap pseudo-variety wobble, not meant to mean anything on its own).
@@ -49,7 +64,7 @@ export function HeroWave({ pnlPct, confirmed, scan }: { pnlPct: number; confirme
     }
     const COLS = 130, ROWS = 78;
     const blips: Blip[] = [];
-    let spawnAcc = 0, spawnEvery = 850, rnd = 1;
+    let spawnAcc = 0, spawnEvery = 850, rnd = 1, coinTurn = false;
     const seenScan = new Set<string>();
     const scanQueue: Array<{ s: string; p: boolean }> = [];
 
@@ -105,16 +120,28 @@ export function HeroWave({ pnlPct, confirmed, scan }: { pnlPct: number; confirme
         }
         if (seenScan.size > 400) seenScan.clear();
         if (scanQueue.length > 60) scanQueue.splice(0, scanQueue.length - 60);
-        let item = scanQueue.shift();
-        if (!item && scanRef.current.length) item = scanRef.current[Math.floor(R() * scanRef.current.length)];
-        if (item) {
-          blips.push({ sym: item.s, pass: item.p, gx: COLS * 0.24 + R() * (COLS * 0.52), gy: ROWS * 0.5 + R() * (ROWS * 0.3), age: 0 });
+        // Alternate the two real feeds so the terrain shows both what the bot is judging (scan)
+        // and what the market is minting (coins, the only source that carries art + market cap).
+        const pool = coinsRef.current;
+        coinTurn = !coinTurn;
+        let spawned: Blip | undefined;
+        const at = { gx: COLS * 0.24 + R() * (COLS * 0.52), gy: ROWS * 0.5 + R() * (ROWS * 0.3), age: 0 };
+        if (coinTurn && pool.length) {
+          const c = pool[Math.floor(R() * pool.length)]!;
+          if (c.img) art(c.img);   // start the fetch a beat before it is drawn
+          spawned = { sym: c.symbol || "?", pass: false, ...at, img: c.img ?? undefined, mc: c.mcUsd ?? undefined };
+        } else {
+          let item = scanQueue.shift();
+          if (!item && scanRef.current.length) item = scanRef.current[Math.floor(R() * scanRef.current.length)];
+          if (item) spawned = { sym: item.s, pass: item.p, ...at };
+        }
+        if (spawned) {
+          blips.push(spawned);
           if (blips.length > 12) blips.shift();
         }
       }
 
-      ctx!.font = `${10 * DPR}px ui-monospace, Menlo, monospace`;
-      ctx!.textAlign = "center";
+      ctx!.textAlign = "start";
       for (let i = blips.length - 1; i >= 0; i--) {
         const b = blips[i]!;
         b.age += dt;
@@ -123,20 +150,55 @@ export function HeroWave({ pnlPct, confirmed, scan }: { pnlPct: number; confirme
         const k = b.age / life, a = Math.min(1, k * 6) * Math.max(0, 1 - (k - 0.25) / 0.75);
         if (a <= 0) continue;
         const h = th(b.gx, b.gy, t0), P = proj(b.gx, b.gy, h);
-        const tw = ctx!.measureText(b.sym).width, half = tw / 2 + 10 * DPR;
-        const tx = Math.max(half, Math.min(W - half, P[0])), ty = P[1] - 9 * DPR;
+
+        // CARD LAYOUT — measured first so the pill can be clamped inside the canvas as a whole
+        // unit. A logo only counts toward the width once it has actually decoded: reserving the
+        // slot before then would leave a permanent gap for coins whose art 404s.
+        const im = b.img ? art(b.img) : undefined;
+        const ready = !!im && im.complete && im.naturalWidth > 0;
+        const PAD = 7 * DPR, GAP = 6 * DPR, LOGO = 16 * DPR, CARD_H = 24 * DPR;
+        ctx!.font = `${10.5 * DPR}px ui-monospace, Menlo, monospace`;
+        const symW = ctx!.measureText(b.sym).width;
+        const mcTxt = b.mc != null ? short(b.mc) : "";
+        ctx!.font = `${10.5 * DPR}px ui-monospace, Menlo, monospace`;
+        const mcW = mcTxt ? ctx!.measureText(mcTxt).width + GAP : 0;
+        const cardW = PAD * 2 + (ready ? LOGO + GAP : 0) + symW + mcW;
+
+        const cx0 = Math.max(4 * DPR, Math.min(W - cardW - 4 * DPR, P[0] - cardW / 2));
+        const cy0 = Math.max(4 * DPR, P[1] - CARD_H - 10 * DPR);
+
+        // the point on the terrain the card belongs to
         const dotC = b.pass ? "75,208,127" : "150,175,235";
         ctx!.shadowColor = `rgba(${dotC},${a})`;
         ctx!.shadowBlur = 7 * DPR;
         ctx!.fillStyle = `rgba(${dotC},${a})`;
         ctx!.beginPath(); ctx!.arc(P[0], P[1], 2.3 * DPR, 0, 7); ctx!.fill();
         ctx!.shadowBlur = 0;
-        ctx!.fillStyle = `rgba(8,10,14,${a * 0.62})`;
-        ctx!.beginPath();
-        ctx!.roundRect(tx - tw / 2 - 6 * DPR, ty - 11 * DPR, tw + 12 * DPR, 15 * DPR, 4 * DPR);
-        ctx!.fill();
-        ctx!.fillStyle = (b.pass ? "rgba(130,244,182," : "rgba(224,230,238,") + a + ")";
-        ctx!.fillText(b.sym, tx, ty);
+
+        // pill
+        ctx!.fillStyle = `rgba(9,11,16,${a * 0.86})`;
+        ctx!.strokeStyle = `rgba(255,255,255,${a * 0.10})`;
+        ctx!.lineWidth = 1 * DPR;
+        ctx!.beginPath(); ctx!.roundRect(cx0, cy0, cardW, CARD_H, 8 * DPR); ctx!.fill(); ctx!.stroke();
+
+        let x = cx0 + PAD;
+        ctx!.globalAlpha = a;
+        if (ready) {
+          ctx!.save();
+          ctx!.beginPath(); ctx!.roundRect(x, cy0 + (CARD_H - LOGO) / 2, LOGO, LOGO, 4 * DPR); ctx!.clip();
+          ctx!.drawImage(im!, x, cy0 + (CARD_H - LOGO) / 2, LOGO, LOGO);
+          ctx!.restore();
+          x += LOGO + GAP;
+        }
+        ctx!.globalAlpha = 1;
+        ctx!.textBaseline = "middle";
+        ctx!.fillStyle = (b.pass ? "rgba(130,244,182," : "rgba(226,231,238,") + a + ")";
+        ctx!.fillText(b.sym, x, cy0 + CARD_H / 2);
+        if (mcTxt) {
+          ctx!.fillStyle = `rgba(201,240,74,${a})`;
+          ctx!.fillText(mcTxt, x + symW + GAP, cy0 + CARD_H / 2);
+        }
+        ctx!.textBaseline = "alphabetic";
       }
       ctx!.textAlign = "start";
       if (!reduce) raf = requestAnimationFrame(frame);
@@ -147,5 +209,21 @@ export function HeroWave({ pnlPct, confirmed, scan }: { pnlPct: number; confirme
     return () => { window.removeEventListener("resize", rs); cancelAnimationFrame(raf); };
   }, []);
 
-  return <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />;
+  // VIGNETTE lewat mask CSS, bukan gambar tambahan di kanvas. Alternatifnya menimpa gradien
+  // radial tiap frame dengan `destination-out`, yang berarti satu operasi seukuran layar penuh
+  // 60x per detik pada panel yang sudah menggambar 10.140 titik per frame. Mask adalah properti
+  // compositor: dihitung sekali, gratis saat animasi berjalan, dan tidak menyentuh loop gambar
+  // sama sekali.
+  //
+  // Bentuknya elips yang sedikit turun (pusat 52%) mengikuti proyeksi isometrik terrain — pusat
+  // massa titik memang ada di bawah tengah, jadi vignette yang terpusat sempurna akan memudarkan
+  // baris depan yang justru paling terang. `-webkit-` disertakan: Safari masih memerlukannya.
+  const fade = "radial-gradient(118% 96% at 50% 52%, #000 42%, rgba(0,0,0,0.55) 74%, transparent 100%)";
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      style={{ maskImage: fade, WebkitMaskImage: fade }}
+    />
+  );
 }

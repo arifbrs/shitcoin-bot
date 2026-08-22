@@ -293,7 +293,11 @@ async function judgeVibeInner(input: VibeInput, shadow: boolean): Promise<Vibe |
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: config.feeling.model,
+          // Walk the chain across attempts: attempt 0 gets the fast model, a retry falls through
+          // to the next entry. A model that is retired (HTTP 410) or hanging therefore costs one
+          // attempt, not the whole verdict.
+          model: config.feeling.modelChain[Math.min(attempt, config.feeling.modelChain.length - 1)]
+            ?? config.feeling.model,
           temperature: 0.3,
           max_tokens: config.feeling.maxTokens,
           messages: [{ role: "user", content: fullPrompt }],

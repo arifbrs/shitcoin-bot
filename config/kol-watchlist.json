@@ -1,0 +1,408 @@
+{
+ "_source": "https://frontend-api-v3.pump.fun/pnl-leaderboard?period=daily&limit=50",
+ "_periodLabel": "24h",
+ "_windowStartSec": 1787284800,
+ "_refreshedAt": "2026-08-22T04:28:25.114Z",
+ "entries": [
+  {
+   "rank": 1,
+   "username": "ansemconzimp",
+   "wallet": "GV6UUmNxz2RpKxmNAPadYKb7uQpszwqQAu3qLJxVdC52",
+   "pnlUsd": 6392234.14,
+   "pnlPercent": 21.47,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 2,
+   "username": "cupseytoken",
+   "wallet": "ATp2cipw8TgLVGWQXGyV3pURUDfg6sVkVEkvPxRnB8BM",
+   "pnlUsd": 577192.18,
+   "pnlPercent": 20.67,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 3,
+   "username": "sapphy",
+   "wallet": "B5TrL7PsRUwCTL5bVcueieht5QchTw4TWLQDKqEaxEzi",
+   "pnlUsd": 478696.26,
+   "pnlPercent": 172.77,
+   "buySpendSol": 665.02
+  },
+  {
+   "rank": 4,
+   "username": "slingoor",
+   "wallet": "5YRgrP3mjGzrzirYYN5HAQH19cTYREYwGxW6XRJQUzij",
+   "pnlUsd": 373667.35,
+   "pnlPercent": 91.75,
+   "buySpendSol": 950.59
+  },
+  {
+   "rank": 5,
+   "username": "ily",
+   "wallet": "AcoNeFQsTPYs7ZrH8RMWaxxGJTTQJJ4H5aTXmptaz5UK",
+   "pnlUsd": 312679.33,
+   "pnlPercent": 42.56,
+   "buySpendSol": 75.1
+  },
+  {
+   "rank": 6,
+   "username": "SossaDotKek",
+   "wallet": "2M2vLX34LXMg24dMEnjWHvRXS1tshpEDRWzmXgV8ENNZ",
+   "pnlUsd": 291087.1,
+   "pnlPercent": 62.24,
+   "buySpendSol": 35.19
+  },
+  {
+   "rank": 7,
+   "username": "J777Crypto",
+   "wallet": "4UrFSCrGxgoCtCUBAEZq7ZmPK3Pczkxx7PwYnkBMi1KR",
+   "pnlUsd": 282672.35,
+   "pnlPercent": 4270.58,
+   "buySpendSol": 81.3
+  },
+  {
+   "rank": 8,
+   "username": "gr3gor14n",
+   "wallet": "J23qr98GjGJJqKq9CBEnyRhHbmkaVxtTJNNxKu597wsA",
+   "pnlUsd": 253641.54,
+   "pnlPercent": 36.11,
+   "buySpendSol": 871.69
+  },
+  {
+   "rank": 9,
+   "username": "mitch",
+   "wallet": "4Be9CvxqHW6BYiRAxW9Q3xu1ycTMWaL5z8NX4HR3ha7t",
+   "pnlUsd": 241088,
+   "pnlPercent": 15.94,
+   "buySpendSol": 38.13
+  },
+  {
+   "rank": 10,
+   "username": "mdudas",
+   "wallet": "FuP8dYQytaThMh9Fg2XNd1Z1eNHxMHW92kVUfWf3TnmD",
+   "pnlUsd": 238196.28,
+   "pnlPercent": 26.94,
+   "buySpendSol": 50
+  },
+  {
+   "rank": 11,
+   "username": "SoloFNF",
+   "wallet": "GccvEcZqMrcNdp3CarCasGdN5dUfdQ4wZ6iQsk5myRzX",
+   "pnlUsd": 199603.96,
+   "pnlPercent": 73.61,
+   "buySpendSol": 1189.56
+  },
+  {
+   "rank": 12,
+   "username": "africatopteam",
+   "wallet": "4bMqPQQ92Ju2pVRioNcD6VQfhvNr6ucpSH4DqwP7gnDd",
+   "pnlUsd": 175994.64,
+   "pnlPercent": 10.88,
+   "buySpendSol": 1.01
+  },
+  {
+   "rank": 13,
+   "username": "adiosdavid",
+   "wallet": "2wGvJFgAXYghGT1ZySYZHxEppJX8jY9RpH4qGD6dvj4f",
+   "pnlUsd": 131166.31,
+   "pnlPercent": 28.06,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 14,
+   "username": "Dior100x",
+   "wallet": "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",
+   "pnlUsd": 129650.62,
+   "pnlPercent": 20.16,
+   "buySpendSol": 80.94
+  },
+  {
+   "rank": 15,
+   "username": "HopiumPapiChulo",
+   "wallet": "72cCbFbLXhP3Ye4RYNZ1KLumBGvBD1QbKEL4ovC2gSUj",
+   "pnlUsd": 122936.54,
+   "pnlPercent": 5.89,
+   "buySpendSol": 267.6
+  },
+  {
+   "rank": 16,
+   "username": "ANSEMFAAN",
+   "wallet": "5URyNUmhcuWdZiiQrtNdFrSbQPfq72UV2gqQasr9c19Y",
+   "pnlUsd": 120385.23,
+   "pnlPercent": 22.11,
+   "buySpendSol": 417.32
+  },
+  {
+   "rank": 17,
+   "username": "onlyljc",
+   "wallet": "6HJetMbdHBuk3mLUainxAPpBpWzDgYbHGTS2TqDAUSX2",
+   "pnlUsd": 98625.76,
+   "pnlPercent": 18.67,
+   "buySpendSol": 12.24
+  },
+  {
+   "rank": 18,
+   "username": "_fox09",
+   "wallet": "DAEdBmTPEKM6xkwfzC3d411QUe6coKpkND6UURa4CvHC",
+   "pnlUsd": 95007.8,
+   "pnlPercent": 21.73,
+   "buySpendSol": 50.21
+  },
+  {
+   "rank": 19,
+   "username": "Raidmachine",
+   "wallet": "Cpsj1hcaz5XEFb3uGBDnTAHKNr6Pg2pY3fJPkHiMJaFz",
+   "pnlUsd": 91585.86,
+   "pnlPercent": 112.34,
+   "buySpendSol": 4.75
+  },
+  {
+   "rank": 20,
+   "username": "octosea",
+   "wallet": "BZXfMvCgrCQ5XYtPyWDmdjAistFmmTNah6Pzu9wydZRy",
+   "pnlUsd": 88824.75,
+   "pnlPercent": 22.88,
+   "buySpendSol": 102.19
+  },
+  {
+   "rank": 21,
+   "username": "chintufat",
+   "wallet": "7J6MN9tnFmVJVok8SL5wMoQAJRPrQ8PKkg3jYBodCq9i",
+   "pnlUsd": 87692.5,
+   "pnlPercent": 247.96,
+   "buySpendSol": 8.5
+  },
+  {
+   "rank": 22,
+   "username": "TraderMarlow",
+   "wallet": "8H14bK23kreBrsiXrjXJ5TGuB4n4V3xA9XoSJb5RAnHR",
+   "pnlUsd": 82265.18,
+   "pnlPercent": 20.25,
+   "buySpendSol": 95.05
+  },
+  {
+   "rank": 23,
+   "username": "Bancrypto__",
+   "wallet": "3fePC1HPWuWKtt1nUHg3xbEF5SfjuyJoG4Y2EpCbQhoi",
+   "pnlUsd": 66340.54,
+   "pnlPercent": 178.34,
+   "buySpendSol": 82.66
+  },
+  {
+   "rank": 24,
+   "username": "chairman",
+   "wallet": "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6",
+   "pnlUsd": 65539.38,
+   "pnlPercent": 31.76,
+   "buySpendSol": 126.23
+  },
+  {
+   "rank": 25,
+   "username": "Dawnnite",
+   "wallet": "74YxQkkVCAPk4njqfwJSE6MFKcVECgZv3S4wuynnDGrD",
+   "pnlUsd": 62508.54,
+   "pnlPercent": 29.02,
+   "buySpendSol": 52.47
+  },
+  {
+   "rank": 26,
+   "username": "chainsawiq",
+   "wallet": "4mK9yCvQQPm1aZcREB4Du2DmLM1V9FoUWXoRgYuUDqB9",
+   "pnlUsd": 58869.88,
+   "pnlPercent": 32.69,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 27,
+   "username": "seanlippel",
+   "wallet": "B57KoeTNWMTB87Sg28PaWjSGXeYAuk4n613VL1VCarRq",
+   "pnlUsd": 57498.63,
+   "pnlPercent": 36.84,
+   "buySpendSol": 985.57
+  },
+  {
+   "rank": 28,
+   "username": "epicsealdarkeye",
+   "wallet": "dtrzJPj7yDdvm6eRqBAgxsK2sMJeD9HhBEBB3XMedXy",
+   "pnlUsd": 57012.33,
+   "pnlPercent": 360.34,
+   "buySpendSol": 1057.01
+  },
+  {
+   "rank": 29,
+   "username": "vanillafunk713",
+   "wallet": "4aArEDkqkPBwFiSCShd6GJ8dTFHzZboGf3GD7qwxxTu3",
+   "pnlUsd": 55075.75,
+   "pnlPercent": 277.07,
+   "buySpendSol": 42.06
+  },
+  {
+   "rank": 30,
+   "username": "jimbotrading",
+   "wallet": "ewCWVY3XpqiZzX2RJvnQ5PcMNJSoxHHo93SS3c7sGXs",
+   "pnlUsd": 51885.4,
+   "pnlPercent": 84.59,
+   "buySpendSol": 96.01
+  },
+  {
+   "rank": 31,
+   "username": "xHeme",
+   "wallet": "Drm7RutuXmaxPVKXR6z62BzP85vB6afu7R4vTDvxKbV5",
+   "pnlUsd": 50901.27,
+   "pnlPercent": 19.46,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 32,
+   "username": "sapijiju",
+   "wallet": "6i2aHtxfqkC2biTo98FSkP59FVHPKFRLZWDbdghN6WKK",
+   "pnlUsd": 47819.45,
+   "pnlPercent": 11.48,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 33,
+   "username": "omotrades",
+   "wallet": "HxwmEH84o3EuezCUZuBEEeKT6uMDv8R4VRi76ExB87St",
+   "pnlUsd": 47605.08,
+   "pnlPercent": 31.71,
+   "buySpendSol": 1.66
+  },
+  {
+   "rank": 34,
+   "username": "NATE9169",
+   "wallet": "8ZN71XTdVo8yRovnGLmNgW3Tgniw6A4J3JGLvPD686FP",
+   "pnlUsd": 45614.42,
+   "pnlPercent": 744.65,
+   "buySpendSol": 354.92
+  },
+  {
+   "rank": 35,
+   "username": "marcell",
+   "wallet": "6vbrTLsWy76TxDQAUKLqZrPohQuq6EVaJgfGzR82paFa",
+   "pnlUsd": 41512.27,
+   "pnlPercent": 9.23,
+   "buySpendSol": 256.38
+  },
+  {
+   "rank": 36,
+   "username": "icymarlin30842",
+   "wallet": "5yH1d3gqPU75cFonez9gLeFbpMXVqfjCSAAs8mYE6ak4",
+   "pnlUsd": 40459.36,
+   "pnlPercent": 58.77,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 37,
+   "username": "zinc",
+   "wallet": "AK18Ru6UzvbhBWcfnhALuMM4hSXvyDCmvMkrZD3QQqrU",
+   "pnlUsd": 39433.01,
+   "pnlPercent": 4.18,
+   "buySpendSol": 4155.55
+  },
+  {
+   "rank": 38,
+   "username": "curb1",
+   "wallet": "5hh7UE6i2BtyCvaMMadS71wFwK88JRmtRTfXkjZ3CHvF",
+   "pnlUsd": 39122.27,
+   "pnlPercent": 13.81,
+   "buySpendSol": 23.57
+  },
+  {
+   "rank": 39,
+   "username": "moneyman1104",
+   "wallet": "9mNdTGr1mw5KkFBwdBXXdYDWsHDsG6pruQFNqwuPBRxj",
+   "pnlUsd": 38943.43,
+   "pnlPercent": 41.93,
+   "buySpendSol": 88.15
+  },
+  {
+   "rank": 40,
+   "username": "brokeboyobie",
+   "wallet": "7Tq4tSb7SnrdHVu7jvj5cbkXzzuMaym2v26613ZjYouk",
+   "pnlUsd": 38451.53,
+   "pnlPercent": 47.52,
+   "buySpendSol": 12.53
+  },
+  {
+   "rank": 41,
+   "username": "liquidityp00l",
+   "wallet": "6j1W42UZYsvqzVvXbgfXtXfo2vCqxEB47iWKmTewVtC9",
+   "pnlUsd": 37794.99,
+   "pnlPercent": 90.94,
+   "buySpendSol": 15.37
+  },
+  {
+   "rank": 42,
+   "username": "anonhrfdwxrmw1",
+   "wallet": "HRfDWxRMw1juHGxFDcLnGYfUcuXNckmdDntkvkSRhT3Z",
+   "pnlUsd": 37618.58,
+   "pnlPercent": 195.05,
+   "buySpendSol": 16.73
+  },
+  {
+   "rank": 43,
+   "username": "fibs",
+   "wallet": "BXAWg4JbaeyvAHpiyYQ3Xr3bUh6FsyDHwwSkB5dmyGF",
+   "pnlUsd": 37076.87,
+   "pnlPercent": 449.53,
+   "buySpendSol": 115.53
+  },
+  {
+   "rank": 44,
+   "username": "hdegroot",
+   "wallet": "4y2T1ghykCTq4EddoXjptZamk4qAsqcZw6eKxS8jdvE1",
+   "pnlUsd": 36437.81,
+   "pnlPercent": 7.92,
+   "buySpendSol": 51.35
+  },
+  {
+   "rank": 45,
+   "username": "Jetieye",
+   "wallet": "AMWufthLcSyHQXiwjcCyxEsSPhXE5tcvZUgpPdtuaPaE",
+   "pnlUsd": 36303.72,
+   "pnlPercent": 57.17,
+   "buySpendSol": 198.83
+  },
+  {
+   "rank": 46,
+   "username": "collectible",
+   "wallet": "EnPjBjzy6zaufzpZ2m3Q8nPS3KpyiRxNLKtcSiMYwWCa",
+   "pnlUsd": 35594.96,
+   "pnlPercent": 26.34,
+   "buySpendSol": 1096.82
+  },
+  {
+   "rank": 47,
+   "username": "winternomicstv",
+   "wallet": "DoKEEjQmd6CUK7RWKnCVDdZCa4776fYhLGDNPJrf8qVN",
+   "pnlUsd": 35267.8,
+   "pnlPercent": 9.78,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 48,
+   "username": "kom3thazine",
+   "wallet": "8gpipHqkHFuNHM4tu47oTNH1K83gCeszPzZSz3oZ4uDw",
+   "pnlUsd": 32461.43,
+   "pnlPercent": 10.4,
+   "buySpendSol": 0
+  },
+  {
+   "rank": 49,
+   "username": "_logjam",
+   "wallet": "AH39BneW9UeWxQysUcwogQrYFdPvJuRVZ5w4ccq9SKfL",
+   "pnlUsd": 30343.43,
+   "pnlPercent": 4.8,
+   "buySpendSol": 35.08
+  },
+  {
+   "rank": 50,
+   "username": "cousin",
+   "wallet": "6mrqa4cDaqBCD9UrUiUyoK78e4AJ8XzRaF8uTbcuTVae",
+   "pnlUsd": 30294.45,
+   "pnlPercent": 43.45,
+   "buySpendSol": 0
+  }
+ ]
+}

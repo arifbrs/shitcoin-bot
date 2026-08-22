@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useLiveStats } from "@/hooks/useLiveStats";
 import { TopBar } from "@/components/panels/TopBar";
 import { Tile } from "@/components/panels/Tile";
-import { Hero } from "@/components/panels/Hero";
+import { Hero, heroMeta } from "@/components/panels/Hero";
 import { EquityCurve } from "@/components/panels/EquityCurve";
 import { OpenPositions } from "@/components/panels/OpenPositions";
 import { TradeJournal } from "@/components/panels/TradeJournal";
@@ -10,10 +10,10 @@ import { ExitQuality } from "@/components/panels/ExitQuality";
 import { GateFunnel } from "@/components/panels/GateFunnel";
 import { StaleBanner } from "@/components/panels/StaleBanner";
 import { ControlDialog } from "@/components/panels/ControlDialog";
-import { LiveMarket } from "@/components/panels/LiveMarket";
+import { BandWatch } from "@/components/panels/BandWatch";
 import { ScoutPanel } from "@/components/panels/ScoutPanel";
 import { FeelingAgent } from "@/components/panels/FeelingAgent";
-import { PipelineFunnel } from "@/components/panels/PipelineFunnel";
+import { PipelineFlow } from "@/components/panels/PipelineFlow";
 import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { RunLedger } from "@/components/panels/RunLedger";
 import { SniperRecap } from "@/components/panels/SniperRecap";
@@ -31,7 +31,7 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-svh flex-col bg-background">
       <TopBar data={data} onOpenControl={() => setControlOpen(true)} onOpenDiagnostics={() => setDiagOpen(true)} />
-      <ControlDialog open={controlOpen} onOpenChange={setControlOpen} />
+      <ControlDialog open={controlOpen} onOpenChange={setControlOpen} data={data} />
       <DiagnosticsDialog open={diagOpen} onOpenChange={setDiagOpen} data={data} />
       {/* invisible (not just dimmed) while a dialog is open — owner found live, 2026-07-30: with
           this many continuously-animating canvases/blurred layers behind it, Chromium has a genuine
@@ -50,14 +50,14 @@ export default function Dashboard() {
             <div className="flex items-center rounded-xl border border-border bg-card px-3.5" style={{ gridArea: "s1" }}>
               <SniperRecap data={data} />
             </div>
-            <Tile area="hero" label="Total P&L · 1 dompet (S1+S2)" live={data.system.strategy2Alive}>
+            <Tile area="hero" label="Pasar · langsung" right={heroMeta(data)} live={data.system.strategy2Alive}>
               <Hero data={data} />
             </Tile>
             <Tile area="equity" label="Dompet · satu saldo, dua denominasi">
               <EquityCurve data={data} />
             </Tile>
-            <Tile area="pipe" label="Pipeline · live" live={data.system.strategy2Alive}>
-              <PipelineFunnel data={data} />
+            <Tile area="pipe" label="Pipeline · langsung" live={data.system.strategy2Alive}>
+              <PipelineFlow data={data} />
             </Tile>
             <Tile area="agent" label="Feeling Agent" live={data.feeling.enabled}>
               <FeelingAgent data={data} />
@@ -65,10 +65,10 @@ export default function Dashboard() {
             <Tile area="jour" label="Trade Journal · closed" right={`${data.strategy2Primary?.recentTrades.length ?? 0} recent`}>
               <TradeJournal data={data} />
             </Tile>
-            <Tile area="sig" label="Live Market">
-              <LiveMarket data={data} />
+            <Tile area="sig" label="Band Watch · jendela entry">
+              <BandWatch data={data} />
             </Tile>
-            <Tile area="pos" label="Open Positions" right={`${data.strategy2Primary?.paper.open ?? 0} active`}>
+            <Tile area="pos" label="Open Positions" right={`${(data.strategy2Primary?.paper.open ?? 0) + (data.paper?.openPositions?.length ?? 0)} active`}>
               <OpenPositions data={data} />
             </Tile>
             <Tile area="funnel" label="Scout — candidates" right={`${data.strategy2.count} kandidat`}>

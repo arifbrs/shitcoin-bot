@@ -1,0 +1,225 @@
+<!doctype html><meta charset="utf-8"><title>Hero — pasar hidup</title>
+<style>
+ :root{--bg:#06070a;--tile:#0b0d12;--line:#1a1d24;--line2:#14161c;--fg:#e9ebee;--dim:#7c828d;
+  --dimmer:#40444d;--up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:system-ui,-apple-system,sans-serif}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:var(--sans);padding:32px 28px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:72ch;line-height:1.6;margin-bottom:28px}
+ .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+ .col{width:610px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:600;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:9px}
+ .tile{width:610px;height:452px;background:var(--tile);border:1px solid var(--line);border-radius:12px;
+   padding:15px 17px;position:relative;overflow:hidden;display:flex;flex-direction:column}
+ .hdr{display:flex;align-items:center;gap:7px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);z-index:2}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--acid);box-shadow:0 0 6px var(--acid)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+ canvas{position:absolute;inset:0;width:100%;height:100%}
+ .foot{position:absolute;left:17px;right:17px;bottom:13px;display:flex;gap:22px;align-items:flex-end;z-index:2}
+ .stat .v{font-family:var(--mono);font-size:19px;line-height:1}
+ .stat .k{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin-top:3px}
+ @media (prefers-reduced-motion:reduce){canvas{opacity:.85}}
+</style>
+<h1>Hero — pasar hidup, tanpa nominal</h1>
+<p class="sub">Uang sudah jadi urusan panel Dompet, jadi di sini tidak ada satu pun angka dolar.
+Ketiganya digerakkan data nyata: 420 peluncuran terakhir (25/menit), gerbang admisi, dan feed scanner
+yang baru diperbaiki agar benar-benar mengalir.</p>
+<div class="grid" id="out"></div>
+<script>
+const L = [{"s": "gample", "mc": 28.14, "buy": 3520918.747, "x": 0.0}, {"s": "Julia", "mc": 29.85, "buy": 34596361.489, "x": 13.1}, {"s": "SLITHER", "mc": 28.89, "buy": 17373847.1, "x": 14.3}, {"s": "Consumer", "mc": 33.75, "buy": 96449438.144, "x": 20.3}, {"s": "kimchi", "mc": 33.83, "buy": 97545454.545, "x": 23.4}, {"s": "TRRAM", "mc": 27.96, "buy": 10000, "x": 23.4}, {"s": "Parrot-Man", "mc": 28.14, "buy": 3520918.747, "x": 27.6}, {"s": "Invasion", "mc": 33.83, "buy": 97545454.545, "x": 31.8}, {"s": "INVASION\u2060", "mc": 34.86, "buy": 112104477.612, "x": 34.4}, {"s": "?", "mc": 27.96, "buy": 0, "x": 35.1}, {"s": "STAR", "mc": 131.82, "buy": 578839208.538, "x": 35.4}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 36.8}, {"s": "INVASION\u2060", "mc": 29.85, "buy": 34612903.226, "x": 37.0}, {"s": "Snipe", "mc": 29.47, "buy": 27874372.062, "x": 37.4}, {"s": "Julia", "mc": 27.99, "buy": 670735.27, "x": 39.6}, {"s": "INUVASION", "mc": 40.1, "buy": 176989690.674, "x": 42.7}, {"s": "INVASION", "mc": 38.06, "buy": 153285714.286, "x": 45.8}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 48.8}, {"s": "INUVASION", "mc": 37.92, "buy": 151660777.334, "x": 51.0}, {"s": "CORNDOG", "mc": 29.83, "buy": 34199203.121, "x": 51.9}, {"s": "SOL", "mc": 29.64, "buy": 30919874.865, "x": 54.2}, {"s": "Adcoin", "mc": 30.79, "buy": 50494117.566, "x": 56.2}, {"s": "JTO", "mc": 31.81, "buy": 67062500.0, "x": 59.5}, {"s": "WORLD", "mc": 28.9, "buy": 17592867.68, "x": 60.9}, {"s": "CORNDOG", "mc": 31.76, "buy": 66285714.224, "x": 66.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 68.4}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 68.5}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 68.6}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 68.7}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 68.7}, {"s": "Daigoro", "mc": 35.81, "buy": 124858181.764, "x": 70.3}, {"s": "TripleP", "mc": 33.83, "buy": 97545454.545, "x": 70.8}, {"s": "OIL", "mc": 30.52, "buy": 45983299.146, "x": 70.9}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 72.5}, {"s": "Road to 1M", "mc": 28.14, "buy": 3520918.747, "x": 80.7}, {"s": "BILLY", "mc": 37.92, "buy": 151660777.334, "x": 83.1}, {"s": "TripleP", "mc": 33.83, "buy": 97545454.545, "x": 84.0}, {"s": "DOGUE LINKS!", "mc": 27.96, "buy": 35323.893, "x": 85.5}, {"s": "fancat", "mc": 30.37, "buy": 43387774.382, "x": 86.5}, {"s": "BNKO", "mc": 27.98, "buy": 353134.727, "x": 87.4}, {"s": "PWS", "mc": 28.15, "buy": 3565339.235, "x": 89.1}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 90.7}, {"s": "BILLY", "mc": 38.06, "buy": 153285714.286, "x": 91.0}, {"s": "READ", "mc": 33.75, "buy": 96449438.144, "x": 91.2}, {"s": "DOGUE LINKS!", "mc": 27.96, "buy": 35323.893, "x": 94.7}, {"s": "PumpBull", "mc": 28.89, "buy": 17373850.192, "x": 95.4}, {"s": "DAIGORO", "mc": 35.91, "buy": 126235294.118, "x": 96.9}, {"s": "Billy", "mc": 33.83, "buy": 97545454.545, "x": 98.0}, {"s": "DexLaunch", "mc": 28.48, "buy": 9800684.977, "x": 101.5}, {"s": "BULLCOIN", "mc": 27.96, "buy": 35323.893, "x": 105.2}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 106.4}, {"s": "BULLCOIN", "mc": 27.96, "buy": 35323.893, "x": 109.0}, {"s": "SOL", "mc": 29.39, "buy": 26515093.884, "x": 109.6}, {"s": "Daigoro", "mc": 27.96, "buy": 35323.893, "x": 110.1}, {"s": "Daigoro", "mc": 27.96, "buy": 35323.893, "x": 110.2}, {"s": "HotDog", "mc": 27.96, "buy": 3576.655, "x": 110.9}, {"s": "Daigoro", "mc": 27.96, "buy": 35323.893, "x": 112.0}, {"s": "Daigoro", "mc": 27.96, "buy": 35323.893, "x": 112.0}, {"s": "BULLCOIN", "mc": 27.96, "buy": 35323.893, "x": 114.5}, {"s": "SAVPIL", "mc": 28.07, "buy": 2115327.703, "x": 114.6}, {"s": "Travelers", "mc": 28.15, "buy": 3564784.053, "x": 115.4}, {"s": "r&h", "mc": 35.91, "buy": 126235294.118, "x": 124.0}, {"s": "Billy", "mc": 37.92, "buy": 151660777.334, "x": 125.9}, {"s": "GLM", "mc": 29.83, "buy": 34199203.154, "x": 128.6}, {"s": "5PCT", "mc": 28.89, "buy": 17376518.167, "x": 135.3}, {"s": "PMH", "mc": 28.9, "buy": 17592867.68, "x": 136.1}, {"s": "BLACKROCK", "mc": 44.86, "buy": 225894736.842, "x": 140.0}, {"s": "HODL", "mc": 29.85, "buy": 34612903.226, "x": 141.5}, {"s": "PIDGE", "mc": 30.17, "buy": 40000000, "x": 142.4}, {"s": "PTSD", "mc": 31.76, "buy": 66285714.224, "x": 143.1}, {"s": "Spider", "mc": 28.12, "buy": 3169373.232, "x": 143.9}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 149.0}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 149.0}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 149.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 149.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 149.2}, {"s": "FAREX", "mc": 27.98, "buy": 353134.727, "x": 150.1}, {"s": "SOL", "mc": 29.53, "buy": 28891515.639, "x": 151.8}, {"s": "PIDGE", "mc": 28.06, "buy": 2009561.318, "x": 154.3}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 157.0}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 174.3}, {"s": "sped", "mc": 28.07, "buy": 2142050.506, "x": 180.7}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 184.0}, {"s": "DIB", "mc": 33.83, "buy": 97545454.545, "x": 185.7}, {"s": "PWS", "mc": 28.15, "buy": 3565339.235, "x": 186.4}, {"s": "Kill List", "mc": 28.7, "buy": 13946385.004, "x": 195.5}, {"s": "TNOS", "mc": 410.88, "buy": 793100000, "x": 198.8}, {"s": "BLACKROCK\u2060", "mc": 38.06, "buy": 153285714.286, "x": 199.7}, {"s": "Carrots", "mc": 33.83, "buy": 97545454.545, "x": 204.6}, {"s": "Road to 1M", "mc": 28.14, "buy": 3520918.747, "x": 207.4}, {"s": "5PCT", "mc": 28.07, "buy": 2142050.506, "x": 208.4}, {"s": "?", "mc": 27.96, "buy": 0, "x": 214.4}, {"s": "SOL", "mc": 29.37, "buy": 26174721.695, "x": 216.8}, {"s": "MONA", "mc": 28.71, "buy": 14118421.053, "x": 217.7}, {"s": "BLACKCOCK", "mc": 34.86, "buy": 112104477.612, "x": 221.8}, {"s": "Baki", "mc": 28.9, "buy": 17590163.934, "x": 224.6}, {"s": "SI", "mc": 27.98, "buy": 353134.727, "x": 225.5}, {"s": "aura", "mc": 31.76, "buy": 66285714.224, "x": 226.4}, {"s": "Bun", "mc": 35.81, "buy": 124858181.764, "x": 231.0}, {"s": "cat-01", "mc": 77.66, "buy": 429200000.0, "x": 235.4}, {"s": "Land", "mc": 29.83, "buy": 34199203.154, "x": 236.1}, {"s": "SOL", "mc": 29.18, "buy": 22758782.427, "x": 236.9}, {"s": "dogue", "mc": 27.96, "buy": 3532.412, "x": 242.2}, {"s": "dogue", "mc": 27.96, "buy": 353.196, "x": 242.2}, {"s": "dogue", "mc": 27.96, "buy": 35323.893, "x": 242.3}, {"s": "Bum", "mc": 29.85, "buy": 34612903.226, "x": 242.4}, {"s": "ASSS", "mc": 32.81, "buy": 82538461.538, "x": 243.1}, {"s": "TRIPLE P", "mc": 28.14, "buy": 3520918.711, "x": 247.8}, {"s": "Grisha", "mc": 33.75, "buy": 96449438.144, "x": 249.0}, {"s": "Grisha", "mc": 29.26, "buy": 24170555.017, "x": 249.3}, {"s": "Grisha", "mc": 29.07, "buy": 20784503.577, "x": 249.3}, {"s": "Grisha", "mc": 28.89, "buy": 17376518.132, "x": 249.3}, {"s": "Grisha", "mc": 28.7, "buy": 13946384.969, "x": 250.2}, {"s": "TOXCAN", "mc": 28.07, "buy": 2115327.703, "x": 254.6}, {"s": "SNORLAX\u2060", "mc": 28.0, "buy": 714856.762, "x": 259.2}, {"s": "Bartlomiej", "mc": 28.14, "buy": 3520918.747, "x": 273.5}, {"s": "SOL", "mc": 29.68, "buy": 31594244.493, "x": 275.2}, {"s": "BERRY", "mc": 27.96, "buy": 0, "x": 275.5}, {"s": "RICHGOAT", "mc": 42.33, "buy": 200963210.657, "x": 277.1}, {"s": "inconvenient", "mc": 28.14, "buy": 3520918.711, "x": 278.1}, {"s": "BERRY", "mc": 27.96, "buy": 0, "x": 280.3}, {"s": "ElonMusk", "mc": 28.07, "buy": 2142050.506, "x": 281.0}, {"s": "COMPUTER", "mc": 27.96, "buy": 0, "x": 281.0}, {"s": "FAIRLEAGUE", "mc": 30.79, "buy": 50494117.599, "x": 281.5}, {"s": "Grisha", "mc": 28.89, "buy": 17376518.132, "x": 282.9}, {"s": "Grisha", "mc": 33.75, "buy": 96449438.144, "x": 282.9}, {"s": "Grisha", "mc": 28.7, "buy": 13946384.969, "x": 283.0}, {"s": "Grisha", "mc": 29.26, "buy": 24170555.017, "x": 283.1}, {"s": "Grisha", "mc": 29.07, "buy": 20784503.577, "x": 283.1}, {"s": "Enjoy Samura", "mc": 33.75, "buy": 96449438.144, "x": 315.3}, {"s": "RICHGOAT", "mc": 31.81, "buy": 67062500.0, "x": 316.5}, {"s": "RICHGOAT", "mc": 28.9, "buy": 17590163.934, "x": 316.6}, {"s": "ACTB", "mc": 28.89, "buy": 17373850.192, "x": 317.0}, {"s": "Jax", "mc": 28.13, "buy": 3344872.81, "x": 317.0}, {"s": "\ud83d\udc9b\ud83d\udc08", "mc": 42.53, "buy": 203000000.0, "x": 318.4}, {"s": "CORGE", "mc": 33.83, "buy": 97545454.545, "x": 318.6}, {"s": "ELOOONG", "mc": 29.85, "buy": 34612903.226, "x": 326.4}, {"s": "SAOF", "mc": 27.96, "buy": 0, "x": 328.5}, {"s": "Jax", "mc": 31.81, "buy": 67062500.0, "x": 330.3}, {"s": "Rocky", "mc": 33.83, "buy": 97545454.545, "x": 330.8}, {"s": "ASH", "mc": 28.33, "buy": 7018806.172, "x": 331.8}, {"s": "PWS", "mc": 28.07, "buy": 2142050.506, "x": 332.2}, {"s": "SOL", "mc": 29.6, "buy": 30244631.388, "x": 333.3}, {"s": "Chopa", "mc": 29.85, "buy": 34612903.226, "x": 339.2}, {"s": "TOTH", "mc": 28.14, "buy": 3520370.447, "x": 349.8}, {"s": "Menderist", "mc": 31.76, "buy": 66285714.224, "x": 358.4}, {"s": "Grisha", "mc": 33.75, "buy": 96449438.144, "x": 359.4}, {"s": "Grisha", "mc": 28.89, "buy": 17376518.132, "x": 359.5}, {"s": "Grisha", "mc": 29.26, "buy": 24170555.017, "x": 359.6}, {"s": "Grisha", "mc": 28.7, "buy": 13946384.969, "x": 359.6}, {"s": "Grisha", "mc": 29.07, "buy": 20784503.577, "x": 359.6}, {"s": "Bartlomiej", "mc": 28.14, "buy": 3520918.747, "x": 378.0}, {"s": "Grisha", "mc": 33.75, "buy": 96449438.144, "x": 383.6}, {"s": "Grisha", "mc": 29.07, "buy": 20784503.577, "x": 383.7}, {"s": "Grisha", "mc": 29.26, "buy": 24170555.017, "x": 383.7}, {"s": "Grisha", "mc": 28.7, "buy": 13946384.969, "x": 383.8}, {"s": "Grisha", "mc": 28.89, "buy": 17376518.132, "x": 383.8}, {"s": "HOMOCIDE", "mc": 35.81, "buy": 124858181.764, "x": 384.1}, {"s": "RICHGOAT", "mc": 33.75, "buy": 96449438.144, "x": 387.4}, {"s": "Randomcoin", "mc": 33.75, "buy": 96449438.144, "x": 387.5}, {"s": "Kill List", "mc": 28.7, "buy": 13946385.004, "x": 389.8}, {"s": "DOGE", "mc": 27.98, "buy": 353134.727, "x": 394.5}, {"s": "SOL", "mc": 29.28, "buy": 24469534.161, "x": 395.5}, {"s": "USA ", "mc": 28.13, "buy": 3209871.866, "x": 400.4}, {"s": "CORGI", "mc": 33.83, "buy": 97545454.545, "x": 401.6}, {"s": "help my", "mc": 28.33, "buy": 7107063.358, "x": 403.6}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 434.6}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 435.6}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 435.7}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 435.7}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 435.8}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 435.8}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 436.0}, {"s": "help my", "mc": 27.96, "buy": 35323.893, "x": 436.0}, {"s": "doge", "mc": 28.9, "buy": 17590163.934, "x": 438.6}, {"s": "doge", "mc": 27.96, "buy": 0, "x": 439.0}, {"s": "doge", "mc": 27.96, "buy": 0, "x": 439.1}, {"s": "E", "mc": 35.81, "buy": 124858181.764, "x": 439.2}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 444.3}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.1}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.1}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.1}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.2}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.2}, {"s": "CORNDOG", "mc": 28.24, "buy": 5272727.197, "x": 445.3}, {"s": "SOL", "mc": 29.59, "buy": 29906681.318, "x": 445.8}, {"s": "TOTH", "mc": 28.14, "buy": 3520370.447, "x": 447.7}, {"s": "E", "mc": 38.06, "buy": 153285714.286, "x": 455.0}, {"s": "PNW", "mc": 29.85, "buy": 34618137.776, "x": 459.3}, {"s": "?", "mc": 29.85, "buy": 34612903.226, "x": 462.7}, {"s": "CC", "mc": 27.96, "buy": 35323.893, "x": 469.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 469.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 469.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 469.3}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 469.3}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 469.4}, {"s": "COINE", "mc": 30.79, "buy": 50494117.566, "x": 478.2}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 481.1}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 481.8}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 481.9}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 481.9}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 482.0}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 482.1}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 482.1}, {"s": "COINE", "mc": 28.51, "buy": 10493887.485, "x": 488.5}, {"s": "bTF", "mc": 28.01, "buy": 989140.162, "x": 489.1}, {"s": "bull ", "mc": 31.81, "buy": 67072324.99, "x": 493.2}, {"s": "E", "mc": 28.13, "buy": 3344872.81, "x": 493.8}, {"s": "RICHGOAT", "mc": 27.96, "buy": 0, "x": 496.8}, {"s": "RICHGOAT", "mc": 27.96, "buy": 0, "x": 496.9}, {"s": "RICHGOAT", "mc": 27.96, "buy": 0, "x": 497.0}, {"s": "RICHGOAT", "mc": 27.96, "buy": 0, "x": 497.6}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 497.7}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.3}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.4}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.4}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.5}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.6}, {"s": "AIRDROPPED15", "mc": 27.96, "buy": 35323.893, "x": 498.6}, {"s": "SOL", "mc": 29.74, "buy": 32604163.899, "x": 501.1}, {"s": "Kubkowski", "mc": 28.14, "buy": 3520918.747, "x": 504.2}, {"s": "3", "mc": 29.13, "buy": 21726322.665, "x": 506.5}, {"s": "COINE", "mc": 28.14, "buy": 3520918.711, "x": 509.4}, {"s": "SOLCAT", "mc": 28.33, "buy": 7018806.172, "x": 509.7}, {"s": "?", "mc": 29.85, "buy": 34612903.226, "x": 513.4}, {"s": "DOOGOL", "mc": 28.24, "buy": 5362148.758, "x": 514.3}, {"s": "AIMAXO", "mc": 30.98, "buy": 53691946.782, "x": 515.1}, {"s": "TCAT", "mc": 31.76, "buy": 66285714.224, "x": 516.7}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 518.5}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.6}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.6}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.7}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.7}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.8}, {"s": "CORNDOG", "mc": 27.96, "buy": 35323.893, "x": 519.9}, {"s": "E", "mc": 29.83, "buy": 34199203.121, "x": 521.6}, {"s": "?", "mc": 27.96, "buy": 0, "x": 522.7}, {"s": "COINE", "mc": 28.14, "buy": 3520918.711, "x": 529.0}, {"s": "ballz", "mc": 28.09, "buy": 2467071.716, "x": 529.8}, {"s": "E", "mc": 29.83, "buy": 34199203.121, "x": 567.1}, {"s": "E.T", "mc": 28.14, "buy": 3520918.711, "x": 570.2}, {"s": "Land", "mc": 29.83, "buy": 34199203.154, "x": 571.9}, {"s": "TOTH", "mc": 28.14, "buy": 3520370.447, "x": 581.8}, {"s": "SOL", "mc": 30.63, "buy": 47847907.16, "x": 584.5}, {"s": "Artan", "mc": 28.9, "buy": 17592867.68, "x": 588.5}, {"s": "COINE", "mc": 28.14, "buy": 3520918.711, "x": 589.6}, {"s": "WAGMIOWAMG", "mc": 46.98, "buy": 245257142.817, "x": 594.5}, {"s": "Land", "mc": 29.83, "buy": 34199203.154, "x": 605.0}, {"s": "BABYCATE", "mc": 44.86, "buy": 225894736.842, "x": 608.5}, {"s": "BABYCATE", "mc": 33.75, "buy": 96449438.144, "x": 609.7}, {"s": "BABYCATE", "mc": 40.41, "buy": 180531654.986, "x": 613.7}, {"s": "DOGE", "mc": 27.98, "buy": 353134.727, "x": 617.8}, {"s": "B\u00fcll", "mc": 28.24, "buy": 5272727.197, "x": 619.5}, {"s": "BABYCATE", "mc": 49.7, "buy": 268250000.0, "x": 620.2}, {"s": "Trump", "mc": 34.77, "buy": 110863468.564, "x": 632.2}, {"s": "bull ", "mc": 31.81, "buy": 67072324.99, "x": 635.2}, {"s": "Coop", "mc": 28.48, "buy": 9800684.977, "x": 640.0}, {"s": "Shoe", "mc": 49.4, "buy": 265758513.894, "x": 640.1}, {"s": "SOL", "mc": 29.09, "buy": 21042439.042, "x": 640.7}, {"s": "CATE", "mc": 37.92, "buy": 151660777.334, "x": 640.7}, {"s": "KYC", "mc": 35.7, "buy": 123477057.485, "x": 646.9}, {"s": "CATE", "mc": 27.96, "buy": 353.196, "x": 656.7}, {"s": "CATE", "mc": 27.96, "buy": 353.196, "x": 656.8}, {"s": "CATE", "mc": 27.98, "buy": 353134.691, "x": 656.9}, {"s": "CATE", "mc": 27.96, "buy": 353.196, "x": 656.9}, {"s": "CUBEMAN", "mc": 27.96, "buy": 0, "x": 657.9}, {"s": "SOL", "mc": 29.47, "buy": 27874372.062, "x": 662.8}, {"s": "RhOS", "mc": 35.39, "buy": 119309436.673, "x": 667.0}, {"s": "Moose", "mc": 33.83, "buy": 97545454.545, "x": 672.1}, {"s": "Tylo", "mc": 33.83, "buy": 97545454.545, "x": 672.6}, {"s": "WINNY", "mc": 27.96, "buy": 35.767, "x": 677.5}, {"s": "MIRA", "mc": 30.79, "buy": 50494117.599, "x": 677.6}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 678.1}, {"s": "CC", "mc": 27.96, "buy": 35323.893, "x": 678.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 678.2}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 678.3}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 678.4}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 678.4}, {"s": "COINE", "mc": 28.14, "buy": 3520918.711, "x": 687.1}, {"s": "Maido", "mc": 31.81, "buy": 67062500.0, "x": 689.3}, {"s": "USA", "mc": 28.13, "buy": 3209871.866, "x": 694.4}, {"s": "pat", "mc": 28.14, "buy": 3520370.447, "x": 696.2}, {"s": "SOL", "mc": 29.43, "buy": 27195174.668, "x": 696.2}, {"s": "CATEFATHER", "mc": 35.81, "buy": 124858181.764, "x": 699.3}, {"s": "Ninja", "mc": 33.83, "buy": 97545454.545, "x": 699.4}, {"s": "Road to 1M", "mc": 28.14, "buy": 3520918.747, "x": 704.9}, {"s": "CATEFATHER", "mc": 38.06, "buy": 153285714.286, "x": 706.1}, {"s": "BABYCATE", "mc": 37.92, "buy": 151660777.334, "x": 709.7}, {"s": "The Irony", "mc": 27.96, "buy": 35323.893, "x": 710.4}, {"s": "CATE", "mc": 27.96, "buy": 353.196, "x": 711.7}, {"s": "CATE", "mc": 27.96, "buy": 353.196, "x": 711.7}, {"s": "CATE", "mc": 27.98, "buy": 353134.691, "x": 711.8}, {"s": "CC", "mc": 27.96, "buy": 35323.893, "x": 713.5}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 713.6}, {"s": "CYCLOPS", "mc": 30.14, "buy": 39469795.421, "x": 718.8}, {"s": "BABYCATE", "mc": 32.86, "buy": 83177720.188, "x": 720.9}, {"s": "OOP", "mc": 28.0, "buy": 714968.348, "x": 723.3}, {"s": "BABYCATE", "mc": 37.92, "buy": 151660777.334, "x": 725.5}, {"s": "PWS", "mc": 28.15, "buy": 3565339.235, "x": 729.6}, {"s": "$Travelers", "mc": 28.07, "buy": 2115327.703, "x": 737.0}, {"s": "SOL", "mc": 29.2, "buy": 23101379.209, "x": 737.1}, {"s": "Kurumi Otake", "mc": 31.32, "buy": 59141732.283, "x": 739.4}, {"s": "ANNIHILATE\u2060", "mc": 28.43, "buy": 8867768.595, "x": 739.8}, {"s": "BILLY", "mc": 35.91, "buy": 126235294.118, "x": 744.7}, {"s": "HELL00000!?!", "mc": 27.96, "buy": 35323.893, "x": 745.7}, {"s": "HELL00000!?!", "mc": 27.96, "buy": 353.196, "x": 745.7}, {"s": "HELL00000!?!", "mc": 27.96, "buy": 3532.412, "x": 745.8}, {"s": "CHIIKATROL", "mc": 28.14, "buy": 3520371.074, "x": 748.0}, {"s": "TCAT", "mc": 33.83, "buy": 97545454.545, "x": 748.1}, {"s": "?", "mc": 27.96, "buy": 0, "x": 748.5}, {"s": "3", "mc": 29.15, "buy": 22069539.667, "x": 750.8}, {"s": "PWS", "mc": 28.22, "buy": 5009090.87, "x": 753.7}, {"s": "bull ", "mc": 29.85, "buy": 34618137.776, "x": 757.5}, {"s": "BABYCATE", "mc": 37.92, "buy": 151660777.334, "x": 758.1}, {"s": "CATE", "mc": 34.86, "buy": 112104477.612, "x": 768.9}, {"s": "SALARYCAT", "mc": 33.75, "buy": 96449438.144, "x": 769.4}, {"s": "TOTH", "mc": 28.14, "buy": 3520370.447, "x": 772.0}, {"s": "SOL", "mc": 29.09, "buy": 21042439.042, "x": 773.2}, {"s": "LOLA", "mc": 28.42, "buy": 8759183.63, "x": 774.1}, {"s": "Coon", "mc": 28.14, "buy": 3520918.711, "x": 775.4}, {"s": "CATVERSE", "mc": 27.96, "buy": 0, "x": 784.6}, {"s": "Egod", "mc": 31.81, "buy": 67062500.0, "x": 786.8}, {"s": "Goonangutan", "mc": 32.0, "buy": 70000000, "x": 800.5}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 809.8}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 809.8}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 809.8}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 809.9}, {"s": "CC", "mc": 27.96, "buy": 353.196, "x": 810.0}, {"s": "Valeria", "mc": 38.06, "buy": 153285714.286, "x": 812.2}, {"s": "PWS", "mc": 28.15, "buy": 3565339.235, "x": 815.8}, {"s": "COINE", "mc": 29.83, "buy": 34199203.121, "x": 815.8}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 820.2}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 820.3}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 820.3}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 820.3}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 820.4}, {"s": "HELENE", "mc": 29.93, "buy": 35926612.059, "x": 824.6}, {"s": "TNOS", "mc": 28.03, "buy": 1410681.946, "x": 825.2}, {"s": "COINE", "mc": 29.83, "buy": 34199203.121, "x": 828.2}, {"s": "PUNCH", "mc": 27.96, "buy": 0, "x": 834.4}, {"s": "$NEEGY", "mc": 27.98, "buy": 386664.854, "x": 841.4}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 841.6}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 841.6}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 841.8}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 841.8}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 841.8}, {"s": "TNOS", "mc": 28.05, "buy": 1788384, "x": 842.4}, {"s": "APE", "mc": 31.76, "buy": 66285714.224, "x": 842.8}, {"s": "CON", "mc": 28.14, "buy": 3520918.747, "x": 844.1}, {"s": "Bonsai", "mc": 27.96, "buy": 3576.655, "x": 848.8}, {"s": "pump!?", "mc": 28.24, "buy": 5339138.506, "x": 853.3}, {"s": "Valeria", "mc": 30.48, "buy": 45335645.557, "x": 858.5}, {"s": "DUPE", "mc": 29.18, "buy": 22758782.427, "x": 860.2}, {"s": "BASS", "mc": 27.98, "buy": 353134.727, "x": 861.8}, {"s": "TABLEOK", "mc": 28.43, "buy": 8869142.854, "x": 862.5}, {"s": "TEST", "mc": 28.15, "buy": 3564784.053, "x": 862.5}, {"s": "USOC", "mc": 27.96, "buy": 35323.893, "x": 865.4}, {"s": "COINE", "mc": 29.83, "buy": 34199203.121, "x": 867.5}, {"s": "CRAZE", "mc": 34.45, "buy": 106348303.459, "x": 873.7}, {"s": "Trexcapade", "mc": 32.75, "buy": 81596958.13, "x": 874.1}, {"s": "LARPER", "mc": 34.77, "buy": 110863468.564, "x": 875.7}, {"s": "Road to 1M", "mc": 28.14, "buy": 3520918.747, "x": 878.7}, {"s": "?", "mc": 27.96, "buy": 0, "x": 882.4}, {"s": "?", "mc": 27.96, "buy": 0, "x": 882.7}, {"s": "c@t", "mc": 33.83, "buy": 97545454.545, "x": 884.3}, {"s": "CATE", "mc": 28.14, "buy": 3529605.228, "x": 885.3}, {"s": "JIMOTHE", "mc": 28.89, "buy": 17376518.167, "x": 888.2}, {"s": "E", "mc": 27.96, "buy": 3532.412, "x": 895.2}, {"s": "E", "mc": 27.96, "buy": 3532.412, "x": 895.3}, {"s": "E", "mc": 27.96, "buy": 3532.412, "x": 895.4}, {"s": "E", "mc": 28.14, "buy": 3520918.711, "x": 895.4}, {"s": "Alfred", "mc": 31.81, "buy": 67062500.0, "x": 895.6}, {"s": "\ud83d\udc15", "mc": 31.81, "buy": 67062500.0, "x": 896.5}, {"s": "JIMOTHE", "mc": 28.22, "buy": 5009090.87, "x": 898.9}, {"s": "OONA", "mc": 30.82, "buy": 51095238.095, "x": 899.5}, {"s": "TABLEOK", "mc": 28.24, "buy": 5272727.197, "x": 904.0}, {"s": "PANAMA", "mc": 37.92, "buy": 151660777.334, "x": 906.4}, {"s": "Spider", "mc": 28.09, "buy": 2466687.175, "x": 913.1}, {"s": "KEK", "mc": 33.83, "buy": 97545454.545, "x": 915.0}, {"s": "Aimaxo", "mc": 28.48, "buy": 9800684.977, "x": 921.0}, {"s": "PTSD", "mc": 31.76, "buy": 66285714.224, "x": 921.3}, {"s": "Frog", "mc": 33.75, "buy": 96449438.144, "x": 925.7}, {"s": "AICAST", "mc": 30.82, "buy": 51095238.095, "x": 926.2}, {"s": "$SYS", "mc": 28.01, "buy": 1029074.151, "x": 927.7}, {"s": "WANJAN", "mc": 31.76, "buy": 66285714.224, "x": 933.0}, {"s": "Mnut", "mc": 33.83, "buy": 97545454.545, "x": 934.5}, {"s": "SOLODECK", "mc": 30.21, "buy": 40779097.348, "x": 939.3}, {"s": "OONA", "mc": 34.24, "buy": 103421686.747, "x": 943.6}, {"s": "READ LINK FF", "mc": 27.96, "buy": 3532.412, "x": 946.4}, {"s": "READ LINK FF", "mc": 27.96, "buy": 353.196, "x": 946.5}, {"s": "READ LINK FF", "mc": 27.96, "buy": 35323.893, "x": 946.6}, {"s": "Froge", "mc": 28.07, "buy": 2142050.506, "x": 946.7}, {"s": "CA", "mc": 42.33, "buy": 200963210.681, "x": 952.0}, {"s": "belong", "mc": 29.85, "buy": 34612903.226, "x": 956.6}, {"s": "BABYCATE", "mc": 28.33, "buy": 7018806.137, "x": 968.1}, {"s": "pump!?", "mc": 28.24, "buy": 5339138.506, "x": 970.2}, {"s": "TTT", "mc": 27.97, "buy": 241093.875, "x": 971.5}, {"s": "SOL", "mc": 29.18, "buy": 22758782.427, "x": 972.0}, {"s": "Mnut", "mc": 37.92, "buy": 151660777.334, "x": 974.0}, {"s": "Research", "mc": 38.06, "buy": 153285714.286, "x": 975.5}, {"s": "RISE", "mc": 27.96, "buy": 0, "x": 988.8}, {"s": "Mnut", "mc": 38.06, "buy": 153285714.286, "x": 989.7}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 991.3}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 991.4}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 991.5}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 991.5}, {"s": "CATE", "mc": 27.96, "buy": 0, "x": 991.6}, {"s": "Duck", "mc": 30.83, "buy": 51102842.632, "x": 996.5}, {"s": "BABYCATE", "mc": 28.11, "buy": 2818584.702, "x": 998.0}, {"s": "PWB", "mc": 28.15, "buy": 3565339.235, "x": 1004.9}, {"s": "RelaxedGuy", "mc": 37.92, "buy": 151660777.334, "x": 1005.9}, {"s": "SDOG", "mc": 29.83, "buy": 34199203.154, "x": 1006.4}, {"s": "CORGI", "mc": 28.33, "buy": 7018806.172, "x": 1011.9}, {"s": "Holder", "mc": 29.85, "buy": 34612903.226, "x": 1015.2}, {"s": "Gnut", "mc": 35.81, "buy": 124858181.764, "x": 1015.7}, {"s": "SOL", "mc": 29.6, "buy": 30244631.388, "x": 1016.6}, {"s": "CATES", "mc": 27.98, "buy": 353134.727, "x": 1024.0}, {"s": "GNUT", "mc": 29.85, "buy": 34612903.226, "x": 1024.4}, {"s": "GENCAT", "mc": 29.83, "buy": 34199203.154, "x": 1026.9}, {"s": "TOTH", "mc": 28.14, "buy": 3520370.447, "x": 1027.0}];
+const X = {"totals": {"gated": 138, "passed": 45, "rejected": 93, "passRate": 0.32608695652173914}, "rej": {"deadToken": 7, "staleMc": 5, "unroutable": 0, "bundle": 28, "ath": 53, "cost": 0}, "scan": [{"s": "Kurumi Otake", "p": true}, {"s": "BILLY", "p": true}, {"s": "HELL00000!?!", "p": true}, {"s": "HELL00000!?!", "p": true}, {"s": "Coon", "p": true}, {"s": "TCAT", "p": true}, {"s": "BABYCATE", "p": true}, {"s": "TADA", "p": true}, {"s": "TOTH", "p": true}, {"s": "CATVERSE", "p": true}, {"s": "Egod", "p": true}, {"s": "Goonangutan", "p": true}, {"s": "CC", "p": true}, {"s": "CC", "p": true}, {"s": "TNOS", "p": true}, {"s": "CATE", "p": true}, {"s": "CATE", "p": true}, {"s": "COINE", "p": true}, {"s": "CATE", "p": true}, {"s": "CATE", "p": true}, {"s": "CATE", "p": true}, {"s": "CC", "p": true}, {"s": "CC", "p": true}, {"s": "CC", "p": true}, {"s": "COINE", "p": true}, {"s": "CORNDOG", "p": true}, {"s": "CORNDOG", "p": true}, {"s": "CORNDOG", "p": true}, {"s": "TOTH", "p": false}, {"s": "GENCAT", "p": false}, {"s": "GNUT", "p": false}, {"s": "CATES", "p": false}, {"s": "SOL", "p": false}, {"s": "Gnut", "p": false}, {"s": "Holder", "p": false}, {"s": "CORGI", "p": false}, {"s": "SDOG", "p": false}, {"s": "PWB", "p": false}, {"s": "RelaxedGuy", "p": false}, {"s": "BABYCATE", "p": false}], "seen": 18025};
+const $=h=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
+const R=(c,n)=>{const x=document.createElement("div");x.className="col";
+  x.innerHTML=`<div class="cap"><b>${c}</b><span>${n}</span></div>`;return x};
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const SPAN=L[L.length-1].x;                    // detik yang tercakup data
+const BAND=[55,100];                           // band entry kita
+const inBand=v=>v>=BAND[0]&&v<=BAND[1];
+const yMC=(v,H)=>{const lo=Math.log(27),hi=Math.log(430);
+  return H-((Math.log(Math.max(v,27))-lo)/(hi-lo))*H};
+
+/* ═══════════════ A — HUJAN PELUNCURAN ═══════════════
+   Sumbu tegak = MC peluncuran (log 27→430 ◎), mendatar = waktu.
+   Hampir semua koin lahir di 27,96 — konstanta kurva pump.fun — jadi
+   lantai itu tergambar sendiri sebagai garis padat. Yang menyembul ke
+   atas adalah dev yang benar-benar menaruh modal. Pita entry 55–100
+   disorot, dan Anda melihat betapa jarangnya sesuatu lahir di sana. */
+function rain(){
+  const el=$(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PASAR · HUJAN PELUNCURAN</div>
+    <canvas></canvas>
+    <div class="foot">
+      <div class="stat"><div class="v" style="color:var(--acid)">${L.length}</div><div class="k">peluncuran</div></div>
+      <div class="stat"><div class="v">${(L.length/(SPAN/60)).toFixed(0)}<span style="font-size:11px;color:var(--dimmer)">/mnt</span></div><div class="k">laju</div></div>
+      <div class="stat"><div class="v" style="color:var(--gold)">${L.filter(o=>inBand(o.mc)).length}</div><div class="k">lahir di band</div></div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:9.5px;color:var(--dimmer)">${(SPAN/60).toFixed(0)} menit terakhir</div>
+    </div></div>`);
+  requestAnimationFrame(()=>{
+    const cv=el.querySelector("canvas"), ctx=cv.getContext("2d"), DPR=devicePixelRatio||1;
+    const r=cv.getBoundingClientRect(); cv.width=r.width*DPR; cv.height=r.height*DPR; ctx.scale(DPR,DPR);
+    const W=r.width, H=r.height, PT=52, PB=62;
+    const drops=L.map(o=>({...o, born:-Math.random()*1.2}));
+    let t0=performance.now();
+    function frame(now){
+      const el2=(now-t0)/1000;
+      ctx.clearRect(0,0,W,H);
+      // pita entry
+      const yb1=PT+yMC(BAND[1],H-PT-PB), yb2=PT+yMC(BAND[0],H-PT-PB);
+      const g=ctx.createLinearGradient(0,yb1,0,yb2);
+      g.addColorStop(0,"rgba(232,197,106,.12)"); g.addColorStop(1,"rgba(232,197,106,.03)");
+      ctx.fillStyle=g; ctx.fillRect(0,yb1,W,yb2-yb1);
+      ctx.strokeStyle="rgba(232,197,106,.35)"; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(0,yb1); ctx.lineTo(W,yb1); ctx.moveTo(0,yb2); ctx.lineTo(W,yb2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle="rgba(232,197,106,.75)"; ctx.font="9px ui-monospace,monospace";
+      ctx.fillText("band entry 55–100 ◎",8,yb1-5);
+      // lantai 27,96
+      const yf=PT+yMC(28,H-PT-PB);
+      ctx.strokeStyle="rgba(124,130,141,.30)"; ctx.beginPath(); ctx.moveTo(0,yf); ctx.lineTo(W,yf); ctx.stroke();
+      ctx.fillStyle="rgba(124,130,141,.7)"; ctx.fillText("27,96 ◎ — semua koin lahir di sini",8,yf+13);
+      // tetesan
+      const prog=reduce?1:Math.min(1,el2/6);
+      drops.forEach(d=>{
+        const a=(d.x/SPAN)-(1-prog); if(a<-0.02) return;
+        const x=(d.x/SPAN)*W, y=PT+yMC(d.mc,H-PT-PB);
+        const band=inBand(d.mc), big=d.mc>120;
+        const rr=band?3.1:(big?2.2:1.15);
+        ctx.globalAlpha=band?.95:(big?.6:.30);
+        ctx.fillStyle=band?css("--gold"):(big?css("--acid"):"#7f8a96");
+        ctx.beginPath(); ctx.arc(x,y,rr,0,7); ctx.fill();
+        if(band){ctx.globalAlpha=.20;ctx.beginPath();ctx.arc(x,y,9,0,7);ctx.fill();}
+      });
+      ctx.globalAlpha=1;
+      if(!reduce&&el2<7) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+  return el;
+}
+
+/* ═══════════════ B — RADAR SAPU ═══════════════
+   Sudut = waktu (satu putaran = rentang data), jari-jari = MC.
+   Pita entry jadi cincin. Garis sapu berputar dan menyalakan kembali
+   blip yang dilewatinya, jadi denyut pasar terbaca sebagai ritme. */
+function radar(){
+  const el=$(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>PASAR · SAPUAN</div>
+    <canvas></canvas>
+    <div class="foot">
+      <div class="stat"><div class="v" style="color:var(--acid)">${X.totals.gated}</div><div class="k">dinilai</div></div>
+      <div class="stat"><div class="v" style="color:var(--up)">${X.totals.passed}</div><div class="k">masuk</div></div>
+      <div class="stat"><div class="v" style="color:var(--down)">${X.totals.rejected}</div><div class="k">ditolak</div></div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:9.5px;color:var(--dimmer)">${X.seen.toLocaleString("id")} dilihat scout</div>
+    </div></div>`);
+  requestAnimationFrame(()=>{
+    const cv=el.querySelector("canvas"), ctx=cv.getContext("2d"), DPR=devicePixelRatio||1;
+    const r=cv.getBoundingClientRect(); cv.width=r.width*DPR; cv.height=r.height*DPR; ctx.scale(DPR,DPR);
+    const W=r.width,H=r.height,cx=W/2,cy=H/2+6,RAD=Math.min(W,H)/2-46;
+    const pts=L.map(o=>({ang:(o.x/SPAN)*Math.PI*2-Math.PI/2, rr:(1-yMC(o.mc,1))*RAD, band:inBand(o.mc), mc:o.mc}));
+    let t0=performance.now();
+    function frame(now){
+      const sweep=((now-t0)/4200)%1*Math.PI*2-Math.PI/2;
+      ctx.clearRect(0,0,W,H);
+      // cincin
+      ctx.strokeStyle="rgba(26,29,36,1)"; ctx.lineWidth=1;
+      [0.33,0.66,1].forEach(k=>{ctx.beginPath();ctx.arc(cx,cy,RAD*k,0,7);ctx.stroke();});
+      // cincin band
+      const r1=(1-yMC(BAND[0],1))*RAD, r2=(1-yMC(BAND[1],1))*RAD;
+      ctx.fillStyle="rgba(232,197,106,.07)";
+      ctx.beginPath();ctx.arc(cx,cy,r2,0,7);ctx.arc(cx,cy,r1,0,7,true);ctx.fill();
+      ctx.strokeStyle="rgba(232,197,106,.30)";ctx.setLineDash([3,3]);
+      [r1,r2].forEach(rr=>{ctx.beginPath();ctx.arc(cx,cy,rr,0,7);ctx.stroke();});ctx.setLineDash([]);
+      // blip
+      pts.forEach(p=>{
+        let d=sweep-p.ang; while(d<0)d+=Math.PI*2; while(d>Math.PI*2)d-=Math.PI*2;
+        const fresh=Math.max(0,1-d/(Math.PI*1.5));
+        const x=cx+Math.cos(p.ang)*p.rr, y=cy+Math.sin(p.ang)*p.rr;
+        ctx.globalAlpha=(p.band?.35:.12)+fresh*(p.band?.65:.45);
+        ctx.fillStyle=p.band?css("--gold"):(p.mc>120?css("--acid"):"#7f8a96");
+        ctx.beginPath();ctx.arc(x,y,p.band?3:1.3,0,7);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      // garis sapu
+      const gg=ctx.createLinearGradient(cx,cy,cx+Math.cos(sweep)*RAD,cy+Math.sin(sweep)*RAD);
+      gg.addColorStop(0,"rgba(201,240,74,0)");gg.addColorStop(1,"rgba(201,240,74,.55)");
+      ctx.strokeStyle=gg;ctx.lineWidth=1.6;
+      ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(sweep)*RAD,cy+Math.sin(sweep)*RAD);ctx.stroke();
+      ctx.fillStyle="rgba(124,130,141,.6)";ctx.font="8.5px ui-monospace,monospace";
+      ctx.fillText("cincin = band entry 55–100 ◎",12,H-72);
+      if(!reduce) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+  return el;
+}
+
+/* ═══════════════ C — ARUS GERBANG ═══════════════
+   Partikel mengalir kiri→kanan melewati gerbang. Yang ditolak
+   mengelupas ke bawah pada alasannya masing-masing, jadi terlihat
+   gerbang mana yang paling banyak menyaring. Hanya cacah, tanpa uang. */
+function gates(){
+  const rej=Object.entries(X.rej).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const nm={deadToken:"token mati",staleMc:"MC basi",bundle:"bundle",ath:"dekat ATH",unroutable:"tak dirutekan",cost:"biaya"};
+  const el=$(`<div class="tile">
+    <div class="hdr"><span class="dot"></span>SCANNER · ARUS GERBANG</div>
+    <canvas></canvas>
+    <div style="position:absolute;left:17px;top:44px;z-index:2">
+      <div class="num" style="font-size:34px;line-height:1;color:var(--up)">${X.totals.passed}</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:2px">masuk posisi</div>
+    </div>
+    <div style="position:absolute;right:17px;top:46px;z-index:2;text-align:right">
+      ${rej.map(([k,v])=>`<div style="display:flex;align-items:center;gap:7px;justify-content:flex-end;margin-bottom:4px">
+        <span style="font-size:9.5px;color:var(--dimmer)">${nm[k]||k}</span>
+        <span class="num" style="font-size:11px;color:var(--down);width:24px;text-align:right">${v}</span></div>`).join("")}
+    </div>
+    <div class="foot">
+      <div class="stat"><div class="v">${X.seen.toLocaleString("id")}</div><div class="k">dilihat</div></div>
+      <div class="stat"><div class="v">${X.totals.gated}</div><div class="k">dinilai</div></div>
+      <div class="stat"><div class="v" style="color:var(--up)">${Math.round(X.totals.passRate*100)}%</div><div class="k">lolos</div></div>
+      <div style="flex:1"></div>
+      <div class="num" style="font-size:9px;color:var(--dimmer);max-width:250px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">
+        ${X.scan.slice(0,9).map(s=>s.s).join(" · ")}</div>
+    </div></div>`);
+  requestAnimationFrame(()=>{
+    const cv=el.querySelector("canvas"), ctx=cv.getContext("2d"), DPR=devicePixelRatio||1;
+    const r=cv.getBoundingClientRect(); cv.width=r.width*DPR; cv.height=r.height*DPR; ctx.scale(DPR,DPR);
+    const W=r.width,H=r.height, LANE=H*0.52, N=150;
+    const passRate=X.totals.passRate;
+    const lanes=rej.map((_,i)=>LANE+40+i*22);
+    const ps=Array.from({length:N},()=>({x:Math.random()*W,y:LANE+(Math.random()-.5)*26,
+      pass:Math.random()<passRate, lane:Math.floor(Math.random()*rej.length), v:.5+Math.random()*1.1}));
+    const GATE=W*0.42;
+    function frame(){
+      ctx.clearRect(0,0,W,H);
+      ctx.strokeStyle="rgba(26,29,36,1)";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(GATE,LANE-40);ctx.lineTo(GATE,H-58);ctx.stroke();
+      ctx.fillStyle="rgba(124,130,141,.55)";ctx.font="8.5px ui-monospace,monospace";
+      ctx.fillText("gerbang admisi",GATE+6,LANE-46);
+      ps.forEach(p=>{
+        p.x+=p.v; if(p.x>W+10){p.x=-10;p.y=LANE+(Math.random()-.5)*26;p.pass=Math.random()<passRate;p.lane=Math.floor(Math.random()*rej.length);}
+        if(p.x>GATE && !p.pass){ const ty=lanes[p.lane]; p.y+=(ty-p.y)*0.06; }
+        else if(p.x<=GATE){ p.y+=((LANE)-p.y)*0.03; }
+        const rejected=p.x>GATE&&!p.pass;
+        ctx.globalAlpha=rejected?.30:(p.x>GATE?.85:.45);
+        ctx.fillStyle=rejected?css("--down"):(p.x>GATE?css("--up"):"#7f8a96");
+        ctx.beginPath();ctx.arc(p.x,p.y,rejected?1.1:1.7,0,7);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      if(!reduce) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+  return el;
+}
+
+const out=document.getElementById("out");
+[["A · Hujan peluncuran","Tegak = MC peluncuran (log), mendatar = waktu. Lantai 27,96 ◎ tergambar sendiri karena hampir semua koin lahir di sana; yang menyembul adalah dev yang menaruh modal. Pita entry 55–100 disorot.",rain],
+ ["B · Sapuan radar","Sudut = waktu, jari-jari = MC. Pita entry jadi cincin. Garis sapu berputar menyalakan ulang blip yang dilewatinya.",radar],
+ ["C · Arus gerbang","Partikel mengalir melewati gerbang admisi; yang ditolak mengelupas ke bawah pada alasannya. Terlihat gerbang mana yang paling menyaring.",gates],
+].forEach(([t,n,f])=>{const c=R(t,n);c.appendChild(f());out.appendChild(c)});
+</script>

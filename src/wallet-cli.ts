@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { config } from "./config.js";
-import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
+import { botPubkey, balanceSol, withdrawSol, walletSource } from "./execution/wallet.js";
+import { importFromFile, keySource, keychainRead, KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT } from "./execution/keystore.js";
 import { devnetPlumbingTest, simulateBuyMainnet } from "./execution/executor.js";
 
 const cmd = process.argv[2] ?? "status";
@@ -17,9 +19,52 @@ async function main() {
     console.log(`  Mainnet balance: ${mainnet < 0 ? "?" : mainnet.toFixed(4)} SOL`);
     console.log(`  Devnet balance:  ${devnet < 0 ? "?" : devnet.toFixed(4)} SOL`);
     console.log(`  Exec mode:       ${config.exec.mode}`);
-    console.log(`\n  Key file: ${config.exec.keyFile} (gitignored, 0600)`);
-    console.log(`  NOTE: LIVE mode is blocked until keychain storage is built — never fund this with real trading size yet.\n`);
-    console.log(`  Commands: npm run wallet [status|airdrop|devnet-test|simulate <mint>|withdraw <dest> <amt|all>]\n`);
+    const src = walletSource();
+    console.log(`\n  Key storage:    ${src === "keychain" ? "macOS keychain ✓" : src === "file" ? `FILE ${config.exec.keyFile} (gitignored, 0600)` : src}`);
+    if (src !== "keychain") {
+      console.log(`  → move it into the keychain:  npm run wallet keychain-import`);
+      console.log(`     (a key file in the project directory is the one that gets swept into a`);
+      console.log(`      backup, a zip, or a screen share — that is what this removes.)`);
+    }
+    console.log(`  Live permitted: ${config.exec.liveConfirmed ? "YES (LIVE_TRADING_CONFIRMED=yes)" : "no — .env lock closed"}\n`);
+    console.log(`  Commands: npm run wallet [status|airdrop|devnet-test|simulate <mint>|withdraw <dest> <amt|all>|keychain-import [--keep-file]|keychain-status]\n`);
+    return;
+  }
+
+  if (cmd === "keychain-status") {
+    const inKeychain = keychainRead() !== null;
+    console.log(`\n  Keychain item: ${KEYCHAIN_SERVICE} / ${KEYCHAIN_ACCOUNT}`);
+    console.log(`  Present:       ${inKeychain ? "yes ✓" : "no"}`);
+    console.log(`  Key file:      ${existsSync(config.exec.keyFile) ? `still on disk (${config.exec.keyFile})` : "not on disk"}`);
+    console.log(`  In use by bot: ${keySource()}`);
+    if (inKeychain && existsSync(config.exec.keyFile)) {
+      console.log(`\n  ⚠ Both exist. The keychain WINS (wallet.ts checks it first), so the file is a`);
+      console.log(`    leftover copy of your private key. Delete it once you're satisfied:`);
+      console.log(`      rm ${config.exec.keyFile}`);
+    }
+    console.log("");
+    return;
+  }
+
+  if (cmd === "keychain-import") {
+    const keepFile = process.argv.includes("--keep-file");
+    console.log(`\n  Memindahkan kunci dompet ke macOS keychain…\n`);
+    console.log(`  Address: ${pubkey}`);
+    const r = importFromFile(!keepFile);
+    console.log(`  ${r.ok ? "✓" : "✗"} ${r.message}`);
+    if (r.ok && r.verified) {
+      // Prove the migration on the address, not on the exit code: a keychain holding the
+      // WRONG key would still "succeed" every check above.
+      const { Keypair } = await import("@solana/web3.js");
+      const bs58 = (await import("bs58")).default;
+      const back = keychainRead();
+      const same = back ? Keypair.fromSecretKey(bs58.decode(back)).publicKey.toBase58() === pubkey : false;
+      console.log(`  ${same ? "✓" : "✗"} keychain berisi kunci untuk alamat yang SAMA (${pubkey.slice(0, 8)}…)`);
+      if (!same) console.log(`  ⚠ JANGAN hapus key file. Ada yang salah.`);
+      else if (!r.fileRemoved && !keepFile) console.log(`  ⚠ key file masih ada — hapus manual: rm ${config.exec.keyFile}`);
+      else if (keepFile) console.log(`  ℹ key file sengaja dipertahankan (--keep-file). Keychain tetap yang dipakai.`);
+    }
+    console.log("");
     return;
   }
 
@@ -79,7 +124,7 @@ async function main() {
     return;
   }
 
-  console.log(`  unknown command "${cmd}" — use: status | airdrop | devnet-test | simulate <mint> | withdraw <dest> <amt|all>`);
+  console.log(`  unknown command "${cmd}" — use: status | airdrop | devnet-test | simulate <mint> | withdraw <dest> <amt|all> | keychain-import [--keep-file] | keychain-status`);
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

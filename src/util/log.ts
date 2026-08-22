@@ -66,7 +66,7 @@ function sanitize(obj: unknown, path = ""): unknown {
   return obj;
 }
 
-export function logRecord(stream: "decisions" | "paper-trades" | "events" | "run-ledger" | "post-exit" | "patterns" | "path" | "ticks" | "arm-results", record: unknown): void {
+export function logRecord(stream: "decisions" | "paper-trades" | "events" | "run-ledger" | "post-exit" | "patterns" | "path" | "ticks" | "arm-results" | "live-exec", record: unknown): void {
   const rec = sanitize({ ts: new Date().toISOString(), ...(record as object) });
   appendFileSync(join(config.logDir, `${stream}-${day()}.jsonl`), JSON.stringify(rec) + "\n");
 }

@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
 
 const TONE: Record<string, "up" | "down" | "dim"> = {
@@ -12,7 +13,7 @@ const TONE: Record<string, "up" | "down" | "dim"> = {
  * labeled "recent" rather than implying it's the full-history distribution — an honest limit,
  * not silently overstated.
  */
-export function ExitQuality({ data }: { data: StatsResponse }) {
+function ExitQualityInner({ data }: { data: StatsResponse }) {
   const trades = data.strategy2Primary?.recentTrades ?? [];
   const tally = new Map<string, number>();
   for (const t of trades) {
@@ -46,3 +47,6 @@ export function ExitQuality({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const ExitQuality = panelMemo(ExitQualityInner, (d) => [d.postExit?.tracked, d.postExit?.premature, d.postExit?.worst?.length, d.strategy2Primary?.paper.closed]);

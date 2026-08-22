@@ -220,7 +220,7 @@
     clamp(64px, 4vw, 84px)
     clamp(150px, 9vw, 210px)
     clamp(150px, 9vw, 210px)
-    clamp(130px, 8vw, 180px)
+    clamp(196px, 11vw, 250px)
     clamp(200px, 12vw, 280px)
     clamp(200px, 12vw, 280px)
     clamp(120px, 7vw, 160px)
@@ -234,7 +234,7 @@
     "s1 s1 s1 s1 s1 s1 s1 s1 s1 s1 s1 s1"
     "hero hero hero hero hero equity equity equity equity agent agent agent"
     "hero hero hero hero hero equity equity equity equity agent agent agent"
-    "hero hero hero hero hero pipe pipe pipe pipe agent agent agent"
+    "pipe pipe pipe pipe pipe equity equity equity equity agent agent agent"
     "jour jour jour sig sig sig pos pos pos pos pos pos"
     "jour jour jour sig sig sig pos pos pos pos pos pos"
     "funnel funnel funnel sig sig sig gate gate gate gate gate gate"
@@ -378,4 +378,17 @@
   .dash-grid > * {
     min-height: 220px;
   }
+  /* Tanpa ini tiap tile memuai mengikuti tinggi grid dan satu panel memakan satu layar penuh —
+     owner melihatnya di jendela sempit: panel Pasar sendirian setinggi ~500px, dan pipeline harus
+     di-scroll untuk ditemukan. Batas atas menjaga keduanya terlihat bersamaan. */
+  .dash-grid > * { max-height: 340px; }
 }
+
+/* Ekspresi berpindah dengan transisi, bukan potongan: wajah yang mengganti alis dan mulut secara
+   mendadak terbaca sebagai karakter yang berbeda-beda, bukan satu karakter yang berubah pikiran. */
+.agent-stroke { transition: d 420ms cubic-bezier(.4,0,.2,1), ry 320ms ease; }
+@media (prefers-reduced-motion: reduce) { .agent-stroke { transition: none; } }
+
+/* Sapuan pita pada kartu posisi yang mendekati pemicu exit. Warnanya diambil dari arah P&L di
+   komponen, bukan dari bahaya — posisi +30% yang mendekati trailing stop sedang mengunci untung. */
+@keyframes poscard-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(240%); } }

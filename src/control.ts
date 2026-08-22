@@ -22,9 +22,27 @@ export interface ControlCommand {
   mint?: string; // for "close"
 }
 
+export type ExecMode = "dry-run" | "simulate" | "devnet" | "live";
+
+/**
+ * THE TWO LOCKS, and which one this file is.
+ *
+ * Until 2026-08-22 the rule was "live can never be set from the web", full stop. That made
+ * the console safe by making it useless for the one switch the owner actually wants. The
+ * rule is now split instead, which keeps the property that mattered:
+ *
+ *   PERMISSION  — LIVE_TRADING_CONFIRMED=yes in .env. Out-of-band, on the machine, and a
+ *                 browser can still never set it. Removing the line revokes live instantly:
+ *                 readControl() below degrades a persisted "live" back to dry-run.
+ *   ACTIVATION  — execMode here, i.e. the button. Only ever meaningful with permission.
+ *
+ * So a browser alone still cannot start spending real money — it can only activate what the
+ * machine's owner has already permitted out-of-band. Turning live OFF needs no permission at
+ * all: stopping is always allowed.
+ */
 export interface ControlState {
   paused: boolean; // scanner keeps discovering but stops opening new positions
-  execMode: "dry-run" | "simulate" | "devnet"; // "live" can never be set from the web
+  execMode: ExecMode; // "live" requires the out-of-band permission — see above
   command?: ControlCommand | null; // pending one-shot command (cleared after execution)
   lastCommandId?: number; // highest command id the trader has already executed
   risk?: RiskOverrides; // live risk-parameter overrides (merged over config.risk at runtime)
@@ -39,7 +57,9 @@ export interface ControlState {
 const PATH = join(config.logDir, "control.json");
 const DEFAULT: ControlState = {
   paused: false,
-  execMode: config.exec.mode === "live" ? "dry-run" : config.exec.mode,
+  // EXEC_MODE=live in .env seeds the ACTIVATION too, so a headless box can run live without
+  // anyone opening a browser — but still only when the permission is also present.
+  execMode: config.exec.mode === "live" && config.exec.liveConfirmed ? "live" : config.exec.mode === "live" ? "dry-run" : config.exec.mode,
   command: null,
   lastCommandId: 0,
   risk: {},
@@ -49,11 +69,21 @@ const DEFAULT: ControlState = {
 
 mkdirSync(config.logDir, { recursive: true });
 
+/** Is real-money execution PERMITTED on this machine? (.env only — never the browser.) */
+export function livePermitted(): boolean {
+  return config.exec.liveConfirmed;
+}
+
 export function readControl(): ControlState {
   if (!existsSync(PATH)) return { ...DEFAULT };
   try {
     const s = JSON.parse(readFileSync(PATH, "utf8")) as Partial<ControlState>;
-    const execMode = s.execMode === "simulate" || s.execMode === "devnet" ? s.execMode : "dry-run";
+    // A persisted "live" survives only as long as the .env permission does. Delete the line
+    // and the very next read is dry-run — no restart, no cleanup, no stale armed state.
+    const execMode: ExecMode =
+      s.execMode === "simulate" || s.execMode === "devnet" ? s.execMode
+      : s.execMode === "live" && livePermitted() ? "live"
+      : "dry-run";
     return {
       paused: Boolean(s.paused),
       execMode,
@@ -71,8 +101,9 @@ export function readControl(): ControlState {
 export function writeControl(next: Partial<ControlState>): ControlState {
   const cur = readControl();
   const merged: ControlState = { ...cur, ...next, risk: { ...cur.risk, ...(next.risk ?? {}) } };
-  // Hard guard: the web can never flip the bot into live money.
-  if ((merged.execMode as string) === "live") merged.execMode = "dry-run";
+  // Hard guard, server-side: activation without permission is refused here, not in the UI.
+  // The browser is not trusted to enforce this — it only renders what it is told.
+  if (merged.execMode === "live" && !livePermitted()) merged.execMode = "dry-run";
   writeFileSync(PATH, JSON.stringify(merged, null, 2));
   return merged;
 }

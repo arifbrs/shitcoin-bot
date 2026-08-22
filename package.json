@@ -2,7 +2,7 @@
   "name": "shitcoin-bot",
   "version": "0.1.0",
   "private": true,
-  "description": "Shitcoin \u2014 Solana memecoin scanner with layered rug-safety gate. DRY-RUN MVP: no wallet, no trading.",
+  "description": "Shitcoin — Solana memecoin scanner with layered rug-safety gate. DRY-RUN MVP: no wallet, no trading.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -19,9 +19,12 @@
     "gmgn:launchpads": "tsx src/discovery/gmgn-launchpad-observatory.ts",
     "gmgn:proxy": "tsx src/discovery/gmgn-proxy.ts",
     "wallet": "tsx src/wallet-cli.ts",
-    "reset": "rm -f logs/*.jsonl logs/positions.json logs/deployer-reputation.json && echo 'measurement data cleared \u2014 fresh start'",
+    "reset": "rm -f logs/*.jsonl logs/positions.json logs/deployer-reputation.json && echo 'measurement data cleared — fresh start'",
     "typecheck": "tsc --noEmit",
     "exec:selftest": "tsx src/exec-selftest.ts",
+    "live-bridge:selftest": "tsx src/live-bridge-selftest.ts",
+    "latency:probe": "tsx src/live-latency-probe.ts",
+    "rpc:health": "tsx src/rpc-health-probe.ts",
     "execution-semantics:selftest": "tsx src/execution-semantics-selftest.ts",
     "exposure-reservations:selftest": "tsx src/exposure-reservations-selftest.ts",
     "graduation-math:selftest": "tsx src/graduation-math-selftest.ts",
@@ -37,12 +40,16 @@
     "curve-overlay:selftest": "tsx src/curve-overlay-selftest.ts",
     "launch-event:selftest": "tsx src/launch-event-selftest.ts",
     "scaleout:selftest": "tsx src/scaleout-selftest.ts",
-    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest",
+    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest && npm run rpc-rotation:selftest && npm run watchdog:selftest",
     "profit:evaluate": "tsx src/profit-evaluator.ts",
     "shadow": "tsx src/shadow.ts",
     "structural:report": "tsx src/calibration.ts",
     "mc-anomaly:selftest": "tsx src/mc-anomaly-selftest.ts",
-    "bx:swaps": "tsx src/discovery/bloxroute-swap-recorder.ts"
+    "bx:swaps": "tsx src/discovery/bloxroute-swap-recorder.ts",
+    "rpc-rotation:selftest": "node src/rpc-rotation-selftest.mjs",
+    "ui:check": "npm --prefix web run panel:check && npm --prefix web run poscard:check && npm --prefix web run memo:check",
+    "watchdog": "WATCHDOG_RUN=1 node src/watchdog.mjs",
+    "watchdog:selftest": "node src/watchdog-selftest.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

@@ -4,6 +4,7 @@ import { logRecord } from "../util/log.js";
 import { botWallet } from "./wallet.js";
 import { guardBuy, recordSpend, liveAllowed, reconcile } from "./guardian.js";
 import { pooledRpc } from "../safety/onchain.js";
+import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus } from "./rpc.js";
 
 /**
  * Execution layer. Builds REAL pump.fun transactions (via PumpPortal Local API)
@@ -16,7 +17,7 @@ async function buildTradeTx(
   pubkey: string,
   action: "buy" | "sell",
   mint: string,
-  amount: number,
+  amount: number | string,
   denominatedInSol: boolean,
   pool = "auto",
   slippagePct: number = config.exec.slippagePct,
@@ -64,7 +65,7 @@ export function buildBuyTx(pubkey: string, mint: string, sizeSol: number, pool =
 }
 
 /** Build a real, unsigned pump.fun SELL tx (amount in tokens). */
-export function buildSellTx(pubkey: string, mint: string, tokenAmount: number, pool = "auto"): Promise<Uint8Array | null> {
+export function buildSellTx(pubkey: string, mint: string, tokenAmount: number | string, pool = "auto"): Promise<Uint8Array | null> {
   return buildTradeTx(pubkey, "sell", mint, tokenAmount, false, pool);
 }
 
@@ -76,31 +77,61 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * the tx may still land — so it is reported distinctly so the caller reconciles by
  * on-chain balance rather than assuming either outcome.
  */
-async function confirmSig(conn: Connection, sig: string, timeoutMs = 30_000): Promise<{ confirmed: boolean; timedOut: boolean; err: string | null }> {
+async function confirmSig(sig: string, timeoutMs = 30_000): Promise<{ confirmed: boolean; timedOut: boolean; err: string | null }> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const st = await conn.getSignatureStatuses([sig]);
-    const v = st.value[0];
-    if (v) {
-      if (v.err) return { confirmed: false, timedOut: false, err: JSON.stringify(v.err) };
-      if (v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized") return { confirmed: true, timedOut: false, err: null };
+    try {
+      const st = await poolSignatureStatus(sig);
+      if (st.err) return { confirmed: false, timedOut: false, err: st.err };
+      if (st.confirmed) return { confirmed: true, timedOut: false, err: null };
+    } catch {
+      // A poll that could not reach ANY endpoint says nothing about the transaction. Keep
+      // polling until the deadline; the caller reconciles by balance either way.
     }
     await sleep(1500);
   }
   return { confirmed: false, timedOut: true, err: "confirmation timeout" };
 }
 
-/** Sign (with the bot's own key — instant, no approval) + send + confirm. */
-async function signSendConfirm(bytes: Uint8Array, conn: Connection): Promise<LiveResult> {
+/**
+ * Same poll, but against an explicit Connection — for DEVNET only. The mainnet pool cannot be
+ * used there: it is a different network, and a devnet signature will never appear on it.
+ */
+async function confirmSigVia(conn: Connection, sig: string, timeoutMs = 30_000): Promise<{ confirmed: boolean; timedOut: boolean; err: string | null }> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const st = await conn.getSignatureStatuses([sig]);
+      const v = st.value[0];
+      if (v) {
+        if (v.err) return { confirmed: false, timedOut: false, err: JSON.stringify(v.err) };
+        if (v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized") return { confirmed: true, timedOut: false, err: null };
+      }
+    } catch { /* keep polling to the deadline */ }
+    await sleep(1500);
+  }
+  return { confirmed: false, timedOut: true, err: "confirmation timeout" };
+}
+
+/**
+ * Sign (with the bot's own key — instant, no approval) + send + confirm, all through the
+ * rotating pool. Signing happens BEFORE any send, so the pool's failover cannot produce a
+ * double spend — see the note in execution/rpc.ts.
+ */
+async function signSendConfirm(bytes: Uint8Array): Promise<LiveResult> {
+  let sig: string;
   try {
     const vtx = VersionedTransaction.deserialize(bytes);
     vtx.sign([botWallet()]); // <5ms local signature — the whole point: no human approval
-    const sig = await conn.sendTransaction(vtx, { skipPreflight: false, maxRetries: 2 });
-    const c = await confirmSig(conn, sig);
-    return { ok: c.confirmed, signature: sig, timedOut: c.timedOut, err: c.err };
+    sig = await poolSendRawTransaction(vtx.serialize());
   } catch (e) {
+    // Nothing was signed and sent successfully, so there is no position to reconcile.
     return { ok: false, err: (e as Error).message };
   }
+  // Past this point a transaction EXISTS on the network. Never report it as a clean failure:
+  // confirmSig distinguishes rejected from not-yet-confirmed, and the caller reconciles.
+  const c = await confirmSig(sig);
+  return { ok: c.confirmed, signature: sig, timedOut: c.timedOut, err: c.err };
 }
 
 export interface LiveResult {
@@ -124,13 +155,8 @@ export async function liveBuy(mint: string, sizeSol: number, deployedSol: number
   if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
 
   const kp = botWallet();
-  const conn = new Connection(config.rpcUrl, "confirmed");
-  let balanceSol: number;
-  try {
-    balanceSol = (await conn.getBalance(kp.publicKey)) / LAMPORTS_PER_SOL;
-  } catch {
-    return { ok: false, err: "balance read failed — refusing (fail-closed)" };
-  }
+  const balanceSol = await poolBalanceSol(kp.publicKey.toBase58());
+  if (balanceSol == null) return { ok: false, err: "balance read failed on every endpoint — refusing (fail-closed)" };
 
   const verdict = guardBuy(sizeSol, balanceSol, deployedSol);
   if (!verdict.ok) return { ok: false, err: `guard: ${verdict.reason}` };
@@ -138,7 +164,7 @@ export async function liveBuy(mint: string, sizeSol: number, deployedSol: number
   const bytes = await buildBuyTx(kp.publicKey.toBase58(), mint, sizeSol, pool);
   if (!bytes) return { ok: false, err: "buy tx build failed (no route / bad mint)" };
 
-  const r = await signSendConfirm(bytes, conn);
+  const r = await signSendConfirm(bytes);
   if (r.ok) recordSpend(sizeSol); // circuit-breaker ledger — only on real confirmation
   return r;
 }
@@ -147,14 +173,13 @@ export async function liveBuy(mint: string, sizeSol: number, deployedSol: number
  * LIVE SELL on mainnet. A sell returns SOL (doesn't spend principal) so it is not
  * capped by the spend limits, but it is still gated by liveAllowed() and confirmed.
  */
-export async function liveSell(mint: string, tokenAmount: number, pool = "auto"): Promise<LiveResult> {
+export async function liveSell(mint: string, tokenAmount: number | string, pool = "auto"): Promise<LiveResult> {
   const gate = liveAllowed();
   if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
   const kp = botWallet();
-  const conn = new Connection(config.rpcUrl, "confirmed");
   const bytes = await buildSellTx(kp.publicKey.toBase58(), mint, tokenAmount, pool);
   if (!bytes) return { ok: false, err: "sell tx build failed" };
-  return signSendConfirm(bytes, conn);
+  return signSendConfirm(bytes);
 }
 
 /**
@@ -164,13 +189,8 @@ export async function liveSell(mint: string, tokenAmount: number, pool = "auto")
  */
 export async function reconcileWallet(expectedSol: number): Promise<{ ok: boolean; reason?: string; actualSol: number }> {
   const kp = botWallet();
-  const conn = new Connection(config.rpcUrl, "confirmed");
-  let actualSol = -1;
-  try {
-    actualSol = (await conn.getBalance(kp.publicKey)) / LAMPORTS_PER_SOL;
-  } catch {
-    /* leave -1 → reconcile() fails closed + halts */
-  }
+  // null (every endpoint failed) → -1 → reconcile() fails closed + halts.
+  const actualSol = (await poolBalanceSol(kp.publicKey.toBase58())) ?? -1;
   const v = reconcile(expectedSol, actualSol);
   return { ok: v.ok, reason: v.reason, actualSol };
 }
@@ -319,7 +339,16 @@ export async function devnetPlumbingTest(): Promise<DevnetTestResult> {
   const kp = botWallet();
   const pubkey = kp.publicKey.toBase58();
   const conn = new Connection(config.exec.devnetRpc, "confirmed");
-  let balanceSol = (await conn.getBalance(kp.publicKey)) / LAMPORTS_PER_SOL;
+  // The very first call was unguarded: when the devnet endpoint answers 429 (free-tier
+  // quota, routine) this threw straight out of the self-test, which then looked like the
+  // suite had BROKEN rather than like an environment limit. Every other leg here already
+  // returns a described failure; this one now does too.
+  let balanceSol: number;
+  try {
+    balanceSol = (await conn.getBalance(kp.publicKey)) / LAMPORTS_PER_SOL;
+  } catch (e) {
+    return { pubkey, balanceSol: -1, confirmed: false, error: `devnet balance read failed: ${(e as Error).message}` };
+  }
 
   if (balanceSol < 0.01) {
     try {
@@ -415,7 +444,7 @@ export async function devnetMirror(kind: "buy" | "sell"): Promise<MirrorResult> 
     tx.sign(kp); // ← the whole point: instant, own key, NO approval
     const signMs = Date.now() - ts;
     const sig = await conn.sendRawTransaction(tx.serialize());
-    const c = await confirmSig(conn, sig, 25_000);
+    const c = await confirmSigVia(conn, sig, 25_000);
     return { ok: c.confirmed, signature: sig, ms: Date.now() - t0, signMs, needsFunding: false, err: c.err };
   } catch (e) {
     return { ok: false, ms: Date.now() - t0, needsFunding: false, err: (e as Error).message };

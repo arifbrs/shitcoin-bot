@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import type { StatsResponse } from "@/types/stats";
 
-function Pill({ children, tone }: { children: React.ReactNode; tone: "on" | "off" | "sim" | "dim" }) {
+function Pill({ children, tone }: { children: React.ReactNode; tone: "on" | "off" | "sim" | "dim" | "live" }) {
   const toneClass = {
     on: "text-up border-up/35",
     off: "text-down border-down/35",
     sim: "text-gold border-gold/35",
     dim: "text-muted-foreground border-border",
+    // LIVE must not look like any other state. It is the only one spending real money.
+    live: "text-down border-down bg-down/15 font-semibold",
   }[tone];
   return (
     <span className={`rounded-full border px-2.5 py-1 font-mono text-[9px] tracking-[0.13em] whitespace-nowrap ${toneClass}`}>
@@ -47,8 +49,8 @@ export function TopBar({ data, onOpenControl, onOpenDiagnostics }: Props) {
       <div className="flex items-center gap-2">
         <Pill tone={primaryUp ? "on" : "off"}>{primaryUp ? "FEED LIVE" : "ARCHIVED"}</Pill>
         <Pill tone={agentOn ? "on" : "dim"}>{agentOn ? "AGENT ON" : "AGENT —"}</Pill>
-        <Pill tone={paused ? "off" : execMode === "dry-run" ? "dim" : "sim"}>
-          {execMode.toUpperCase()}{paused ? " · PAUSED" : ""}
+        <Pill tone={paused ? "off" : execMode === "live" ? "live" : execMode === "dry-run" ? "dim" : "sim"}>
+          {execMode === "live" ? "● LIVE" : execMode.toUpperCase()}{paused ? " · PAUSED" : ""}
         </Pill>
         <Clock />
         <button

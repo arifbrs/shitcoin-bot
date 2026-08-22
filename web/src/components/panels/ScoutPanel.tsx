@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
 
 function fmtMc(v: number): string {
@@ -17,7 +18,7 @@ function safeTwitterHref(url: string | null): string | null {
   }
 }
 
-export function ScoutPanel({ data }: { data: StatsResponse }) {
+function ScoutPanelInner({ data }: { data: StatsResponse }) {
   const candidates = data.strategy2.candidates;
   if (!candidates.length) return <p className="font-mono text-[10px] text-muted-foreground">Belum ada kandidat.</p>;
 
@@ -47,3 +48,10 @@ export function ScoutPanel({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const ScoutPanel = panelMemo(ScoutPanelInner, (d) => [
+  d.strategy2.count, d.strategy2.candidates?.length, d.strategy2.candidates?.[0]?.mint,
+  // Same async-art hazard as TradeJournal: icons arrive after the row already exists.
+  d.strategy2.candidates?.filter((c) => c.img).length,
+]);

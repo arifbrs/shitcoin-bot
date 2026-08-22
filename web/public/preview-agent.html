@@ -1,0 +1,285 @@
+<!doctype html><meta charset="utf-8"><title>Feeling Agent — variasi karakter</title>
+<style>
+ :root{--bg:#07080c;--tile:#0c0f15;--line:#1a1e26;--fg:#e9ebee;--dim:#7c828d;--dimmer:#454a55;
+  --up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;--cyan:#5ad9d0;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:84ch;line-height:1.7;margin-bottom:8px}
+ .sub b{color:var(--dim);font-weight:600}
+ .sub em{color:var(--down);font-style:normal}
+ .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-top:22px}
+ .col{width:340px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:9px;min-height:52px}
+ .tile{width:340px;height:430px;background:var(--tile);border:1px solid var(--line);border-radius:13px;
+   position:relative;overflow:hidden}
+ canvas,svg{position:absolute;inset:0;width:100%;height:100%}
+ .hdr{position:absolute;left:14px;top:12px;z-index:3;display:flex;align-items:center;gap:7px;
+   font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--acid);box-shadow:0 0 6px var(--acid)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+</style>
+<h1>Feeling Agent — empat karakter</h1>
+<p class="sub">Datanya mengubah desainnya. Agen ini <b>tidak pernah sekali pun memutuskan exit</b>
+(0 dari 304 panggilan), hanya <b>13% panggilan menghasilkan putusan</b> (40 dari 304 — sisanya
+gugur, kesalahan terakhir "This operation was aborted"), dan putusan terakhirnya
+<em>12,3 jam lalu</em>. Wajah tersenyum yang selalu terlihat sehat adalah kebohongan tentang
+keadaan itu.</p>
+<p class="sub">Maka keempat variasi ini punya aturan yang sama: karakternya <b>meluruh saat diam</b>.
+Yang berbeda adalah bagaimana ia meluruh, dan apa yang ditunjukkan sebagai gantinya.</p>
+<div class="grid" id="out"></div>
+<script>
+const D = {"calls": 304, "verdicts": 40, "exits": 0, "shadowOnly": 30, "ageH": 12.3, "mix": {"abstain": 6, "alive": 25, "dying": 4, "dead": 5}, "last": {"symbol": "OFFICIAL", "vibe": "alive", "confidence": 70, "reason": "Harga naik 7.9% dari entry, tanpa drawdown dari puncak, momentum hidup", "ts": "2026-08-04T03:42:31.462Z"}, "recent": [{"symbol": "OFFICIAL", "vibe": "alive", "confidence": 70, "reason": "Harga naik 7.9% dari entry, tanpa drawdown dari puncak, momentum hidup", "ts": "2026-08-04T03:42:31.462Z"}, {"symbol": "steve", "vibe": "alive", "confidence": 85, "reason": "Harga naik 50.8% dari entry, dekat puncak, pembeli baru masuk, dev tidak jual", "ts": "2026-08-04T01:04:02.289Z"}, {"symbol": "BABY", "vibe": "alive", "confidence": 82, "reason": "Harga naik 174% dari entry, dekat puncak, pembeli berkembang, dev tidak jual.", "ts": "2026-08-04T00:41:26.228Z"}, {"symbol": "dollarbill", "vibe": "alive", "confidence": 90, "reason": "Harga naik dekat puncak, pembeli berkembang, dev tidak jual, tidak ada rug cluster.", "ts": "2026-08-04T00:29:53.089Z"}, {"symbol": "ECHOKIN", "vibe": "alive", "confidence": 91, "reason": "Harga naik 40.5% dari entry, dekat puncak, pembeli aktif, dev hanya beli", "ts": "2026-08-04T00:22:57.227Z"}, {"symbol": "WINP", "vibe": "alive", "confidence": 90, "reason": "Harga naik dekat puncak, pembeli tumbuh, dev hanya beli", "ts": "2026-08-04T00:20:52.893Z"}], "lastError": "This operation was aborted", "model": "auto", "exitQuality": [{"reason": "TRAIL_LOCK", "n": 19, "medianRiseAfterPct": 0, "ranHardPct": 26}, {"reason": "DEV_DUMP", "n": 5, "medianRiseAfterPct": 0, "ranHardPct": 20}, {"reason": "NO_DEVELOPMENT", "n": 12, "medianRiseAfterPct": 0, "ranHardPct": 17}, {"reason": "MAX_HOLD", "n": 3, "medianRiseAfterPct": 0, "ranHardPct": 0}], "agentRecent": [{"ts": "2026-08-04T16:00:43.012Z", "mood": "alive", "say": "DUMB: ambil partial di ", "kind": "SCALE_OUT", "symbol": "DUMB"}, {"ts": "2026-08-04T16:00:37.998Z", "mood": "alive", "say": "Memes: masuk @ 65◎", "kind": "OPEN", "symbol": "Memes"}, {"ts": "2026-08-04T16:00:33.826Z", "mood": "alive", "say": "Kappa: masuk @ 92◎", "kind": "OPEN", "symbol": "Kappa"}, {"ts": "2026-08-04T16:00:29.660Z", "mood": "alive", "say": "DUMB: masuk @ 72◎", "kind": "OPEN", "symbol": "DUMB"}, {"ts": "2026-08-04T16:00:24.511Z", "mood": "alive", "say": "Riichi: ambil partial di ", "kind": "SCALE_OUT", "symbol": "Riichi"}, {"ts": "2026-08-04T15:59:58.721Z", "mood": "alive", "say": "Riichi: masuk @ 57◎", "kind": "OPEN", "symbol": "Riichi"}]};
+const nf=v=>v==null?"—":v.toLocaleString("id");
+const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const VIBE={alive:"#4bd07f",dying:"#e8c56a",dead:"#ff5f5f",abstain:"#5d6472"};
+// Kesegaran: 1 = baru saja, 0 = basi (>6 jam). Ini penggerak SEMUA variasi.
+const fresh=Math.max(0,Math.min(1,1-D.ageH/6));
+function tile(t){const w=document.createElement("div");w.className="tile";
+  w.innerHTML=`<div class="hdr"><span class="dot"></span>${t}</div>`;return w}
+function ctx2d(el){const cv=document.createElement("canvas");el.appendChild(cv);
+  const r=el.getBoundingClientRect(),DPR=devicePixelRatio||1;
+  cv.width=r.width*DPR;cv.height=r.height*DPR;
+  const c=cv.getContext("2d");c.scale(DPR,DPR);return {c,W:r.width,H:r.height}}
+function loop(fn){let t0=0,last=0;(function f(now){
+  const dt=last?Math.min(0.05,(now-last)/1000):0.016;last=now;t0+=dt;
+  fn(t0,dt); if(!reduce)requestAnimationFrame(f)})(0)}
+
+/* ══ A · OSILOSKOP ═══════════════════════════════════════════════════════
+   Wajah digambar sebagai jejak CRT. Amplitudo = keyakinan putusan terakhir,
+   warna = vibe-nya. Saat basi, jejaknya kehilangan tenaga dan rata jadi
+   garis datar — "tidak ada sinyal" tampak seperti apa adanya. */
+function scope(){
+  const el=tile("FEELING AGENT · OSILOSKOP");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const col=VIBE[D.last.vibe]||"#5d6472";
+    const conf=D.last.confidence/100;
+    loop((t)=>{
+      c.clearRect(0,0,W,H);
+      // kisi CRT
+      c.strokeStyle="rgba(255,255,255,.028)";c.lineWidth=1;
+      for(let x=0;x<W;x+=26){c.beginPath();c.moveTo(x,0);c.lineTo(x,H);c.stroke()}
+      for(let y=0;y<H;y+=26){c.beginPath();c.moveTo(0,y);c.lineTo(W,y);c.stroke()}
+      const CY=H*0.44, amp=conf*fresh;
+      // dua "mata": lissajous kecil, mengecil saat basi
+      [[-1,0],[1,0]].forEach(([sx])=>{
+        const ex=W/2+sx*W*0.15, ey=CY-H*0.07, R=10+16*amp;
+        c.strokeStyle=col;c.globalAlpha=.28+.62*fresh;c.lineWidth=1.6;
+        c.beginPath();
+        for(let i=0;i<=90;i++){const a=i/90*Math.PI*2;
+          c.lineTo(ex+Math.cos(a*2+t*1.1)*R*0.62, ey+Math.sin(a*3+t*0.8)*R*0.5*(0.25+amp))}
+        c.stroke();
+      });
+      // "mulut": jejak gelombang; datar saat basi
+      c.beginPath();c.lineWidth=2;c.globalAlpha=1;
+      c.strokeStyle=col;
+      for(let i=0;i<=140;i++){
+        const u=i/140, x=W*0.18+u*W*0.64;
+        const env=Math.sin(u*Math.PI);
+        const y=CY+H*0.16 + Math.sin(u*13-t*3.4)*env*22*amp + Math.sin(u*29+t*1.7)*env*6*amp;
+        i?c.lineTo(x,y):c.moveTo(x,y)}
+      c.stroke();
+      c.shadowColor=col;c.shadowBlur=14*fresh;c.stroke();c.shadowBlur=0;
+      // teks instrumen
+      c.font="9px ui-monospace,monospace";c.textAlign="left";
+      c.fillStyle="rgba(124,130,141,.9)";
+      c.fillText(D.last.symbol+"  "+D.last.vibe.toUpperCase(),16,H-58);
+      c.fillStyle=col;c.font="20px ui-monospace,monospace";
+      c.fillText(D.last.confidence+"%",16,H-34);
+      c.font="8px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("keyakinan · "+D.ageH+" jam lalu",16,H-20);
+      c.textAlign="right";
+      c.font="8.5px ui-monospace,monospace";
+      c.fillStyle=D.exits?"rgba(124,130,141,1)":"rgba(255,95,95,.9)";
+      c.fillText(D.exits+" exit diputuskan agen",W-16,H-34);
+      c.fillStyle="rgba(69,74,85,1)";
+      c.fillText(D.verdicts+"/"+D.calls+" panggilan berbuah",W-16,H-20);
+      c.textAlign="left";
+    });
+  });
+  return el;
+}
+
+/* ══ B · KABUT PARTIKEL ══════════════════════════════════════════════════
+   Kepala sebagai awan partikel. Kerapatannya = pangsa putusan yang benar-benar
+   terbit; saat basi partikelnya kehilangan ikatan dan berhamburan, jadi
+   "agen ini sedang tidak ada di sana" terbaca tanpa satu kata pun. */
+function cloud(){
+  const el=tile("FEELING AGENT · KABUT");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const col=VIBE[D.last.vibe]||"#5d6472";
+    const yieldRate=D.verdicts/D.calls;
+    const N=Math.round(120+320*yieldRate);
+    const P=Array.from({length:N},()=>({a:Math.random()*7,r:Math.random(),
+      s:0.3+Math.random()*0.9,ph:Math.random()*7}));
+    loop((t)=>{
+      c.clearRect(0,0,W,H);
+      const CX=W/2, CY=H*0.42, R=Math.min(W,H)*0.26;
+      const bind=0.25+0.75*fresh;      // 1 = terikat rapat, 0 = berhamburan
+      P.forEach(p=>{
+        const drift=(1-bind)*(30+p.r*70);
+        // Jari-jari DIKURUNG. Tanpa ini, pada keadaan basi (bind 0,25) hamburannya membawa
+        // partikel ke y −18 — di atas tepi tile, terpotong rata. Justru keadaan basi itulah
+        // keadaan agen SEKARANG, jadi cacatnya akan selalu terlihat, bukan sesekali.
+        const CAP=Math.min(W,H)*0.42;
+        const rr=Math.min(CAP,R*(0.55+p.r*0.62)+Math.sin(t*p.s+p.ph)*4+drift*Math.sin(t*0.35+p.ph));
+        const aa=p.a+t*0.06*p.s;
+        const x=CX+Math.cos(aa)*rr*1.02, y=CY+Math.sin(aa)*rr*1.15;
+        c.globalAlpha=(0.10+0.5*bind)*(0.4+0.6*(1-p.r));
+        c.fillStyle=col;
+        c.beginPath();c.arc(x,y,1.1+1.5*(1-p.r)*bind,0,7);c.fill();
+      });
+      c.globalAlpha=1;
+      // mata: dua rumpun padat yang bertahan paling lama
+      [[-0.34,0],[0.34,0]].forEach(([dx])=>{
+        const g=c.createRadialGradient(CX+dx*R*1.6,CY-R*0.18,0,CX+dx*R*1.6,CY-R*0.18,11);
+        g.addColorStop(0,`rgba(255,255,255,${0.25+0.65*fresh})`);
+        g.addColorStop(1,"rgba(255,255,255,0)");
+        c.fillStyle=g;c.beginPath();c.arc(CX+dx*R*1.6,CY-R*0.18,11,0,7);c.fill();
+      });
+      c.font="9px ui-monospace,monospace";c.textAlign="center";
+      c.fillStyle="rgba(154,161,173,.9)";
+      c.fillText(D.last.reason.slice(0,44),W/2,H-74);
+      c.textAlign="left";
+      c.font="8.5px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText("kerapatan = "+Math.round(100*yieldRate)+"% panggilan berbuah",16,H-46);
+      c.fillText("ikatan = kesegaran, "+D.ageH+" jam sejak putusan",16,H-32);
+      c.fillStyle="rgba(255,95,95,.85)";
+      c.fillText(D.exits+" exit diputuskan agen — hanya membayangi",16,H-18);
+    });
+  });
+  return el;
+}
+
+/* ══ C · KARTU DOSSIER ═══════════════════════════════════════════════════
+   Bukan wajah. Kartu identitas: glif potret, lalu neraca putusan apa adanya.
+   Untuk saat kamu ingin agen ini DINILAI, bukan disukai — dan sekarang
+   neraca itu berbunyi 0 exit dari 304 panggilan. */
+function dossier(){
+  const el=tile("FEELING AGENT · DOSSIER");
+  const mix=D.mix, tot=Object.values(mix).reduce((a,b)=>a+b,0)||1;
+  const rows=Object.entries(mix).sort((a,b)=>b[1]-a[1]);
+  const wrap=document.createElement("div");
+  wrap.style.cssText="position:absolute;inset:0;padding:38px 16px 14px;display:flex;flex-direction:column";
+  wrap.innerHTML=`
+    <div style="display:flex;gap:13px;align-items:flex-start">
+      <div id="glyph" style="width:62px;height:62px;border:1px solid var(--line);border-radius:9px;
+        position:relative;overflow:hidden;flex:none;background:#080a0f"></div>
+      <div style="min-width:0;flex:1">
+        <div style="font-size:11.5px;font-family:var(--mono);color:${VIBE[D.last.vibe]}">
+          ${D.last.vibe.toUpperCase()} · ${D.last.confidence}%</div>
+        <div style="font-size:9px;color:var(--dimmer);margin-top:2px">${D.last.symbol} · ${D.ageH} jam lalu</div>
+        <div style="font-size:9.5px;color:var(--dim);margin-top:6px;line-height:1.45">${D.last.reason.slice(0,72)}</div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--line);margin:13px 0 11px"></div>
+    <div style="font-size:8px;letter-spacing:.16em;color:var(--dimmer);margin-bottom:8px">NERACA PUTUSAN</div>
+    ${rows.map(([k,v])=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="width:8px;height:8px;border-radius:2px;background:${VIBE[k]||"#5d6472"};opacity:.85"></span>
+      <span style="font-size:9.5px;color:var(--dim);width:56px">${k}</span>
+      <span style="flex:1;height:3px;border-radius:2px;background:#14171e;overflow:hidden">
+        <span style="display:block;height:100%;width:${100*v/tot}%;background:${VIBE[k]||"#5d6472"};opacity:.6"></span></span>
+      <span class="num" style="font-size:9.5px;width:22px;text-align:right">${v}</span>
+    </div>`).join("")}
+    <div style="margin-top:auto">
+      <div style="display:flex;gap:10px;align-items:baseline">
+        <span class="num" style="font-size:26px;color:var(--down);line-height:1">${D.exits}</span>
+        <span style="font-size:9px;color:var(--dim);line-height:1.35">exit yang benar-benar<br>diputuskan agen ini</span>
+      </div>
+      <div style="font-size:8.5px;color:var(--dimmer);margin-top:7px;line-height:1.5">
+        ${D.verdicts} putusan dari ${D.calls} panggilan (${Math.round(100*D.verdicts/D.calls)}%) ·
+        ${D.shadowOnly} membayangi · galat terakhir "${D.lastError}"
+      </div>
+    </div>`;
+  el.appendChild(wrap);
+  requestAnimationFrame(()=>{
+    const g=wrap.querySelector("#glyph");
+    const cv=document.createElement("canvas");cv.style.cssText="position:absolute;inset:0;width:100%;height:100%";
+    g.appendChild(cv);
+    const DPR=devicePixelRatio||1,r=g.getBoundingClientRect();
+    cv.width=r.width*DPR;cv.height=r.height*DPR;const c=cv.getContext("2d");c.scale(DPR,DPR);
+    const W=r.width,H=r.height,col=VIBE[D.last.vibe]||"#5d6472";
+    loop(t=>{
+      c.clearRect(0,0,W,H);
+      // glif: cincin keyakinan + denyut kesegaran
+      c.strokeStyle="rgba(255,255,255,.07)";c.lineWidth=2;
+      c.beginPath();c.arc(W/2,H/2,H*0.30,0,7);c.stroke();
+      c.strokeStyle=col;c.lineWidth=2;c.lineCap="round";
+      c.beginPath();c.arc(W/2,H/2,H*0.30,-Math.PI/2,-Math.PI/2+Math.PI*2*(D.last.confidence/100));c.stroke();
+      const pulse=fresh*(0.5+0.5*Math.sin(t*2.2));
+      c.fillStyle=col;c.globalAlpha=0.25+0.6*pulse;
+      c.beginPath();c.arc(W/2,H/2,H*0.12,0,7);c.fill();c.globalAlpha=1;
+    });
+  });
+  return el;
+}
+
+/* ══ D · GARIS HIDUP ═════════════════════════════════════════════════════
+   Karakternya adalah satu garis EKG. Tiap putusan nyata adalah satu denyut,
+   berwarna sesuai vibe-nya, dan jaraknya di layar adalah jarak WAKTU yang
+   sebenarnya. Setelah putusan terakhir, garisnya datar — dan panjang garis
+   datar itulah yang paling jujur soal agen ini. */
+function ekg(){
+  const el=tile("FEELING AGENT · GARIS HIDUP");
+  requestAnimationFrame(()=>{
+    const {c,W,H}=ctx2d(el);
+    const R=D.recent.slice().reverse();
+    const t0=new Date(R[0].ts).getTime();
+    const tn=t0+D.ageH*3600e3+ (new Date(R[R.length-1].ts).getTime()-t0);
+    const span=Math.max(1,(t0+ (D.ageH*3600e3) + (new Date(R[R.length-1].ts)-t0)) - t0);
+    loop(t=>{
+      c.clearRect(0,0,W,H);
+      const CY=H*0.42, X0=18, X1=W-18;
+      c.strokeStyle="rgba(255,255,255,.05)";c.lineWidth=1;
+      c.beginPath();c.moveTo(X0,CY);c.lineTo(X1,CY);c.stroke();
+      // rentang waktu: dari putusan pertama yang kita simpan sampai SEKARANG
+      const now=new Date(R[R.length-1].ts).getTime()+D.ageH*3600e3;
+      const map=ts=>X0+(X1-X0)*((ts-t0)/(now-t0));
+      // garis dasar + denyut
+      c.lineWidth=1.6;c.strokeStyle="rgba(90,217,208,.5)";
+      c.beginPath();c.moveTo(X0,CY);
+      R.forEach(v=>{
+        const x=map(new Date(v.ts).getTime()), h=(v.confidence/100)*H*0.20;
+        c.lineTo(x-7,CY);c.lineTo(x-3,CY+h*0.25);c.lineTo(x,CY-h);c.lineTo(x+3,CY+h*0.4);c.lineTo(x+7,CY);
+      });
+      c.lineTo(X1,CY);c.stroke();
+      R.forEach(v=>{
+        const x=map(new Date(v.ts).getTime()), h=(v.confidence/100)*H*0.20;
+        c.fillStyle=VIBE[v.vibe]||"#5d6472";
+        c.beginPath();c.arc(x,CY-h,2.6,0,7);c.fill();
+      });
+      // penanda "sunyi": bagian datar setelah putusan terakhir
+      const lastX=map(new Date(R[R.length-1].ts).getTime());
+      const sweep=X1-(X1-lastX)*(reduce?0:((t*0.25)%1));
+      c.strokeStyle="rgba(255,95,95,.30)";c.setLineDash([3,4]);c.lineWidth=1;
+      c.beginPath();c.moveTo(lastX,CY);c.lineTo(X1,CY);c.stroke();c.setLineDash([]);
+      c.fillStyle="rgba(255,95,95,.75)";
+      c.beginPath();c.arc(sweep,CY,2,0,7);c.fill();
+      c.font="8.5px ui-monospace,monospace";c.textAlign="center";
+      c.fillStyle="rgba(255,95,95,.8)";
+      c.fillText(D.ageH+" jam sunyi",(lastX+X1)/2,CY-14);
+      c.textAlign="left";
+      c.font="9px ui-monospace,monospace";c.fillStyle="rgba(154,161,173,.9)";
+      c.fillText(D.last.symbol+" · "+D.last.vibe+" "+D.last.confidence+"%",16,H-62);
+      c.font="8.5px ui-monospace,monospace";c.fillStyle="rgba(69,74,85,1)";
+      c.fillText(D.verdicts+" putusan dari "+D.calls+" panggilan",16,H-46);
+      c.fillText(D.shadowOnly+" membayangi · model "+D.model,16,H-32);
+      c.fillStyle="rgba(255,95,95,.85)";
+      c.fillText(D.exits+" exit diputuskan agen ini",16,H-18);
+    });
+  });
+  return el;
+}
+
+const out=document.getElementById("out");
+[["A · Osiloskop","Wajah sebagai jejak CRT: amplitudo = keyakinan, warna = vibe. Saat basi jejaknya kehilangan tenaga dan rata jadi garis datar — \u201ctidak ada sinyal\u201d tampak apa adanya.",scope],
+ ["B · Kabut partikel","Kepala sebagai awan. Kerapatan = pangsa panggilan yang berbuah putusan (13%); ikatannya melemah saat basi sehingga partikelnya berhamburan — \u201cagen sedang tidak di sana\u201d tanpa satu kata pun.",cloud],
+ ["C · Kartu dossier","Bukan wajah. Untuk saat kamu ingin agen ini DINILAI, bukan disukai: glif keyakinan, neraca putusan, lalu angka yang paling penting \u2014 0 exit dari 304 panggilan.",dossier],
+ ["D · Garis hidup","Satu garis EKG. Tiap putusan nyata satu denyut, jaraknya di layar adalah jarak waktu sungguhan. Panjang garis datar setelah denyut terakhir itulah yang paling jujur soal agen ini.",ekg],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>

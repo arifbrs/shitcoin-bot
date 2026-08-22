@@ -1,0 +1,95 @@
+<!doctype html><meta charset="utf-8"><title>Pratinjau desain panel</title>
+<style>
+ :root{--bg:#06070a;--tile:#0b0d12;--line:#1a1d24;--fg:#e9ebee;--dim:#7c828d;--dimmer:#40444d;
+  --acid:#c9f04a;--scout:#a78bfa;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:system-ui,-apple-system,sans-serif}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:var(--sans);padding:34px 30px 80px;-webkit-font-smoothing:antialiased}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:68ch;line-height:1.6;margin-bottom:32px}
+ section{margin-bottom:40px}
+ .head{display:flex;align-items:baseline;gap:11px;margin-bottom:4px}
+ .head b{font-size:15px;font-weight:600}
+ .n{font-family:var(--mono);font-size:10px;color:var(--acid);border:1px solid var(--line);border-radius:4px;padding:2px 7px}
+ .head a{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--scout);text-decoration:none}
+ .head a:hover{text-decoration:underline}
+ .why{font-size:11.5px;color:var(--dim);line-height:1.6;max-width:80ch;margin-bottom:14px}
+ /* jendela geser: halaman variasi dirender apa adanya, diperkecil */
+ .win{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--tile);position:relative}
+ .win iframe{border:0;display:block;transform-origin:0 0}
+ .hint{font-family:var(--mono);font-size:9.5px;color:var(--dimmer);margin-top:7px}
+</style>
+<h1>Pratinjau desain panel</h1>
+<p class="sub">Variasinya tampil langsung di bawah ini — dirender dari halaman aslinya, data hidup,
+ukuran tile sebenarnya lalu diperkecil. Klik &ldquo;buka penuh&rdquo; untuk melihat pada ukuran asli.
+Halaman ini statis dan tidak menyentuh bot yang berjalan.</p>
+
+<section>
+  <div class="head"><b>Pipeline — pipa &amp; taper</b><span class="n">2 model · referensi</span><a href="/preview-pipeline3">buka penuh →</a></div>
+  <p class="why">Dua arah dari referensi yang kamu kirim, dipakai pada data asli. Sumbernya ternyata
+  empat: pumpportal 50.413 · new-launch dev-holding 4.528 · gmgn trending 265 · solana-tracker diam
+  hari ini (pipanya dibiarkan gelap, bukan disembunyikan).</p>
+  <div class="win" style="height:560px">
+    <iframe src="/preview-pipeline3" width="1000" height="880" style="transform:scale(0.63)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 63%</p>
+</section>
+
+<section>
+  <div class="head"><b>Pipeline — arus bercabang</b><span class="n">3 model · animasi</span><a href="/preview-pipeline2">buka penuh →</a></div>
+  <p class="why">Koreksi: kedua mesin bukan satu garis yang bercabang — S1 dari WebSocket pumpportal,
+  S2 polling solana-tracker &amp; gmgn lewat proses terpisah. Yang benar-benar bercabang ada di dalam
+  tiap mesin. A rel bercabang · B dua sungai bertemu di satu dompet · C tulang ikan.</p>
+  <div class="win" style="height:640px">
+    <iframe src="/preview-pipeline2" width="1000" height="1050" style="transform:scale(0.62)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 62%</p>
+</section>
+
+<section>
+  <div class="head"><b>Pipeline</b><span class="n">4 model · realtime</span><a href="/preview-pipeline">buka penuh →</a></div>
+  <p class="why">Semua angka dari engine yang berjalan, tanpa dummy. Sniper 50.413 launch dinilai →
+  1.959 dibeli; scout 18.641 dilihat → 144 dinilai → 47 masuk. Alasan skip dan alasan exit diambil
+  dari log hari ini. Empat model: tangga susut · arus partikel · jalur keluar · anggaran waktu.</p>
+  <div class="win" style="height:700px">
+    <iframe src="/preview-pipeline" width="1080" height="1400" style="transform:scale(0.66)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 66% · empat tile</p>
+</section>
+
+<section>
+  <div class="head"><b>Hero — pasar hidup</b><span class="n">3 arah · tanpa nominal</span><a href="/preview-hero2">buka penuh →</a></div>
+  <p class="why">Uang sudah jadi urusan panel Dompet, jadi ketiganya <b>tidak memuat satu pun angka dolar</b>.
+  Digerakkan data nyata: 420 peluncuran terakhir (25/menit), gerbang admisi, dan feed scanner yang baru
+  diperbaiki agar benar-benar mengalir. Semuanya bergerak.</p>
+  <div class="win" style="height:640px">
+    <iframe src="/preview-hero2" width="2600" height="1100" style="transform:scale(0.56)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 56% · hujan peluncuran · sapuan radar · arus gerbang</p>
+</section>
+
+<section>
+  <div class="head"><b>Hero — berbasis angka</b><span class="n">3 arah</span><a href="/preview-hero">buka penuh →</a></div>
+  <p class="why">Panel terbesar di dashboard. Masalahnya: judul berbunyi &ldquo;TOTAL P&amp;L&rdquo; tapi
+  angka besarnya adalah <b>saldo</b>, saldo positif diwarnai merah, dan seluruh isinya duplikat panel
+  Dompet di sebelahnya. Tiga arah: rapor eksperimen · P&amp;L jujur · corong hidup.</p>
+  <div class="win" style="height:560px">
+    <iframe src="/preview-hero" width="2600" height="1000" style="transform:scale(0.56)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 56% · tiga tile bersebelahan</p>
+</section>
+
+<section>
+  <div class="head"><b>Dompet</b><span class="n">5 arah</span><a href="/preview-equity">buka penuh →</a></div>
+  <p class="why">Dulu bernama kurva equity. Lima arah: waterline · dua mesin · pita sesi ·
+  dompet exchange · pita + neraca. Gabungan <b>dompet exchange + pita</b> sudah terpasang di dashboard.</p>
+  <div class="win" style="height:760px">
+    <iframe src="/preview-equity" width="1000" height="1900" style="transform:scale(0.70)" scrolling="no"></iframe>
+  </div>
+  <p class="hint">diperkecil 70% · lima tile bertumpuk</p>
+</section>
+
+<p style="font-size:11px;color:var(--dimmer);line-height:1.6;max-width:68ch;border-top:1px solid var(--line);padding-top:14px">
+Belum punya halaman: Pipeline, Feeling Agent, Trade Journal, Live Market, Open Positions, Scout,
+Admission, Exit Quality, Run Ledger. Sebut mana berikutnya.</p>
+<a href="/app" style="display:inline-block;margin-top:20px;font-family:var(--mono);font-size:11px;color:var(--dim);text-decoration:none">← kembali ke dashboard</a>

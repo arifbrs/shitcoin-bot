@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse, GateRejections } from "@/types/stats";
 
 /**
@@ -21,7 +22,7 @@ const GATES: Array<{ key: keyof GateRejections; label: string; hint: string }> =
   { key: "ath", label: "terlalu dekat ATH", hint: "harga dalam 15% dari tertinggi sepanjang masa" },
 ];
 
-export function GateFunnel({ data }: { data: StatsResponse }) {
+function GateFunnelInner({ data }: { data: StatsResponse }) {
   const s2 = data.strategy2Primary;
   if (!s2) return <p className="font-mono text-[10px] text-muted-foreground">Strategy 2 tidak aktif.</p>;
 
@@ -68,3 +69,6 @@ export function GateFunnel({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const GateFunnel = panelMemo(GateFunnelInner, (d) => [d.strategy2Primary?.totals.gated, d.strategy2Primary?.totals.passed, d.strategy2Primary?.totals.rejected]);

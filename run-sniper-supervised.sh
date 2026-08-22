@@ -44,7 +44,39 @@ cd "$(dirname "$0")"
 export PAPER_TRADE_SIZE_SOL=0.15
 
 export ENTRY_MC_FLOOR_SOL=55
-export ENTRY_MC_CEIL_SOL=100
+# PLAFON 100 → 74 (2026-08-06). Di dalam band 55-100 hasilnya terbelah tajam: entry di bawah
+# 74◎ menghasilkan EV +2,30% (n=887) sementara 74-100◎ menghasilkan −5,30% (n=340), selisih
+# +7,7 poin, t=2,08, split-half 400x menang 97%, arah konsisten di kedua paruh waktu.
+# Mekanismenya BUKAN laju menang (44% vs 45%, identik) melainkan besaran: menang rata-rata
+# +54,9% vs +44,9% dan rugi −41,5% vs −45,4% — masuk lebih tinggi di kurva berarti membayar
+# lebih mahal untuk upside yang sama.
+# BELUM TERBUKTI: EV +2,30% dengan SD 60,7 butuh ~3.543 trade untuk dipastikan di atas nol.
+# Biayanya membuang 28% entry, jadi pengumpulan data melambat 1,38x.
+export ENTRY_MC_CEIL_SOL=74
+
+# FILTER DEV-BUY (2026-08-10). Dev yang membeli >3 SOL ke launch-nya sendiri memegang pasokan yang
+# harus dijual ke rally mana pun yang menyusul. Terukur pada 1.689 trade band, lalu DIVALIDASI ULANG
+# di dalam cohort hidup (qdoru7, n=1.002) sebelum dipasang: dev<3 EV +2,28% lawan −3,79%, selisih
+# 6,07 poin, t=+1,61, split-half menang 95% dari 400. Independen dari lever MC (korelasi +0,073).
+# Mekanismenya besaran, bukan laju menang (44% vs 45%, identik).
+# BELUM TERBUKTI di atas nol sendirian, dan arahnya tidak konsisten lintas paruh waktu
+# (awal −1,60, akhir +12,11). Biaya: ~54% entry dibuang, data terkumpul ~2x lebih lambat.
+export ENTRY_DEV_BUY_MAX_SOL=3
+
+# EXIT LEBIH CEPAT (2026-08-10). Dari simulasi jejak tick pada 653 jalur lengkap (entry → 46 menit
+# sesudah exit), setelah model lolos gerbang: cocok alasan exit 95,9%, sisa hampir konstan
+# (rata −1,20), presisi ±0,68 poin/trade.
+#   MAX_HOLD 120→60s dan NO_DEVELOPMENT 45→30s bersama: Δ +1,69 poin/trade, split-half 400x
+#   menang >99%, DAN bertahan saat ekor dipangkas: +1,23 tanpa 5 trade teratas, +0,76 setelah
+#   pangkas 10% tiap sisi. Efeknya tersebar, bukan cerita segelintir trade.
+# DITOLAK meski Δ-nya lebih besar: trail x2 (+2,98) — 5 dari 653 trade menyumbang 78% efeknya,
+# dan runtuh ke +0,10 setelah dipangkas. Split-half-nya LOLOS 98,8%, jadi split-half saja tidak
+# cukup sebagai gerbang; konsentrasi ekor harus diperiksa terpisah.
+# HIPOTESIS YANG DITOLAK: menahan LEBIH LAMA untuk menangkap koin yang lulus ke AMM justru
+# memburuk (−0,97 di 300s, split-half menang cuma 0,8%). Pelari itu nyata tapi kalah jumlah.
+export ABS_MAX_HOLD_MS=60000
+export MAX_HOLD_MS=60000
+export NO_DEV_MS=30000
 
 # --- DIBATALKAN: potong NO_DEVELOPMENT 45s -> 25s ---
 # Diuji hidup sebagai cohort t5cofy dan HASILNYA LEBIH BURUK: EV −6,16% (167 trade) vs −5,91%

@@ -16,6 +16,16 @@ export interface EquityPoint {
 }
 
 export interface OpenPosition {
+  /** Exit-proximity fields — what will close this position, and how much room is left. */
+  img?: string | null;
+  peakPct?: number;
+  fromPeakPct?: number;
+  trailPct?: number;
+  budgetSec?: number;
+  budgetLabel?: string;
+  sizeSol?: number;
+  entryCostUsd?: number;
+  image?: string;
   mint: string;
   symbol: string;
   unrealizedPnl: number; // percent
@@ -29,6 +39,7 @@ export interface OpenPosition {
 }
 
 export interface RecentTrade {
+  img?: string | null;
   ts: string;
   symbol: string;
   reason: string; // "TRAIL_STOP" | "MAX_HOLD" | "MANUAL_FLATTEN" | "..._NO_LIQUIDITY_FORCED"
@@ -100,6 +111,7 @@ export interface Strategy2PaperSummary {
 }
 
 export interface ScoutCandidate {
+  img?: string | null;
   ts: string;
   type: "strategy2-candidate";
   strategyTag: string;
@@ -155,6 +167,9 @@ export interface CombinedWallet {
   equity: EquityPoint[];
 }
 
+/** Titik peluncuran untuk visual pasar di Hero: umur (detik) + market cap kurva (SOL). */
+export interface LaunchPoint { a: number; mc: number }
+
 export interface SystemInfo {
   dryRun: boolean;
   rpcTier: string;
@@ -171,7 +186,7 @@ export interface SystemInfo {
 
 export interface ControlState {
   paused: boolean;
-  execMode: "dry-run" | "simulate" | "devnet";
+  execMode: "dry-run" | "simulate" | "devnet" | "live";
   command: { id: number; action: "flatten" | "close" | "reset-run"; mint?: string } | null;
   lastCommandId: number;
   risk: Partial<{ paperTradeSizeSol: number; catastrophicStopPct: number; scaleOutTriggerPct: number; minVelSol: number }>;
@@ -186,6 +201,8 @@ export interface MarketCoin {
   mcUsd: number | null;
   ageMin: number | null;
   replies: number;
+  /** Token art straight from pump.fun's coins response; null when it is not an https URL. */
+  img?: string | null;
 }
 
 export interface MarketData {
@@ -240,7 +257,7 @@ export interface FeelingInfo {
   dead: number;
   exits: number;
   health: FeelingHealth;
-  last: { vibe?: string; symbol?: string; reason?: string } | null;
+  last: { vibe?: string; symbol?: string; reason?: string; confidence?: number; ts?: string } | null;
   recent: unknown[];
 }
 
@@ -401,6 +418,20 @@ export interface GuardianInfo {
   liveConfirmed: boolean;
 }
 
+/** Live-bridge readout (src/execution/live-bridge.ts). Armed only behind the double lock. */
+export interface LiveBridgeStatus {
+  /** .env lock. False = the LIVE button is unavailable and no amount of clicking changes that. */
+  permitted: boolean;
+  armed: boolean;
+  halted: boolean;
+  haltReason: string | null;
+  openLots: number;
+  deployedSol: number;
+  realizedSol: number;
+  wallet: string;
+  expectedBalanceSol: number | null;
+}
+
 export interface ExecSimInfo {
   total: number;
   ladder: { theoretical: number; "tx-built": number; unavailable: number; "would-fail": number; executable: number };
@@ -445,7 +476,28 @@ export interface DataIntegrity {
 
 // ── Top-level /api/stats response ─────────────────────────────────────────────
 
+export interface PipelineData {
+  sources: Array<{ n: string; d: string; v: number; eng: string }>;
+  skip: Record<string, number>;
+  exits: Record<string, number>;
+  gated: number;
+  bought: number;
+  openNow?: number;
+  passedS2: number;
+}
+
+export interface BandWatch {
+  floorSol: number; ceilSol: number; source: string;
+  cfgFloorSol: number; cfgCeilSol: number; drift: boolean;
+  launchMcSol: number; launchMedian: number | null; entryMedian: number | null;
+  launches: number[];
+  entries: Array<{ ts: string; mint?: string; sym: string; mcSol: number; img?: string | null; ageSec: number | null }>;
+}
+
 export interface StatsResponse {
+  stall?: { launchAgeSec: number | null; decisionAgeSec: number | null; deadlocked: boolean; starved: boolean; stalled: boolean };
+  bandWatch?: BandWatch;
+  pipeline?: PipelineData;
   now: string;
   mode: string;
   usingPublicRpc: boolean;
@@ -475,6 +527,7 @@ export interface StatsResponse {
   agent: AgentInfo;
   agentScorecard: { decisions: number; stateless: boolean; verdictMix: Record<string, number>; shadowOnly: number; exitQuality: unknown[]; note: string };
   runs: RunsInfo;
+  launchField?: LaunchPoint[];
   momentum: MomentumInfo;
   market: MarketData;
   patterns: PatternsInfo;
@@ -483,11 +536,12 @@ export interface StatsResponse {
   postExit: PostExitInfo;
   scan: Array<{ s: string; p: boolean }>;
   guardian: GuardianInfo;
+  liveBridge?: LiveBridgeStatus;
   execLive: ExecLiveInfo;
   paper: SniperPaper;
   paperHypothetical: { closed: number; wins: number; losses: number; winRate: number; sumOfTradePcts: number; realizedSol: number; wouldFailClosed: number };
   recentDecisions: RecentDecision[];
-  recentTrades: Array<{ ts: string; symbol: string; reason?: string; pnlPct: number; image?: string; grossPnlPct?: number; costPct?: number; pnlSol?: number; heldSec?: number; devOnlyBuys?: boolean }>;
+  recentTrades: Array<{ ts: string; symbol: string; reason?: string; pnlPct: number; image?: string; img?: string | null; grossPnlPct?: number; costPct?: number; pnlSol?: number; heldSec?: number; devOnlyBuys?: boolean }>;
 }
 
 // ── /api/analytics response ───────────────────────────────────────────────────

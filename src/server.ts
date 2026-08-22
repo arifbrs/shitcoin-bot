@@ -10,6 +10,7 @@ import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
 import { solPriceUsd } from "./execution/jupiter.js";
 import { guardStatus, halt, resume } from "./execution/guardian.js";
+import { bridgeStatus } from "./execution/live-bridge.js";
 
 /**
  * The dashboard (this process) now runs standalone from the sniper (src/index.ts) — the two
@@ -197,9 +198,41 @@ const STORE = {
     rejectionReasons: {} as Record<string, number>,
     setupToxicCodes: {} as Record<string, number>,
     recent: new Ring<DecisionRow>(80),
+    lastAt: 0,
+    // BAND WATCH — two different market caps, and picking the wrong one draws a false picture.
+    //
+    // A decision record carries `candidate.marketCapSol`, the curve at DETECTION. The entry band
+    // is enforced ~15s later on `curveMcSol`, the curve at EXECUTION, and in that gap a coin
+    // routinely doubles: today's entries were detected at a median 33.8 and bought at a median
+    // 66.5. Plotting detection MC against the band made it look like the bot was buying 28-45
+    // while configured for 55-100 — it was not, 51 of 51 entries landed inside the window.
+    //
+    // So entries are plotted on the number the gate actually tests, and launches are kept as a
+    // separate dim cloud showing where coins are BORN (27.96 for every pump.fun curve, by
+    // construction) — the distance between the two is the panel's whole point.
+    bandEntries: new Ring<{ ts: string; mint?: string; sym: string; mcSol: number }>(60),
+    bandLaunch: new Ring<number>(240),
   },
   events: {
     counts: {} as Record<string, number>, // every event type, counted — LIFETIME, across every log file
+    /**
+     * Raw launch points for the Hero's live-market visual: {ts, marketCapSol} only.
+     *
+     * STORE.events is otherwise a pure aggregate (counters, no rows), so there was nowhere to
+     * read individual launches from — an earlier attempt iterated STORE.events directly and
+     * crashed the dashboard with "STORE.events is not iterable". A small ring filled here, in
+     * the same single pass the tail reader already makes, keeps that promise: each line is
+     * parsed exactly once and nothing re-reads the 13 MB event log.
+     */
+    launches: new Ring<{ ts: string; mc: number }>(500),
+    skipReasons: {} as Record<string, number>,
+    lastLaunchAt: 0,
+    exitReasonsAll: {} as Record<string, number>,   // lifetime, to match the lifetime entry count
+    opensAll: 0,
+    closesAll: 0,
+    // Set, not a counter: the scout re-logs a candidate on every poll it is still trending, so a
+    // raw count would report how CHATTY a feed is, not how many coins it actually brought in.
+    sourceMints: {} as Record<string, Set<string>>,
     // Gate rejections scoped to the CURRENT epoch only (2026-07-31). `counts` above is a
     // lifetime tally across every events-*.jsonl on disk, which is fine for "has this ever
     // happened" but wrong for a funnel: the first version of the admission panel compared 2,227
@@ -247,7 +280,14 @@ function refreshStore(): void {
     D.total++;
     const v = r.gate?.verdict;
     if (v === "PASS") D.passed++; else if (v === "REJECT") D.rejected++;
+    D.lastAt = Date.now();
     if (r.action === "PAPER_BUY") D.bought++;
+    {
+      const c = (r.candidate ?? {}) as { mint?: string; symbol?: string; marketCapSol?: number };
+      if (typeof c.marketCapSol === "number" && c.marketCapSol > 0) {
+        D.bandLaunch.push(c.marketCapSol);
+      }
+    }
     const m = r.candidate?.mode; if (m) D.byMode[m] = (D.byMode[m] ?? 0) + 1;
     for (const c of r.gate?.checks ?? []) {
       if (!c.hard || c.passed) continue;
@@ -265,6 +305,21 @@ function refreshStore(): void {
       E.gateRejectionsEpoch[t] = (E.gateRejectionsEpoch[t] ?? 0) + 1;
     }
     if (t === "strategy2-paper-open" && r["strategy2Epoch"] === config.strategy2Epoch) E.opensEpoch++;
+    // PIPELINE PANEL — the funnel's shape needs two things nothing else was counting: why the
+    // sniper walked away, and which feed a candidate arrived on. Accumulated here rather than
+    // re-scanned per request; the panel repaints ~1.3x/s.
+    if (t === "no-demand-skip") {
+      const why = String(r["reason"] ?? "?");
+      E.skipReasons[why] = (E.skipReasons[why] ?? 0) + 1;
+    }
+    if (t === "strategy2-candidate" && r["mint"]) {
+      const src = String(r["source"] ?? "?");
+      (E.sourceMints[src] ??= new Set<string>()).add(String(r["mint"]));
+    }
+    if (t === "launch") E.lastLaunchAt = Date.now();
+    if (t === "launch" && typeof r["marketCapSol"] === "number" && typeof r["ts"] === "string") {
+      E.launches.push({ ts: r["ts"] as string, mc: r["marketCapSol"] as number });
+    }
     if (t === "exec-sim") {
       E.execSim.push(r);
       const stage = String(r["stage"] ?? (!r["built"] ? "theoretical" : r["needsFunding"] ? "tx-built" : r["wouldLand"] ? "executable" : "would-fail"));
@@ -330,7 +385,26 @@ function refreshStore(): void {
       // reset is a change of experiment, not a trade, so the curve starts again with it.
     }
   });
-  tailStream("paper-trades", (r) => STORE.trades.push(r));
+  tailStream("paper-trades", (r) => {
+    STORE.trades.push(r);
+    if (r["action"] === "OPEN" && typeof r["curveMcSol"] === "number") {
+      STORE.decisions.bandEntries.push({
+        ts: String(r["ts"] ?? ""), mint: r["mint"] as string | undefined,
+        sym: String(r["symbol"] ?? "?"), mcSol: r["curveMcSol"] as number,
+      });
+    }
+    // PIPELINE PANEL — exit reasons over the SAME window as its entry count.
+    //
+    // The panel used to draw `funnel.bought` (2,403 — every PAPER_BUY decision in the whole log
+    // history) above an exit row of 290 (the current run only), so the picture said 2,470 went in
+    // and 290 came out, with 2,180 unaccounted for. Both halves were individually true and the
+    // drawing was still a lie, because they were counted over different spans of time.
+    if (r["action"] === "CLOSE") {
+      const why = String(r["reason"] ?? "?");
+      E.exitReasonsAll[why] = (E.exitReasonsAll[why] ?? 0) + 1;
+      E.closesAll++;
+    } else if (r["action"] === "OPEN") E.opensAll++;
+  });
   tailStream("patterns", (r) => STORE.patterns.push(r));
   tailStream("post-exit", (r) => { if (r["type"] === "summary") STORE.postExit.push(r); }); // samples are noise here
   tailStream("run-ledger", (r) => STORE.runLedger.push(r));
@@ -359,7 +433,7 @@ interface Strategy2PaperStats {
    * figures are not moving".
    */
   heartbeatAgeSec: number | null;
-  openPositions: Array<{ mint: string; sym: string; entryCostUsd: number; unrealizedPct: number; heldHours: number; mcUsd: number; holders: number | null; source: string }>;
+  openPositions: Array<{ mint: string; sym: string; entryCostUsd: number; unrealizedPct: number; heldHours: number; mcUsd: number; holders: number | null; source: string; peakPct: number; fromPeakPct: number }>;
 }
 
 /**
@@ -391,6 +465,10 @@ function strategy2PaperStats(): Strategy2PaperStats | null {
         // admission requirement (freshCandidates()) the position already cleared to get bought.
         mcUsd: p.currentMcUsd ?? p.entryMcUsd, holders: p.entryHolders ?? null, // null (not 0) for positions opened before this field existed — "unknown", not "zero holders"
         source: p.entrySource ?? "unknown",
+        // High-water mark, in the same unit the trail is measured in. `peakMcUsd` is already
+        // tracked by the trader for exactly this rule — it just never left the process.
+        peakPct: p.entryMcUsd > 0 ? Number((((p.peakMcUsd || p.entryMcUsd) / p.entryMcUsd - 1) * 100).toFixed(1)) : 0,
+        fromPeakPct: (p.peakMcUsd || 0) > 0 ? Number((((p.currentMcUsd ?? p.entryMcUsd) / p.peakMcUsd - 1) * 100).toFixed(1)) : 0,
       })),
     };
   } catch { return null; }
@@ -447,7 +525,7 @@ function buildStrategy2Primary() {
   // Timestamped copy so the combined (S1+S2) curve can merge the two legs on time.
   const equityTs = [{ t: equityPtsTs[0]?.t ?? "", bal: equityBase }, ...equityPtsTs];
   const recentTrades = closes.slice(-30).reverse().map((t) => ({
-    ts: t["ts"], symbol: t["sym"] ?? "?", reason: t["reason"],
+    ts: t["ts"], symbol: t["sym"] ?? "?", reason: t["reason"], img: artFor(t["mint"] as string | undefined),
     pnlPct: t["pnlPct"] ?? 0, pnlUsd: t["pnlUsd"] ?? 0, heldHours: t["heldHours"],
   }));
   const seenMints = STORE.strategy2.size; // distinct candidates tracked this epoch (per-mint latest snapshot)
@@ -507,7 +585,9 @@ function buildStrategy2Primary() {
       // unchanged — the real, authoritative number is unrealizedPct itself, computed above from
       // real MC marks.
       openPositions: s2.openPositions.map((p) => ({
-        mint: p.mint, symbol: p.sym, unrealizedPnl: p.unrealizedPct, heldSec: Math.round(p.heldHours * 3_600),
+        mint: p.mint, symbol: p.sym, img: artFor(p.mint), unrealizedPnl: p.unrealizedPct, heldSec: Math.round(p.heldHours * 3_600),
+        entryCostUsd: p.entryCostUsd,   // S2 sizes by % of equity, so USD is its native stake unit
+        ...exitProximity({ peakPct: p.peakPct, fromPeakPct: p.fromPeakPct, engine: "S2" }),
         entryPrice: 1, lastPrice: 1 + p.unrealizedPct / 100,
         noManualClose: true, // Strategy 2 has no /api/control close path — never show a button that silently no-ops
         marketCap: p.mcUsd, holders: p.holders, // FIXED (2026-07-29): posCard() reads these directly, were never passed through
@@ -550,13 +630,170 @@ function buildStrategy2Primary() {
 // ── Live market feed (REAL pump.fun data): newest launches + biggest by market cap ──
 // Refreshed on a background timer so /api/stats stays synchronous & fast. These numbers
 // are exactly what pump.fun serves (no modelling) — a live view of the actual market.
-type Coin = { symbol: string; mint: string; mcUsd: number | null; ageMin: number | null; replies: number };
+type Coin = { symbol: string; mint: string; mcUsd: number | null; ageMin: number | null; replies: number; img: string | null };
 let marketCache: { new: Coin[]; top: Coin[]; at: number } = { new: [], top: [], at: 0 };
+
+// ── COIN ART CACHE ──────────────────────────────────────────────────────────
+// Owner, 2026-08-05: "semua koin yang tampil itu menggunakan icon ya!" — but only the market feed
+// ever carried `image_uri`. Open positions, scout candidates and the trade journal all identify
+// coins by symbol alone, and a symbol is not an identity here: "BABY", "Memes" and "DUMB" recur
+// constantly across unrelated mints.
+//
+// Two sources, cheapest first:
+//   1. the market poll we ALREADY make — free, no extra request, covers whatever is trending
+//   2. a per-mint lookup for what that misses, at most one request per mint, ever
+//
+// Bounded on purpose. Misses are remembered as misses (`null`) so a coin whose art genuinely 404s
+// is not re-fetched forever, and the whole map is trimmed rather than allowed to grow with every
+// mint the bot has ever seen.
+const ART_MAX = 800;
+const artCache = new Map<string, string | null>();
+const artInFlight = new Set<string>();
+
+function rememberArt(mint: string | undefined, img: string | undefined | null): void {
+  if (!mint || !img) return;
+  if (!artCache.has(mint)) artCache.set(mint, img);
+}
+
+const fetchJson = async (url: string, headers: Record<string, string> = {}, ms = 9000): Promise<unknown> => {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const res = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: ctl.signal });
+    return res.ok ? await res.json() : null;
+  } finally { clearTimeout(timer); }
+};
+const pumpArt = async (mint: string): Promise<string | null> =>
+  ((await fetchJson(`https://frontend-api-v3.pump.fun/coins/${mint}`)) as { image_uri?: string } | null)?.image_uri ?? null;
+const dexArt = async (mint: string): Promise<string | null> => {
+  const j = (await fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${mint}`)) as
+    { pairs?: Array<{ info?: { imageUrl?: string } }> } | null;
+  return j?.pairs?.find((p) => p.info?.imageUrl)?.info?.imageUrl ?? null;
+};
+// Credit-metered, so it is rate-capped independently of the cache: a burst of new candidates must
+// never be able to drain a month of quota for decoration.
+let trackerArtBudget = 40, trackerArtWindow = Date.now();
+const trackerArt = async (mint: string): Promise<string | null> => {
+  if (Date.now() - trackerArtWindow > 3_600_000) { trackerArtBudget = 40; trackerArtWindow = Date.now(); }
+  const key = (process.env.SOLTRACKER_API_KEYS ?? process.env.SOLTRACKER_API_KEY ?? "").split(/[\n,]/)[0]?.trim();
+  if (!key || trackerArtBudget <= 0) return null;
+  trackerArtBudget--;
+  const j = (await fetchJson(`https://data.solanatracker.io/tokens/${mint}`, { "x-api-key": key })) as
+    { token?: { image?: string } } | null;
+  return j?.token?.image ?? null;
+};
+
+
+/**
+ * EXIT-PROXIMITY FIELDS for an open position — what the card needs to answer "what will close
+ * this, and how much room is left".
+ *
+ * Neither engine ever sent these. The card could show a running P&L and nothing else, while the
+ * two rules that actually end 60% of positions (the trailing stop and the no-development timer)
+ * were invisible until they fired.
+ *
+ * S1's trail is a LADDER, not a constant: the wider the peak, the more giveback is allowed
+ * (+15% peak → 6% trail … +300% → 45%). Hardcoding one number in the UI would draw a stop that
+ * does not exist, so the applicable rung is resolved here, against the same config the exit
+ * logic reads.
+ */
+function exitProximity(opts: { peakPct: number; fromPeakPct: number; engine: "S1" | "S2" }): {
+  peakPct: number; fromPeakPct: number; trailPct: number; budgetSec: number; budgetLabel: string;
+} {
+  const { peakPct, fromPeakPct, engine } = opts;
+  if (engine === "S2") {
+    return {
+      peakPct, fromPeakPct,
+      trailPct: config.strategy2Paper.trailStopPct,
+      budgetSec: Math.round(config.strategy2Paper.maxHoldHours * 3600),
+      budgetLabel: "batas tahan",
+    };
+  }
+  const ladder = config.risk.dynamicTrail;
+  let trailPct: number = ladder[0]?.trail ?? 6;
+  for (const rung of ladder) if (peakPct >= rung.gain) trailPct = rung.trail;
+  // Below the no-development peak floor the position is on the SHORT clock, not the max-hold one.
+  const nd = config.risk.noDevelopment;
+  const undeveloped = nd.enabled && peakPct < nd.minPeakPct;
+  return {
+    peakPct, fromPeakPct, trailPct,
+    budgetSec: Math.round((undeveloped ? nd.afterMs : config.risk.maxHoldMsFastFollow) / 1000),
+    budgetLabel: undeveloped ? "belum berkembang" : "batas tahan",
+  };
+}
+
+/** Cached art for a mint, kicking off a background lookup the first time we miss. */
+function artFor(mint: string | undefined): string | null {
+  if (!mint) return null;
+  const hit = artCache.get(mint);
+  if (hit !== undefined) return hit;
+  if (artCache.size > ART_MAX) {
+    // oldest-first trim: Map preserves insertion order, so this drops the least recently ADDED
+    for (const k of [...artCache.keys()].slice(0, Math.floor(ART_MAX / 4))) artCache.delete(k);
+  }
+  if (!artInFlight.has(mint) && !artQueue.includes(mint)) {
+    artQueue.push(mint);
+    void drainArtQueue();
+  }
+  return null;   // this render gets the fallback glyph; a later one gets the art
+}
+
+/**
+ * Resolve queued mints a few at a time.
+ *
+ * Firing one fetch per cache miss looked fine until the panels that needed art all rendered at
+ * once: 30 scout candidates + 14 journal rows = 44 simultaneous lookups, which saturated the
+ * connection pool and every one of them hit its own AbortError at the 6s timeout — so the caller
+ * saw zero icons and the queue refilled on the next render, forever. Three at a time with a
+ * longer deadline resolves the same 44 mints in a few seconds and never stampedes.
+ */
+const ART_CONCURRENCY = 3;
+const artQueue: string[] = [];
+let artWorkers = 0;
+async function drainArtQueue(): Promise<void> {
+  if (artWorkers >= ART_CONCURRENCY) return;
+  artWorkers++;
+  try {
+    for (;;) {
+      const mint = artQueue.shift();
+      if (!mint) return;
+      if (artCache.has(mint) || artInFlight.has(mint)) continue;
+      artInFlight.add(mint);
+      await (async () => {
+      try {
+        // THREE SOURCES, cheapest and most-likely-first. Measured on real mints from this bot's
+        // own panels: pump.fun answers for its own launches (S1's whole universe, and 10 of 30
+        // scout candidates), but the scout also tracks coins that never touched pump.fun at all —
+        // for those it 404s, and DexScreener covers whatever has a live pair. Solana Tracker
+        // covers the rest but SPENDS CREDITS (3,098 left across the rotating keys), so it is the
+        // last resort and only for mints the free sources genuinely could not answer.
+        const img =
+          (await pumpArt(mint)) ??
+          (await dexArt(mint)) ??
+          (await trackerArt(mint));
+        artCache.set(mint, img);   // null = all three looked and there is none
+      } catch {
+        // A failed lookup is NOT cached as a miss: the next render tries again, otherwise one
+        // network blip permanently blanks a coin's icon for the life of the process.
+        //
+        // This catch is also load-bearing for stability, which is how it was found: an earlier
+        // edit left `try { … } finally { … }` with no catch at all, so an aborted fetch became an
+        // unhandled rejection inside a `void`-ed async IIFE — which Node 20 turns into a process
+        // exit by default. Icon decoration must never be able to take the dashboard down.
+      } finally {
+        artInFlight.delete(mint);
+      }
+      })();
+    }
+  } finally {
+    artWorkers--;
+  }
+}
 async function fetchCoins(sort: string): Promise<Coin[]> {
   try {
     const res = await fetch(`https://frontend-api-v3.pump.fun/coins?offset=0&limit=24&sort=${sort}&order=DESC&includeNsfw=false`, { headers: { accept: "application/json" } });
     if (!res.ok) return [];
-    const arr = (await res.json()) as Array<{ symbol?: string; mint?: string; usd_market_cap?: number; created_timestamp?: number; reply_count?: number }>;
+    const arr = (await res.json()) as Array<{ symbol?: string; mint?: string; usd_market_cap?: number; created_timestamp?: number; reply_count?: number; image_uri?: string }>;
     const now = Date.now();
     return (Array.isArray(arr) ? arr : []).map((c) => ({
       symbol: c.symbol ?? "?", mint: c.mint ?? "",
@@ -564,12 +801,17 @@ async function fetchCoins(sort: string): Promise<Coin[]> {
       // which reads as "worthless coin" rather than "not reported". Same defect class as the
       // fabricated holder counts fixed earlier — the UI renders null as "—".
       mcUsd: typeof c.usd_market_cap === "number" && isFinite(c.usd_market_cap) ? Math.round(c.usd_market_cap) : null,
+      // pump.fun ships the token art on this very response; the old mapping simply dropped it,
+      // so the dashboard had no logos despite them being one field away. https only — an ipfs://
+      // or data: URI would not render in an <img> without extra plumbing.
+      img: typeof c.image_uri === "string" && c.image_uri.startsWith("https://") ? c.image_uri : null,
       ageMin: c.created_timestamp ? Math.round((now - c.created_timestamp) / 60000) : null, replies: c.reply_count ?? 0,
     })).filter((c) => c.mint);
   } catch { return []; }
 }
 async function refreshMarket(): Promise<void> {
   const [fresh, top] = await Promise.all([fetchCoins("created_timestamp"), fetchCoins("market_cap")]);
+  for (const c of [...fresh, ...top]) rememberArt(c.mint, c.img);
   if (fresh.length || top.length) marketCache = { new: fresh, top, at: Date.now() };
 }
 void refreshMarket();
@@ -1156,9 +1398,19 @@ function buildStats() {
       const st = JSON.parse(readFileSync(statePath, "utf8")) as { positions: PersistedPos[] };
       openPositions = (st.positions ?? []).map((p) => ({
         symbol: p.candidate?.symbol ?? "?", mode: p.candidate?.mode, mint: p.candidate?.mint,
-        image: (p.candidate as { image?: string })?.image,
+        // The sniper's own candidate record sometimes carries art; when it does not, the shared
+        // cache resolves it once per mint. Never a placeholder image — a wrong logo on a position
+        // is worse than none, and the card falls back to the symbol's first letter.
+        image: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint) ?? undefined,
+        img: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint),
         entryPrice: p.entryPriceUsd, lastPrice: p.lastPriceUsd, unrealizedPnl: p.lastPnlPct, peak: p.peakPriceUsd,
         heldSec: p.openedAt ? Math.round((nowMs - p.openedAt) / 1000) : undefined, armed: p.armed,
+        sizeSol: config.risk.paperTradeSizeSol,
+        ...exitProximity({
+          peakPct: (p.entryPriceUsd ?? 0) > 0 ? Number((((p.peakPriceUsd || p.entryPriceUsd!) / p.entryPriceUsd!) * 100 - 100).toFixed(1)) : 0,
+          fromPeakPct: (p.peakPriceUsd ?? 0) > 0 ? Number((((p.lastPriceUsd ?? p.entryPriceUsd!) / p.peakPriceUsd!) * 100 - 100).toFixed(1)) : 0,
+          engine: "S1",
+        }),
         graduated: p.graduated,
         // Report the REAL tier progress. `partialsTaken` is a frozen legacy field (always 0);
         // `scaleTier` is the index of the highest ladder tier actually sold, so +1 is the count.
@@ -1269,7 +1521,15 @@ function buildStats() {
       // trustworthy until proven otherwise: no health file yet (agent not called) → assume up if enabled
       up: health.alive ?? Boolean(config.feeling.url && config.feeling.key),
       enabled: health.enabled ?? Boolean(config.feeling.url && config.feeling.key),
-      lastSuccessAt: health.lastSuccessAt ?? null,
+      // FALL BACK TO THE VERDICT ITSELF. `agent-health.json` is written by the BOT process, and
+      // when the relay is failing it never records a success — so `lastSuccessAt` sits at 0, which
+      // `?? null` then passes through as "no age known" and the dashboard renders a green LIVE
+      // badge over a verdict that is hours old. Measured 2026-08-04: last real verdict 12.3 hours
+      // earlier, badge still LIVE. The newest `vibe` event IS a success, by definition — it only
+      // exists because a call returned — so it is the more trustworthy clock of the two.
+      lastSuccessAt: (health.lastSuccessAt || 0) > 0
+        ? health.lastSuccessAt!
+        : (lastVibe?.ts ? Date.parse(String(lastVibe.ts)) || null : null),
       consecutiveFailures: health.consecutiveFailures ?? 0,
       lastError: health.lastError ?? null,
       fallbackExits: (exitReasons["FALLBACK_STOP"] ?? 0) + (exitReasons["FALLBACK_DEVDUMP"] ?? 0),
@@ -1543,12 +1803,103 @@ function buildStats() {
     // ── DIAGNOSTICS the dashboard was blind to ──
     rpc: rpcHealth(), // live RPC budget from the trader process — the number that explains latency
     strategy2Paper: strategy2PaperStats(), // Strategy-2's own USD equity — separate from the sniper's SOL ledger, for direct comparison
-    strategy2Primary: buildStrategy2Primary(), // same shape as `paper`/`funnel`/`totals`/`recentTrades`, sourced from Strategy 2 — the frontend's hero now reads THIS by default
+    /**
+     * DIKIRIM HANYA KALAU S2 BENAR-BENAR HIDUP (2026-08-18).
+     *
+     * Frontend memakai `isS2 = !!data.strategy2Primary` untuk memutuskan strategi mana yang jadi
+     * utama — pilihan yang benar SELAMA S2 berjalan. Tapi S2 dimatikan permanen hari ini (EV
+     * -6,2% konsisten, float kertas $1000 -> $520), dan objek ini tetap dikirim, sehingga SELURUH
+     * halaman melaporkan status S2 yang sudah mati: badge ARCHIVED, banner TRADER BERHENTI, dan
+     * angka utama membeku — padahal sniper sehat penuh dan terus berdagang.
+     *
+     * Alarm palsu yang menetap melatih orang mengabaikan peringatan, jadi ia lebih berbahaya
+     * daripada tidak ada peringatan sama sekali. Dengan dihilangkan saat S2 mati, frontend
+     * otomatis jatuh kembali ke sniper sebagai strategi utama — TopBar, StaleBanner, dan hero
+     * ikut benar tanpa perubahan di sana. Begitu S2 dihidupkan lagi, objeknya kembali sendiri.
+     */
+    strategy2Primary: strategy2Alive() ? buildStrategy2Primary() : undefined,
     latencyBreakdown, // where detect→entry time actually goes
     setupToxicCodes: D.setupToxicCodes, // which toxic verdict is doing the filtering
     // Launches dropped at the create event by the launch-MC floor — they never reached the
     // decisions log, so they are invisible in the funnel unless counted here.
     launchMcSkip: { n: E.counts["launch-mc-skip"] ?? 0, floor: config.gate.launchMcFloorSol },
+    // TRADING-PATH STALL — the failure the dashboard could not see.
+    //
+    // On 2026-08-07 the bot spent 4 hours not trading while every liveness signal stayed green:
+    // the process was up, logs were being written, the heartbeat was fresh. What had actually
+    // happened was that every stage AFTER launch intake stopped — the RPC concurrency semaphore
+    // deadlocked at inFlight 4/4 with rps 0 — so `launch` events kept flowing while no decision
+    // was ever made. Uptime and heartbeat are the wrong questions; the right one is whether
+    // intake is still producing output.
+    stall: (() => {
+      const lastLaunch = E.lastLaunchAt ?? 0;
+      const lastDecision = STORE.decisions.lastAt ?? 0;
+      const now = Date.now();
+      const launchAgeSec = lastLaunch ? Math.round((now - lastLaunch) / 1000) : null;
+      const decisionAgeSec = lastDecision ? Math.round((now - lastDecision) / 1000) : null;
+      const h = rpcHealth() as { inFlight?: number; maxConcurrent?: number; rps?: number } | null;
+      const deadlocked = !!h && (h.maxConcurrent ?? 0) > 0 && (h.inFlight ?? 0) >= (h.maxConcurrent ?? 0) && (h.rps ?? 0) === 0;
+      // Only meaningful while launches ARE arriving: a quiet market is not a stall.
+      const intakeLive = launchAgeSec != null && launchAgeSec < 180;
+      const starved = intakeLive && decisionAgeSec != null && decisionAgeSec > 600;
+      return {
+        launchAgeSec, decisionAgeSec, deadlocked, starved,
+        stalled: deadlocked || starved,
+      };
+    })(),
+    pipeline: {
+      // The sniper's own launch stream is counted from `launch` events; each scout feed reports
+      // its unique-mint tally. A feed that has gone silent stays in the list at 0 — it is dropped
+      // from the DRAWING only if we choose to, never from the data.
+      sources: [
+        { n: "pumpportal", d: "WebSocket launch", v: E.counts["launch"] ?? 0, eng: "S1" },
+        ...["new-launch-dev-holding", "gmgn-trending", "solana-tracker-trending"].map((k) => ({
+          n: k === "new-launch-dev-holding" ? "new-launch dev-holding" : k.replace("-trending", ""),
+          d: "polling",
+          v: E.sourceMints[k]?.size ?? 0,
+          eng: "S2",
+        })),
+      ],
+      skip: { "MC di luar band": E.counts["launch-mc-skip"] ?? 0, ...E.skipReasons },
+      // Lifetime on BOTH sides, so the funnel reconciles: every position counted at the gate is a
+      // position whose exit is counted on the way out.
+      exits: E.exitReasonsAll,
+      gated: funnel.gated,
+      bought: E.opensAll,
+      openNow: E.opensAll - E.closesAll,
+      passedS2: 0,
+    },
+    bandWatch: (() => {
+      const cfgBand = config.gate.entryMcBandSol;
+      // Five purchases is enough to place a window whose edges are hard limits; below that the
+      // The window is read from what the bot ACTUALLY BOUGHT, never from this process's own env:
+      // ENTRY_MC_FLOOR_SOL/CEIL are exported inside run-sniper-supervised.sh, so only the trader
+      // sees them and the dashboard would otherwise draw its defaults (30-45) over a trader
+      // running 55-100. What the trader bought cannot drift from what the trader bought.
+      const entries = D.bandEntries.all();
+      const mcs = entries.map((e) => e.mcSol);
+      const observed = mcs.length >= 5;
+      const floor = observed ? Math.floor(Math.min(...mcs)) : cfgBand.floor;
+      const ceil = observed ? Math.ceil(Math.max(...mcs)) : cfgBand.ceiling;
+      const launches = D.bandLaunch.all();
+      return {
+        floorSol: floor, ceilSol: ceil,
+        source: observed ? "teramati" : "config",
+        cfgFloorSol: cfgBand.floor, cfgCeilSol: cfgBand.ceiling,
+        drift: observed && (floor < cfgBand.floor - 1 || ceil > cfgBand.ceiling + 1),
+        launchMcSol: 27.96,   // every pump.fun curve is born here, by construction
+        // Where coins are BORN vs where the bot BUYS. Median of each is the headline: today 33.8
+        // at detection against 66.5 at execution, i.e. the band is reached by growth, not by
+        // picking coins that launched high.
+        launchMedian: launches.length ? [...launches].sort((a, b) => a - b)[Math.floor(launches.length / 2)] : null,
+        entryMedian: mcs.length ? [...mcs].sort((a, b) => a - b)[Math.floor(mcs.length / 2)] : null,
+        launches: launches.slice(-240),
+        entries: entries.slice(-24).reverse().map((e) => ({
+          ...e, img: artFor(e.mint),
+          ageSec: e.ts ? Math.max(0, Math.round((Date.now() - Date.parse(e.ts)) / 1000)) : null,
+        })),
+      };
+    })(),
     lateToxic: { n: E.counts["late-toxic"] ?? 0, recent: E.lateToxic.last(8).reverse() }, // post-entry vetoes
     tickSlow: E.counts["tick-slow"] ?? 0, // ticks that overran their interval (stale position marks)
     // DATA INTEGRITY — null while healthy (the trader only writes a record when something is
@@ -1575,13 +1926,25 @@ function buildStats() {
           return src !== "new-launch-dev-holding" && mc >= config.strategy2Scout.minMcUsd && mc <= config.strategy2Scout.maxMcUsd;
         })
         .sort((a, b) => (Number(b["change24h"] ?? -Infinity)) - (Number(a["change24h"] ?? -Infinity)))
-        .slice(0, 30),
+        .slice(0, 30)
+        // PROJECTED, not spread. The raw candidate row carries 40 fields (1,053 bytes each) and
+        // the scout panel renders six of them — at 30 rows that is 31 KB of every 118 KB push,
+        // re-parsed and re-rendered ~1.1x per second for data nothing reads.
+        .map((c) => ({
+          mint: c["mint"], sym: c["sym"], mcUsd: c["mcUsd"], holders: c["holders"],
+          change24h: c["change24h"], twitterUrl: c["twitterUrl"],
+          img: artFor(c["mint"] as string | undefined),
+        })),
       // New-launch/dev-holding lane's own candidates — SEPARATE thesis, kept apart from the panel
       // above on purpose (see comment). Observation-only; not shown in a dedicated UI panel yet.
-      newLaunchDevHold: [...STORE.strategy2.values()]
-        .filter((c) => String(c["source"] ?? "") === "new-launch-dev-holding")
-        .sort((a, b) => (Number(b["jupDevBalancePct"] ?? -1)) - (Number(a["jupDevBalancePct"] ?? -1)))
-        .slice(0, 30),
+      // SUMMARY ONLY. This lane is observation-for-later with no UI consumer anywhere in web/src,
+      // and it was shipping 30 full candidate rows (19.6 KB) on every push. The rows are still
+      // written to the logs, which is where the analysis for this thesis actually happens.
+      newLaunchDevHold: (() => {
+        const rows = [...STORE.strategy2.values()].filter((c) => String(c["source"] ?? "") === "new-launch-dev-holding");
+        const dev = rows.map((c) => Number(c["jupDevBalancePct"] ?? NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+        return { n: rows.length, devPctMedian: dev.length ? dev[Math.floor(dev.length / 2)] : null };
+      })(),
     },
     risk: { // the live exit envelope, so the UI never has to hardcode it
       catastrophicStopPct: config.risk.catastrophicStopPct,
@@ -1626,15 +1989,47 @@ function buildStats() {
     // whatever Strategy 2 is actually tracking, `p:true` marking the ones that cleared Strategy
     // 2's own admission bar (mid-cap mover OR new-launch/dev-hold), so the wave shows real,
     // currently-churning market names again instead of nothing.
+    // LAUNCH FIELD — the last few hundred pump.fun launches as {secondsAgo, marketCapSol},
+    // for the Hero's live-market visual. Deliberately tiny: two numbers per launch, no symbols,
+    // because the panel plots them as points and never labels them individually.
+    //
+    // The shape is the point. Nearly every coin is born at 27.96 ◎ (the pump.fun curve constant —
+    // virtual reserves are identical for every token at creation), so the floor draws itself and
+    // anything above it is the creator's own buy inside the create tx.
+    launchField: (() => {
+      const now = Date.now();
+      const out: Array<{ a: number; mc: number }> = [];
+      for (const r of E.launches.all()) {
+        const a = (now - Date.parse(r.ts)) / 1000;
+        if (!isFinite(a) || a < 0 || a > 1800) continue; // 30 minutes of history
+        out.push({ a: Math.round(a), mc: Number(r.mc.toFixed(1)) });
+      }
+      return out;
+    })(),
     scan: (() => {
+      // FROZEN-FEED FIX (2026-08-03). This built `[...candidates, ...market].slice(0, 48)`, and
+      // STORE.strategy2 holds ~17k candidates in insertion order — so slice(0,48) returned the
+      // 48 OLDEST ever seen and never changed. Measured: identical symbols, identical order, for
+      // 64s straight; the market names (the only genuinely rotating source) never got a slot at
+      // all, and every entry carried p:true so the pass/reject colour contrast never appeared.
+      //
+      // Now: newest candidates first, and market names get a guaranteed share so the visual keeps
+      // moving even when the scout is quiet.
       const s2Mints = new Set(STORE.strategy2.keys());
+      const MARKET_SLOTS = 20;
       const fromMarket = [...marketCache.new, ...marketCache.top]
-        .map((c) => ({ s: c.symbol || "?", p: s2Mints.has(c.mint) }));
+        .map((c) => ({ s: c.symbol || "?", p: s2Mints.has(c.mint) }))
+        .slice(0, MARKET_SLOTS);
       const fromCandidates = [...STORE.strategy2.values()]
+        .slice(-(48 - fromMarket.length))          // newest, not oldest
+        .reverse()
         .map((c) => ({ s: String(c["sym"] ?? "?"), p: true }));
       return [...fromCandidates, ...fromMarket].slice(0, 48);
     })(),
     guardian: guardStatus(), // money-safety caps, 24h spend, halt state (live-phase readout)
+    // Live bridge readout. `armed: false` — the normal state — means every real-money path
+    // is inert and the numbers below are structurally zero, not merely quiet.
+    liveBridge: bridgeStatus(),
     execLive, // devnet execution mirror (real sign→send→confirm, worthless SOL)
     paper: {
       // EXECUTABLE ONLY (audit P0-2) — every number here reflects trades proven, by mainnet
@@ -1645,7 +2040,12 @@ function buildStats() {
       returnPctOfFloat: floatSol > 0 ? Number(((realizedSol / floatSol) * 100).toFixed(2)) : 0,
       exitReasons,
       tradeSizeSol, floatSol, realizedSol, balanceSol, compounding, // concrete SOL accounting
-      equity, // running balance curve for the chart
+      // The S1 equity series (330 points, 16 KB) had NO reader: the wallet panel plots
+      // `combined.equity`, which is built separately and already includes this engine. Kept as a
+      // last-point summary so the field still answers "where did S1 end up" without shipping the
+      // whole curve on every push.
+      equityLast: equity.length ? equity[equity.length - 1] : null,
+      equityPoints: equity.length,
       openPositions,
     },
     // AUDIT P0-2 — "what if every simulated buy had actually landed on-chain, would-fail
@@ -1668,6 +2068,7 @@ function buildStats() {
     recentTrades: execCloses.slice(-30).reverse().map((t) => ({
       ts: t.ts, symbol: t.symbol ?? "?", reason: t.reason, pnlPct: t.pnlPct ?? 0,
       image: (t as { image?: string }).image,
+      img: (t as { image?: string }).image ?? artFor(t.mint),
       grossPnlPct: t.grossPnlPct, costPct: t.costPct,
       pnlSol: t.tradePnlSol ?? t.pnlSol ?? (t.sizeSol ?? tradeSizeSol) * ((t.pnlPct ?? 0) / 100),
       heldSec: t.heldSec ?? 0, devOnlyBuys: t.devOnlyBuys,
@@ -1734,9 +2135,18 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   // Design preview — static, no live data, auth-gated like /app. Copied through from web/public
   // by Vite. Exists so UI directions can be compared side by side at the real tile size without
   // touching the running dashboard.
-  if (path === "/preview-equity" || path === "/preview-hero") {
+  if (path === "/preview" || path === "/preview-equity" || path === "/preview-hero" || path === "/preview-hero2" || path === "/preview-pipeline" || path === "/preview-pipeline2" || path === "/preview-pipeline3" || path === "/preview-agent" || path === "/preview-poscard" || path === "/preview-poscard2" || path === "/preview-band") {
     if (!isAuthed(req)) return redirect(res, "/login");
+    if (path === "/preview") return serveWebPage(res, "preview.html");
     if (path === "/preview-hero") return serveWebPage(res, "preview-hero.html");
+    if (path === "/preview-hero2") return serveWebPage(res, "preview-hero2.html");
+    if (path === "/preview-pipeline") return serveWebPage(res, "preview-pipeline.html");
+    if (path === "/preview-pipeline2") return serveWebPage(res, "preview-pipeline2.html");
+    if (path === "/preview-pipeline3") return serveWebPage(res, "preview-pipeline3.html");
+    if (path === "/preview-agent") return serveWebPage(res, "preview-agent.html");
+    if (path === "/preview-poscard") return serveWebPage(res, "preview-poscard.html");
+    if (path === "/preview-poscard2") return serveWebPage(res, "preview-poscard2.html");
+    if (path === "/preview-band") return serveWebPage(res, "preview-band.html");
     // serveWebPage, not serveWebAsset: the asset map only knows Vite's hashed types (js/css/
     // woff2/svg) and falls back to application/octet-stream, which makes the browser DOWNLOAD
     // the page instead of rendering it. serveWebPage sets text/html and reads from the same dir.
@@ -1813,9 +2223,11 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const body = await readBody(req);
     let next: Record<string, unknown> = {};
     try { next = JSON.parse(body || "{}"); } catch { /* ignore */ }
-    const patch: Partial<{ paused: boolean; execMode: "dry-run" | "simulate" | "devnet"; command: { id: number; action: "flatten" | "close" | "reset-run"; mint?: string }; strategy2Command: { id: number; action: "flatten" }; risk: Record<string, number> }> = {};
+    const patch: Partial<{ paused: boolean; execMode: "dry-run" | "simulate" | "devnet" | "live"; command: { id: number; action: "flatten" | "close" | "reset-run"; mint?: string }; strategy2Command: { id: number; action: "flatten" }; risk: Record<string, number> }> = {};
     if (typeof next.paused === "boolean") patch.paused = next.paused;
-    if (next.execMode === "dry-run" || next.execMode === "simulate" || next.execMode === "devnet") patch.execMode = next.execMode;
+    // "live" is accepted here but writeControl() re-gates it against the .env permission —
+    // the browser is never the thing that decides, it only asks.
+    if (next.execMode === "dry-run" || next.execMode === "simulate" || next.execMode === "devnet" || next.execMode === "live") patch.execMode = next.execMode;
     // Kill switch: trip/clear the money-guardian from the console (works even in
     // dry-run so it's ready before live). Halting blocks every real spend.
     if (next.guardHalt === true) halt("kill switch (console)");

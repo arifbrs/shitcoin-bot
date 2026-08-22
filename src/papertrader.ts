@@ -9,6 +9,7 @@ import { pumpTradeStats, latestPriceSol } from "./safety/pump-trades.js";
 import { pumpCandles } from "./safety/pump-candles.js";
 import { jupiterSellSol, solPriceUsd } from "./execution/jupiter.js";
 import { simulateBuyMainnet, devnetMirror } from "./execution/executor.js";
+import { bridgeOpen, bridgeSellFraction, bridgeClose, bridgeStart, bridgeStop } from "./execution/live-bridge.js";
 import { assessBuySimulation, lateEnrichmentAction } from "./execution/semantics.js";
 import {
   clampedScaleSellQty,
@@ -49,6 +50,10 @@ interface EntrySnapshot {
   decisionAt: number; decisionLatencyMs?: number;
   setupVerdict?: string; setupConfidence?: number; setupEvidence?: string[]; setupMissing?: string[];
   holders?: number | null; mcUsd?: number | null; organic?: number | null;
+  // Entry ini lolos lewat cadangan kurva karena hitungan holder tak terbaca. Wajib ada di
+  // snapshot: tanpa penanda, entry yang diloloskan kelonggaran menyatu dengan yang lolos
+  // verifikasi penuh, dan kelonggaran itu tidak akan pernah bisa dinilai terpisah.
+  holderFallbackUsed?: boolean;
   sniperPct?: number | null; bundlerPct?: number | null; devPct?: number | null;
   clusterVerdict?: string | null; devFundedBuyers?: number | null;
   actorRiskProb?: number | null; actorConfidence?: number | null;
@@ -115,6 +120,15 @@ interface Position {
   entrySnapshot?: EntrySnapshot; // FROZEN at entry — data available AT decision time only (no leakage)
   peakExecProceeds?: number; // highest EXECUTABLE sell value seen (SOL) — trailing trails from THIS, not the marginal spot peak (#6)
   peakExecAtMs?: number; // when that executable high was set — drives fade tightening (resets on every new high)
+  // STICKY development flag. `execPeakGainPct` is derived from peakExecProceeds, which the
+  // scale-out ladder deliberately RESETS to undefined so the trail can re-seed on the smaller
+  // remaining position. That reset also re-based the NO-DEVELOPMENT test, which reads the same
+  // number — so a de-risked runner's peak fell back under the 5% floor while `heldMs` kept
+  // counting from the original open, and the rule executed it as "never developed". Measured
+  // 2026-08-11: 47 such closes, several already de-risked with net up to +129%. This flag records
+  // the fact of development once and never unsets, so the "exempt forever" promise holds across
+  // every partial. It must NOT be used for the trail — re-seeding there is intended.
+  everDeveloped?: boolean;
   peakAtSec?: number; // seconds-since-open when the ATH was reached — the minute-to-peak signal (owner's idea: avg time-to-ATH → hold/TP benchmark)
   gradProceedsSol?: number; // VERIFIED graduation proceeds from a real Jupiter AMM sell quote (else undefined → estimate + UNVERIFIED)
   gradSyntheticNetReserves?: boolean; // synthetic AMM reserves reproduce Jupiter NET route output; never charge venue fee again
@@ -148,6 +162,9 @@ function fallbackCostPct(liquidityUsd?: number, sizeSol: number = config.risk.pa
  * curve slippage + the LAUNCHPAD's own protocol fee (pump 0.95% / Meteora ~1% / etc.)
  * + the PumpPortal routing fee + fixed SOL gas. Fee is per-venue, not always pump.fun.
  */
+/** vSol saat peluncuran pump.fun — selalu tepat 30 (MC 27,96◎). Dasar hitung pembelian non-dev. */
+const PUMP_LAUNCH_VSOL = 30;
+
 function bondingCurveCostPct(vSol: number | undefined, sizeSol: number, pool?: string): number {
   if (!vSol || vSol <= 0) return fallbackCostPct(undefined, sizeSol);
   const oneSideImpactPct = (sizeSol / vSol) * 100;
@@ -217,7 +234,7 @@ export interface OpenResult {
     | "BUY_SIM_UNAVAILABLE"
     | "BUY_SIM_NEEDS_FUNDING"
     | "BUY_SIM_BUILD_UNAVAILABLE"
-    | "ENTRY_MC_BAND"
+    | "ENTRY_MC_BAND" | "ENTRY_DEV_BUY"
     | "UNSUPPORTED_REGIME";
   detail?: string;
 }
@@ -367,6 +384,13 @@ export class PaperTrader {
     this.commandTimer = setInterval(() => this.pollCommand(), 2_000); // console command bus
     // Continuous ledger audit: the recorded numbers must reconcile with the booked P&L, always.
     this.integrityTimer = setInterval(() => this.verifyLedger(), 60_000);
+    // LIVE BRIDGE. Disarmed unless BOTH locks are open. The probe is what lets its orphan
+    // sweep tell "the brain still holds this" from "there is a real bag nobody owns" — the
+    // difference between a tracked position and an abandoned one.
+    bridgeStart((tradeId) => {
+      for (const p of this.positions.values()) if (p.tradeId === tradeId) return true;
+      return false;
+    });
   }
 
   private commandTimer?: ReturnType<typeof setInterval>;
@@ -402,6 +426,7 @@ export class PaperTrader {
     if (this.postExitTimer) clearInterval(this.postExitTimer);
     this.watcher.stop();
     this.tradeStream.stop();
+    bridgeStop();
     this.save(); // persist open positions so a restart doesn't orphan them
   }
 
@@ -537,6 +562,9 @@ export class PaperTrader {
     const liq = c.liquidityUsd; // logged only (DexScreener field; undefined on the pump lane)
     const priceMode = "sol" as const; // fast-follow bonding-curve only (swing lane removed)
     let entryVSol = c.bcVSol ?? 0; // refreshed from the live curve below
+    // Dicatat ke posisi + trade: entry yang lolos lewat cadangan kurva harus bisa dipisahkan
+    // saat analisis, kalau tidak kelonggarannya tidak akan pernah bisa dinilai.
+    let holderFallbackUsed = false;
     let entryVTokens = 0; // curve token reserve at entry (for constant-product token qty)
     // REAL sol deposited in the curve at entry. Cleaner demand signal than MC alone: MC is a
     // function of the virtual reserves and starts at ~28 SOL on an untouched curve, whereas
@@ -581,6 +609,40 @@ export class PaperTrader {
       return { opened: false, code: "NO_PRICE" };
     }
 
+    /**
+     * ── GERBANG MURAH DULU (urutan diperbaiki 2026-08-15) ──
+     *
+     * MC-band dan dev-buy dulunya diperiksa JAUH di bawah, SESUDAH simulateBuyMainnet dan
+     * pembacaan akun mint. Padahal keduanya tidak butuh apa pun dari langkah itu: entryMcSol
+     * murni turunan cadangan kurva yang baru saja dibaca, dan devInitialBuySol datang dari
+     * event pumpportal sebelum RPC apa pun. Jadi kita membayar simulasi penuh untuk kandidat
+     * yang sudah pasti ditolak.
+     *
+     * TERUKUR 2026-08-15: ENTRY_MC_BAND menolak ~25% dari seluruh keputusan, sementara biaya
+     * evaluasi mencapai 15,7 getAccountInfo per kandidat. Kuota Helius gratis (1 juta kredit
+     * sebulan = 0,386 kredit/detik berkelanjutan) tidak muat untuk 5,8 kredit/detik yang
+     * kita pakai, jadi memotong pekerjaan yang hasilnya dibuang adalah penghematan termurah.
+     *
+     * KEPUTUSAN TRADING TIDAK BERUBAH — gerbang sama, ambang sama, hanya lebih awal.
+     */
+    {
+      const mcNow = (priceMode === "sol" && entryVSol && entryVTokens)
+        ? (entryVSol / entryVTokens) * 1_000_000_000 : undefined;
+      if (mcNow != null) {
+        const band = config.gate.entryMcBandSol;
+        if (mcNow < band.floor || mcNow > band.ceiling) {
+          const why = mcNow < band.floor ? `below floor ${band.floor}` : `above ceiling ${band.ceiling}`;
+          ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${mcNow.toFixed(1)} SOL ${why} SOL (MC band)`);
+          return { opened: false, code: "ENTRY_MC_BAND", detail: `${mcNow.toFixed(1)} SOL ${why}` };
+        }
+      }
+      const devMax = config.gate.entryDevBuyMaxSol;
+      if (devMax > 0 && typeof c.devInitialBuySol === "number" && c.devInitialBuySol > devMax) {
+        ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — dev bought ${c.devInitialBuySol.toFixed(2)} SOL at launch (max ${devMax})`);
+        return { opened: false, code: "ENTRY_DEV_BUY", detail: `${c.devInitialBuySol.toFixed(2)} SOL > ${devMax}` };
+      }
+    }
+
     // DEMAND CONFIRMATION (fast-follow): measured by PEOPLE, not SOL amount. Enter
     // at ANY marketcap (small MC is fine — even ideal), but only once real buyers
     // have shown up. holders=1 is just the dev = dead-on-arrival; buying it only
@@ -597,11 +659,47 @@ export class PaperTrader {
       // verification. A failed read must fail CLOSED, not silently pass — distinct code/reason
       // from "too few holders" so the two failure modes are never conflated in analysis.
       if (holders == null) {
-        ui.warn(`[paper] SKIP ${c.symbol ?? c.mint} — holder count unavailable (RPC read failed), cannot verify demand`);
-        logRecord("events", { type: "no-demand-skip", decisionId: c.decisionId ?? null, mint: c.mint, symbol: c.symbol, holders: null, holderSource: null, reason: "holder-read-failed" });
-        return { opened: false, code: "HOLDER_DATA_UNAVAILABLE" };
+        /**
+         * CADANGAN KURVA — HANYA saat hitungan holder tidak terbaca.
+         *
+         * 2026-08-12: DAS Helius berhenti mengindeks mint baru, dan itu satu-satunya sumber yang
+         * bisa menjawab pada detik ke-0 — `getTokenLargestAccounts` menolak Token-2022 yang
+         * dipakai pump.fun ("not a Token mint"), dan GMGN kena rate-limit. Gerbang jadi
+         * gagal-tertutup pada 46% keputusan dan laju entry jatuh dari ~17/jam ke 1/jam:
+         * pengumpulan data berhenti total.
+         *
+         * Penggantinya kurva itu sendiri, yang TIDAK PERNAH buta karena sudah dibaca untuk harga
+         * beberapa baris di atas. Peluncuran pump.fun selalu mulai di vSol 30, jadi
+         * (entryVSol − 30 − devInitialBuySol) = SOL yang dibeli SELAIN dev — persis maksud gerbang
+         * ini ("holders ≤1 = cuma dev = mati saat lahir").
+         *
+         * BATAS BUKTINYA, harus jujur: terukur pada 637 trade, median +13,2 SOL non-dev dan
+         * 637/637 di atas 0,01 SOL — tapi itu trade yang MEMANG dibuka, jadi angka itu hanya
+         * menunjukkan cadangan ini tidak akan memblokir yang selama ini lolos. Ia TIDAK
+         * membuktikan cadangan ini menolak yang buruk. Karena itu ambangnya rendah (menolak yang
+         * benar-benar mati saja) dan setiap pemakaian DITANDAI supaya bisa dinilai terpisah.
+         *
+         * Snapshot kurva di waktu KANDIDAT tidak dipakai — sudah diuji dan gugur: kelompok
+         * holders 0, 1, dan ≥2 sama-sama ≈0 karena pembeli mendarat beberapa detik sesudahnya.
+         * Yang dipakai di sini bacaan SEGAR waktu entry (entryVSol, diisi ~baris 581).
+         */
+        const devBuy = typeof c.devInitialBuySol === "number" ? c.devInitialBuySol : 0;
+        const otherBuySol = entryVSol - PUMP_LAUNCH_VSOL - devBuy;
+        const fb = config.gate.holderFallback;
+        if (fb.enabled && entryVSol > 0 && otherBuySol >= fb.minOtherBuySol) {
+          holderFallbackUsed = true;
+          logRecord("events", { type: "holder-fallback-admit", decisionId: c.decisionId ?? null, mint: c.mint,
+            symbol: c.symbol, entryVSol, devBuy, otherBuySol: Number(otherBuySol.toFixed(3)) });
+        } else {
+          ui.warn(`[paper] SKIP ${c.symbol ?? c.mint} — holder tak terbaca DAN kurva cuma menunjukkan ${otherBuySol.toFixed(2)} SOL pembelian non-dev`);
+          logRecord("events", { type: "no-demand-skip", decisionId: c.decisionId ?? null, mint: c.mint, symbol: c.symbol, holders: null, holderSource: null, reason: "holder-read-failed", otherBuySol: Number(otherBuySol.toFixed(3)) });
+          return { opened: false, code: "HOLDER_DATA_UNAVAILABLE" };
+        }
       }
-      if (holders < minHolders) {
+      // `holders` bisa tetap null di sini kalau cadangan kurva yang meloloskan — dan itu BUKAN
+      // "holder sedikit", jadi jangan diperlakukan sebagai angka. Cadangan sudah menilai
+      // permintaan lewat kurva; pemeriksaan jumlah hanya berlaku saat jumlahnya benar-benar ada.
+      if (holders != null && holders < minHolders) {
         ui.warn(`[paper] SKIP ${c.symbol ?? c.mint} — dead-on-arrival (${holders} holder${holders === 1 ? "" : "s"}, need ${minHolders})`);
         logRecord("events", { type: "no-demand-skip", decisionId: c.decisionId ?? null, mint: c.mint, symbol: c.symbol, holders, reason: holders === 0 ? "zero-holders" : "below-minimum" });
         return { opened: false, code: "NO_DEMAND", detail: String(holders) };
@@ -699,16 +797,7 @@ export class PaperTrader {
       const solUsd = await solPriceUsd(); // cached ~60s → usually free
       if (solUsd && solUsd > 0) entryMcUsd = entryMcSol * solUsd;
     }
-    // ENTRY MC BAND (owner spec): skip the dead/rug zone (bled below launch) and the already-pumped /
-    // manufactured tops. Enforced on the RELIABLE curve MC. Only fast-follow bonding-curve entries.
-    if (priceMode === "sol" && entryMcSol != null) {
-      const band = config.gate.entryMcBandSol;
-      if (entryMcSol < band.floor || entryMcSol > band.ceiling) {
-        const why = entryMcSol < band.floor ? `below floor ${band.floor}` : `above ceiling ${band.ceiling}`;
-        ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${entryMcSol.toFixed(1)} SOL ${why} SOL (MC band)`);
-        return { opened: false, code: "ENTRY_MC_BAND", detail: `${entryMcSol.toFixed(1)} SOL ${why}` };
-      }
-    }
+    // (MC band + dev-buy diperiksa LEBIH AWAL — lihat blok "GERBANG MURAH DULU" di atas.)
     const tradeId = `t${Date.now().toString(36)}${(this.tradeSeq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     this.positions.set(c.mint, {
       tradeId,
@@ -752,6 +841,7 @@ export class PaperTrader {
       entrySnapshot: {
         decisionAt: Date.now(), decisionLatencyMs: c.detectedAt ? Date.now() - c.detectedAt : undefined,
         setupVerdict: c.setup?.verdict, setupConfidence: c.setup?.confidence, setupEvidence: c.setup?.evidence, setupMissing: c.setup?.missing,
+        holderFallbackUsed,
         holders: c.holders ?? null, mcUsd: c.marketCapUsd != null ? Math.round(c.marketCapUsd) : null, organic: c.organicScore ?? null,
         sniperPct: c.whaleSniperPct ?? null, bundlerPct: c.whaleBundlerPct ?? null, devPct: c.whaleDevPct ?? null,
         clusterVerdict: c.rugCluster?.verdict ?? null, devFundedBuyers: c.rugCluster?.devFundedBuyers ?? null,
@@ -789,6 +879,10 @@ export class PaperTrader {
       sv: config.strategyVersion, cfg: configHash });
     ui.pass(`[paper] OPEN ${c.symbol ?? c.mint} @ $${price} (${c.mode}, ${sizeSol.toFixed(3)} SOL sim${devOnlyBuys ? ", DEV-ONLY-BUYS" : ""})`);
     this.mirrorDevnet("buy", c.mint, c.symbol); // devnet mode: prove the real send pipeline
+    // LIVE MIRROR (execution/live-bridge.ts). No-op unless EXEC_MODE=live AND
+    // LIVE_TRADING_CONFIRMED=yes. Fire-and-forget by construction: the bridge must never
+    // be able to slow down, block, or alter an entry decision.
+    bridgeOpen({ tradeId, mint: c.mint, symbol: c.symbol, sizeSol, pool: c.pool });
     // POST-OPEN BACKGROUND ENRICHMENT (no deadline, OFF the critical path — this is what makes entry
     // fast). Fills everything that isn't needed to DECIDE the entry: exec-sim stage, dev baseline
     // (balance/supply/only-buys), and reliable demand-quality (verified bundle + creator funders).
@@ -1137,6 +1231,32 @@ export class PaperTrader {
     // per-position serial read below, which is the exact path we are trying to avoid.
     const curveBatch = ffKeys.length ? await bondingCurvePricesMulti(ffKeys) : new Map();
     for (const [mint, pos] of this.positions) {
+      /**
+       * NEVER-PRICED ESCAPE — checked BEFORE the venue filter, on purpose.
+       *
+       * Every exit rule is defined against the position's peak, the peak comes from a price, and
+       * a position that has never been priced has no peak. So NO_DEVELOPMENT cannot fire at 45s,
+       * MAX_HOLD cannot fire at 120s, and the position is immortal. Measured 2026-08-07: of 347
+       * positions opened that day exactly one (SMILE) was never marked, and it sat for 635s until
+       * closed by hand — the next-worst blind window all day was 68s.
+       *
+       * The reason it also escaped the existing `priceFailCount >= 15` net is that the net only
+       * counts reads that were ATTEMPTED. `ffKeys` filters on `priceMode === "sol" && bondingCurveKey`
+       * and this loop filters on venue, so a position excluded by any of those is never read at
+       * all: no read, no failure, no counter, no escape. Placing this check above the venue filter
+       * is what makes it cover every one of those paths instead of only the one we happened to see.
+       *
+       * Closes at ENTRY price, never a fabricated loss — we genuinely do not know what it was worth.
+       */
+      if (pos.lastPriceUsd == null) {
+        const blindMs = Date.now() - pos.openedAt;
+        const budget = Math.max(config.risk.maxHoldMsFastFollow, config.risk.noDevelopment.afterMs);
+        if (blindMs > budget * 2) {
+          ui.warn(`[paper] ${pos.candidate.symbol ?? mint} tidak pernah berharga ${Math.round(blindMs / 1000)}s — ditutup di harga entry`);
+          this.close(mint, pos, pos.entryPriceUsd, "NEVER_PRICED");
+          continue;
+        }
+      }
       if (pos.candidate.mode !== mode) continue; // this timer only handles its venue
       const maxHold = config.risk.maxHoldMsFastFollow;
       const heldMs = Date.now() - pos.openedAt;
@@ -1235,6 +1355,14 @@ export class PaperTrader {
         // patient; only give up after a long stall, and then close at the LAST
         // KNOWN price (real P&L), NEVER a fabricated -100%.
         if (readFail) pos.priceFailCount = (pos.priceFailCount ?? 0) + 1;
+        // Leave a trace of the blindness. Without this a position that cannot be priced writes
+        // NOTHING to the tick stream, so "never marked" and "no open positions" look identical in
+        // the logs — which is exactly why the SMILE stall took a manual investigation to find.
+        logRecord("ticks", {
+          tradeId: pos.tradeId, mint, symbol: pos.candidate.symbol, cfg: configHash,
+          heldSec: Math.round((Date.now() - pos.openedAt) / 1000),
+          unpriced: true, drained, readFail, priceFailCount: pos.priceFailCount ?? 0,
+        });
         if (pos.priceFailCount >= 15) {
           const last = pos.lastPriceUsd ?? pos.entryPriceUsd;
           this.close(mint, pos, last, "STALE"); // can't price it anymore; book last-seen value
@@ -1336,6 +1464,13 @@ export class PaperTrader {
         execPnlPct: Number(execPnl.toFixed(2)),   // what we could ACTUALLY realise now
         spotPnlPct: Number(pnlFromEntry.toFixed(2)),
         peakPct: Number((pos.peakPriceUsd > 0 && pos.entryPriceUsd > 0 ? ((pos.peakPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100 : 0).toFixed(2)),
+        // `peakPct` above is the SPOT peak from entry and never re-bases. `execPeakGainPct` DOES
+        // re-base on every partial (the trail re-seed). Logging both is what makes the NO-DEV
+        // exemption auditable — without the pair, a re-based peak looks identical to a position
+        // that genuinely never moved, which is exactly how the cut-runner bug stayed invisible.
+        execPeakGainPct: Number(execPeakGainPct.toFixed(2)),
+        everDeveloped: pos.everDeveloped === true,
+        partialCount: (pos.scaleTier ?? -1) + 1, // sama persis dengan catatan penutupan (baris ~1942)
         vSol: pos.lastVSol ?? null, vTokens: pos.lastVTokens ?? null,
       });
 
@@ -1359,6 +1494,37 @@ export class PaperTrader {
         continue;
       }
 
+      // ── EARLY CUT — potong cepat yang lahir dari 55-100 (2026-08-11) ──
+      // Kurva peluruhan sudah lama bilang nilai memuncak beberapa detik setelah entry lalu bocor;
+      // ini memanennya. Aturan: dalam `withinMs` pertama, kalau P&L EKSEKUTABEL sudah di bawah
+      // `pnlPct`, keluar sekarang — jangan tunggu NO_DEVELOPMENT di detik ke-30.
+      //
+      // Divalidasi pada 478 trade pita 55-100 dengan SELISIH BERPASANGAN (bukan selisih tingkat —
+      // memakai SD tingkat 63,2 poin di sini adalah kesalahan statistik; yang benar SD selisih
+      // 16,7 poin karena mayoritas trade tak tersentuh aturan):
+      //   keluar di tick pemicu   +3,15 ±1,54
+      //   keluar di tick berikut  +2,21 ±1,40   ← asumsi realistis, ini yang dipakai memutuskan
+      //   dua tick kemudian       +1,56 ±1,24
+      // Pangkas-ekor LULUS TERBALIK (buang 5 efek terbesar → +3,86, efeknya NAIK) jadi ini bukan
+      // ulah segelintir trade raksasa seperti kandidat trail x2 yang dulu gugur. Split-half 400x:
+      // 400/400 kedua paruh positif. Konsisten di ketiga hari data.
+      //
+      // Ambang dikunci -10, BUKAN -5 yang optimum di grid: parameternya dipilih dari 12 sel pada
+      // data yang sama, dan sel juara paling terkena inflasi pemilihan. Seluruh 12 sel positif,
+      // jadi memilih yang bukan puncak tetap aman dan jauh lebih jujur.
+      //
+      // TIDAK dikecualikan oleh everDeveloped — sengaja. Simulasi tidak memakai pengecualian itu,
+      // dan menambahkannya di sini berarti yang berjalan bukan lagi yang diukur.
+      //
+      // CATATAN kejujuran: simulasi memakai tick TERAKHIR di dalam jendela, sedangkan aturan hidup
+      // menembak pada tick PERTAMA yang menembus. Itu lebih awal, dan uji kelambatan di atas
+      // menunjukkan lebih awal tidak merugikan — tapi keduanya tidak identik.
+      const early = config.risk.earlyCut;
+      if (early.enabled && heldMs <= early.withinMs && execPnl < early.pnlPct) {
+        this.close(mint, pos, price, "EARLY_CUT");
+        continue;
+      }
+
       // ── NO-DEVELOPMENT CUT — the capital-stuck fix, always-on, agent-independent ──
       // A position that has not printed even a small executable gain within the window is not
       // "waiting to run", it is dead money holding a slot: 75% of non-runners are caught here
@@ -1366,7 +1532,9 @@ export class PaperTrader {
       // guard and BEFORE the scale-out, so it can never fire on a position that has already
       // climbed (execPeakGainPct ≥ minPeakPct means it developed and is exempt forever).
       const noDev = config.risk.noDevelopment;
-      if (noDev.enabled && heldMs >= noDev.afterMs && execPeakGainPct < noDev.minPeakPct) {
+      // Latch BEFORE the test, so a position that is developed right now can never be cut by it.
+      if (execPeakGainPct >= noDev.minPeakPct) pos.everDeveloped = true;
+      if (noDev.enabled && !pos.everDeveloped && heldMs >= noDev.afterMs && execPeakGainPct < noDev.minPeakPct) {
         this.close(mint, pos, price, "NO_DEVELOPMENT");
         continue;
       }
@@ -1640,6 +1808,9 @@ export class PaperTrader {
         sv: config.strategyVersion, cfg: configHash,
       });
       ui.pass(`[paper] SCALE-OUT ${pos.candidate.symbol ?? mint} tier +${t.gain}% — sold ${(t.sell * 100).toFixed(0)}% (+${bankedPnl.toFixed(4)} SOL); ${(this.remainingFrac(pos) * 100).toFixed(0)}% still riding`);
+      // LIVE MIRROR: same fraction-of-ORIGINAL the record books as `soldFrac`, so the live
+      // ladder tracks the paper ladder tier for tier. The bridge clamps it to the real balance.
+      bridgeSellFraction(pos.tradeId, mint, qSell / originalQty, `SCALE_OUT_T${i}`);
     }
     if ((pos.scaleTier ?? -1) > startTier) {
       // Persist our hypothetical partial impact. The next raw mainnet mark excludes this paper
@@ -2000,6 +2171,9 @@ export class PaperTrader {
     // later learn if this exit was premature and what the ideal hold would have been.
     this.registerPostExit(pos, mint, pos.candidate.symbol, reason, price, pnlPct, Math.round((Date.now() - pos.openedAt) / 1000));
     this.mirrorDevnet("sell", mint, pos.candidate.symbol); // devnet mode: prove the real send pipeline
+    // LIVE MIRROR: sell the whole real bag. If this sell fails the bridge keeps the lot and
+    // its sweeper retries — a closed paper position never abandons a real one.
+    bridgeClose(pos.tradeId, mint, reason);
     this.maybeResetRun();
   }
 

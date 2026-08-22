@@ -1,3 +1,4 @@
+import { panelMemo } from "@/lib/panelMemo";
 import type { StatsResponse } from "@/types/stats";
 
 /**
@@ -7,7 +8,7 @@ import type { StatsResponse } from "@/types/stats";
  * deliberately NOT a rebuild of the old Signals/DNA/Scanner/Risk panels (dropped when Strategy 2
  * became primary) — just enough to see both strategies' headline numbers at a glance in one row.
  */
-export function SniperRecap({ data }: { data: StatsResponse }) {
+function SniperRecapInner({ data }: { data: StatsResponse }) {
   const p = data.paper;
   const alive = data.system.sniperAlive;
   if (!p || p.opens === 0) {
@@ -41,3 +42,6 @@ export function SniperRecap({ data }: { data: StatsResponse }) {
     </div>
   );
 }
+
+/** Repaints only when this panel's own slice moves — see lib/panelMemo. */
+export const SniperRecap = panelMemo(SniperRecapInner, (d) => [d.paper?.opens, d.paper?.closed, d.paper?.balanceSol]);

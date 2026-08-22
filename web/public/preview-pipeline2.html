@@ -1,0 +1,201 @@
+<!doctype html><meta charset="utf-8"><title>Pipeline — arus bercabang</title>
+<style>
+ :root{--bg:#06070a;--tile:#0b0d12;--line:#1a1d24;--fg:#e9ebee;--dim:#7c828d;--dimmer:#40444d;
+  --up:#4bd07f;--down:#ff5f5f;--gold:#e8c56a;--scout:#a78bfa;--acid:#c9f04a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:30px 26px 70px}
+ h1{font-size:14px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+ .sub{font-size:12.5px;color:var(--dimmer);max-width:80ch;line-height:1.65;margin-bottom:26px}
+ .sub b{color:var(--dim);font-weight:600}
+ .col{margin-bottom:26px}
+ .cap b{display:block;font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;margin-bottom:3px}
+ .cap span{display:block;font-size:11.5px;color:var(--dim);line-height:1.55;margin-bottom:9px;max-width:78ch}
+ .tile{width:760px;height:264px;background:var(--tile);border:1px solid var(--line);border-radius:12px;
+   position:relative;overflow:hidden}
+ canvas{position:absolute;inset:0;width:100%;height:100%}
+ .hdr{position:absolute;left:15px;top:12px;z-index:2;display:flex;align-items:center;gap:7px;
+   font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+ .dot{width:5px;height:5px;border-radius:50%;background:var(--acid);box-shadow:0 0 6px var(--acid)}
+ .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+</style>
+<h1>Pipeline — tiga model arus</h1>
+<p class="sub">Koreksi lebih dulu: kedua mesin <b>bukan</b> satu garis yang bercabang. S1 makan dari
+WebSocket pumpportal (launch realtime), S2 polling solana-tracker &amp; gmgn trending lewat proses
+terpisah. Sumbernya beda — satu trunk di paling kiri akan jadi kebohongan. Yang benar-benar
+bercabang ada <b>di dalam tiap mesin</b>: satu arus masuk, mengelupas di tiap gate. Semua cacah di
+bawah dari engine berjalan.</p>
+<div id="out"></div>
+<script>
+const D = {"s1": {"gated": 50413, "passed": 50275, "bought": 1959, "skip": {"MC di luar band": 5593, "below-minimum": 1348, "zero-holders": 283, "holder-read-failed": 1}, "lat": {"n": 20, "pre": 0.1, "gate": 2.3, "open": 15.4, "total": 17}}, "s2": {"seen": 18641, "gated": 144, "passed": 47, "rejected": 97, "passRate": 0.3263888888888889, "rej": {"deadToken": 7, "staleMc": 5, "unroutable": 0, "bundle": 28, "ath": 57, "cost": 0}, "opens": 64, "closed": 64, "open": 0}, "exit": {"TRAIL_LOCK": 140, "NO_DEVELOPMENT": 117, "DEV_DUMP": 42, "MAX_HOLD": 37, "FALLBACK_STOP": 10, "CATASTROPHIC": 5}, "scan": ["SOLANA", "Hamhouse", "CETE", "Archer", "TNOS", "CETE", "CETE", "PUMP", "Hamhouse", "FATCAT", "SCATE", "3", "APP", "pkch", "CAT ", ":-)", "SOLGRID", "DATE COIN", "HAROLDE", "SOL"]};
+const nf=v=>v==null?"\u2014":v.toLocaleString("id");
+const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const C={up:"#4bd07f",down:"#ff5f5f",gold:"#e8c56a",scout:"#a78bfa",acid:"#c9f04a",dim:"#7c828d",dimmer:"#40444d",line:"#1a1d24"};
+function tile(title){
+  const w=document.createElement("div");w.className="tile";
+  w.innerHTML=`<div class="hdr"><span class="dot"></span>${title}</div><canvas></canvas>`;
+  return w;
+}
+function setup(el){
+  const cv=el.querySelector("canvas"),ctx=cv.getContext("2d"),DPR=devicePixelRatio||1;
+  const r=el.getBoundingClientRect();cv.width=r.width*DPR;cv.height=r.height*DPR;ctx.scale(DPR,DPR);
+  return {ctx,W:r.width,H:r.height};
+}
+function loop(fn){let t=0;(function f(){t+=1;fn(t);if(!reduce)requestAnimationFrame(f)})()}
+function label(ctx,x,y,txt,col,size){ctx.font=(size||9)+"px ui-monospace,monospace";ctx.fillStyle=col;ctx.fillText(txt,x,y)}
+
+/* ═════ A · REL BERCABANG ═════════════════════════════════════════
+   Inilah "satu garis lalu bercabang" yang dimaksud — tapi per mesin,
+   bukan gabungan. Arus S1 masuk dari kiri; di tiap gate sebagian
+   membelok turun ke spur penolakan, sisanya lanjut. Lebar spur
+   sebanding cacah skip nyata. */
+function rails(){
+  const el=tile("S1 SNIPER \u00b7 REL BERCABANG");
+  requestAnimationFrame(()=>{
+    const {ctx,W,H}=setup(el);
+    const sk=D.s1.skip, keys=Object.keys(sk), tot=D.s1.gated;
+    const X0=64, X1=W-108, span=X1-X0;
+    const gates=keys.map((k,i)=>({k,n:sk[k],x:X0+span*((i+1)/(keys.length+1))}));
+    const MAIN=H*0.36;
+    // fraksi arus yang tersisa setelah tiap gate
+    let rem=tot; const stages=gates.map(g=>{rem-=g.n;return rem/tot});
+    const ps=Array.from({length:210},()=>({p:Math.random(),g:-1,v:.0016+Math.random()*.0022,y:0,off:(Math.random()-.5)*11}));
+    function assign(pt){ // gate mana yang menolak partikel ini (atau lolos)
+      let r=Math.random()*tot;
+      for(let i=0;i<gates.length;i++){if(r<gates[i].n)return i;r-=gates[i].n}
+      return -1}
+    ps.forEach(p=>p.g=assign(p));
+    loop(()=>{
+      ctx.clearRect(0,0,W,H);
+      // rel utama menyempit sesuai sisa arus
+      ctx.strokeStyle=C.line;ctx.lineWidth=1;
+      gates.forEach((g,i)=>{
+        ctx.beginPath();ctx.moveTo(g.x,MAIN-26);ctx.lineTo(g.x,MAIN+16+i*26);ctx.stroke();
+        label(ctx,g.x-16,MAIN-32,g.k,C.dimmer);
+        label(ctx,g.x-16,MAIN+30+i*26,nf(g.n),C.down,9.5);
+        label(ctx,g.x+3,MAIN-14,(100*stages[i]).toFixed(0)+"%",C.dimmer,8.5);
+      });
+      ctx.strokeStyle="rgba(255,255,255,.05)";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(X0,MAIN);ctx.lineTo(X1,MAIN);ctx.stroke();
+      ps.forEach(p=>{
+        p.p+=p.v; if(p.p>1.06){p.p=0;p.g=assign(p);p.y=0}
+        const x=X0+span*p.p;
+        const gi=p.g, gx=gi>=0?gates[gi].x:Infinity;
+        const rejected=x>gx;
+        if(rejected)p.y+=(16+gi*26+8-p.y)*.06;
+        const y=MAIN+p.off*(rejected?.3:1)+p.y;
+        ctx.globalAlpha=rejected?.3:.85;
+        ctx.fillStyle=rejected?C.down:(x>gates[gates.length-1].x?C.up:"#8b95a3");
+        ctx.beginPath();ctx.arc(x,y,rejected?1:1.7,0,7);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      label(ctx,14,MAIN-30,"MASUK",C.dimmer,8.5);
+      label(ctx,14,MAIN-14,nf(tot),C.acid,15);
+      label(ctx,W-92,MAIN-30,"DIBELI",C.dimmer,8.5);
+      label(ctx,W-92,MAIN-14,nf(D.s1.bought),C.up,15);
+      label(ctx,W-92,MAIN+2,(100*D.s1.bought/tot).toFixed(1)+"% lolos",C.dimmer,8.5);
+    });
+  });
+  return el;
+}
+
+/* ═════ B · DUA SUNGAI BERTEMU ════════════════════════════════════
+   Dua sumber sungguhan masuk dari dua sisi berlawanan, masing-masing
+   lewat gerbangnya sendiri, dan baru bertemu di satu dompet. Bentuk
+   ini yang jujur soal "2 strategi": tidak pernah ada satu trunk. */
+function confluence(){
+  const el=tile("DUA MESIN \u00b7 BERTEMU DI DOMPET");
+  requestAnimationFrame(()=>{
+    const {ctx,W,H}=setup(el);
+    const MX=W*0.72, MY=H*0.5;
+    const lanes=[
+      {t:"S1 pumpportal",sub:"launch realtime",y:H*0.3,col:C.gold,inn:D.s1.gated,out:D.s1.bought},
+      {t:"S2 trending",  sub:"solana-tracker + gmgn",y:H*0.72,col:C.scout,inn:D.s2.seen,out:D.s2.passed}];
+    const ps=lanes.flatMap((L,li)=>Array.from({length:120},()=>({li,p:Math.random(),
+      v:.0018+Math.random()*.0022,pass:Math.random()<L.out/L.inn,off:(Math.random()-.5)*15})));
+    loop(()=>{
+      ctx.clearRect(0,0,W,H);
+      const GX=W*0.42;
+      ctx.strokeStyle=C.line;ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(GX,H*0.16);ctx.lineTo(GX,H*0.88);ctx.stroke();
+      label(ctx,GX-16,H*0.13,"gerbang",C.dimmer);
+      lanes.forEach(L=>{
+        label(ctx,14,L.y-24,L.t.toUpperCase(),L.col,9);
+        label(ctx,14,L.y-12,L.sub,C.dimmer,8.5);
+        label(ctx,14,L.y+16,nf(L.inn)+" \u2192 "+nf(L.out),C.dim,9.5);
+      });
+      ps.forEach(p=>{
+        const L=lanes[p.li];
+        p.p+=p.v; if(p.p>1){p.p=0;p.pass=Math.random()<L.out/L.inn}
+        let x,y;
+        if(p.p<.5){const k=p.p/.5;x=90+(GX-90)*k;y=L.y+p.off}
+        else{const k=(p.p-.5)/.5;
+          if(!p.pass){x=GX+18*k;y=L.y+p.off+(L.y<MY?-1:1)*46*k}
+          else{x=GX+(MX-GX)*k;y=L.y+(MY-L.y)*k*k+p.off*(1-k)}}
+        ctx.globalAlpha=p.pass?.9:.24*(1-Math.max(0,(p.p-.5)/.5));
+        ctx.fillStyle=p.pass?L.col:C.down;
+        ctx.beginPath();ctx.arc(x,y,p.pass?1.7:1,0,7);ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      ctx.strokeStyle="rgba(201,240,74,.35)";ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(MX,MY,17,0,7);ctx.stroke();
+      label(ctx,MX-11,MY+4,"\u25ce",C.acid,17);
+      label(ctx,MX+26,MY-2,"satu dompet",C.dim,9.5);
+      label(ctx,MX+26,MY+11,"sumber terpisah, saldo satu",C.dimmer,8.5);
+    });
+  });
+  return el;
+}
+
+/* ═════ C · TULANG IKAN ═══════════════════════════════════════════
+   Trunk vertikal per mesin, spur menonjol ke samping sepanjang cacah
+   yang tersaring. Statis, terbaca sekali lihat — untuk saat kamu mau
+   angka, bukan gerak. Termasuk jalur keluar, yang tak pernah muncul
+   di model manapun sebelum ini. */
+function fishbone(){
+  const el=tile("TIGA TAHAP \u00b7 TULANG IKAN");
+  requestAnimationFrame(()=>{
+    const {ctx,W,H}=setup(el);
+    const cols=[
+      {t:"S1 masuk",x:W*0.17,col:C.gold,top:D.s1.gated,bot:D.s1.bought,
+       sp:Object.entries(D.s1.skip)},
+      {t:"S2 masuk",x:W*0.5,col:C.scout,top:D.s2.gated,bot:D.s2.passed,
+       sp:Object.entries(D.s2.rej||{})},
+      {t:"keluar",x:W*0.83,col:C.up,top:Object.values(D.exit).reduce((a,b)=>a+b,0),bot:D.exit.TRAIL_LOCK,
+       sp:Object.entries(D.exit)}];
+    let ph=0;
+    loop(t=>{
+      ph=reduce?1:Math.min(1,t/70);
+      ctx.clearRect(0,0,W,H);
+      cols.forEach(c=>{
+        const Y0=48,Y1=H-34;
+        ctx.strokeStyle="rgba(255,255,255,.07)";ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(c.x,Y0);ctx.lineTo(c.x,Y0+(Y1-Y0)*ph);ctx.stroke();
+        label(ctx,c.x-24,Y0-20,c.t.toUpperCase(),c.col,9);
+        label(ctx,c.x-24,Y0-6,nf(c.top),"#e9ebee",13);
+        const mx=Math.max(1,...c.sp.map(s=>s[1]));
+        c.sp.slice(0,6).forEach((s,i)=>{
+          const y=Y0+18+i*((Y1-Y0-24)/Math.max(c.sp.length,1));
+          if(y>Y0+(Y1-Y0)*ph)return;
+          const len=8+58*(s[1]/mx)*ph, dir=i%2?-1:1;
+          ctx.strokeStyle=c.col+"55";ctx.lineWidth=1.4;
+          ctx.beginPath();ctx.moveTo(c.x,y);ctx.lineTo(c.x+dir*len,y-9);ctx.stroke();
+          ctx.textAlign=dir>0?"left":"right";
+          label(ctx,c.x+dir*(len+4),y-11,String(s[0]).toLowerCase().slice(0,13),C.dimmer,8);
+          label(ctx,c.x+dir*(len+4),y-2,nf(s[1]),C.dim,8.5);
+          ctx.textAlign="start";
+        });
+        label(ctx,c.x-24,Y1+14,nf(c.bot),c.col,12);
+      });
+    });
+  });
+  return el;
+}
+
+const out=document.getElementById("out");
+[["A \u00b7 Rel bercabang","Inilah bentuk \u201csatu garis lalu bercabang\u201d yang kamu maksud \u2014 tapi per mesin. Arus masuk dari kiri; di tiap gate sebagian membelok turun ke spur penolakan, sisanya lanjut. Persentase di atas rel adalah sisa arus sesungguhnya.",rails],
+ ["B \u00b7 Dua sungai bertemu","Yang jujur soal \u201c2 strategi\u201d: dua sumber berbeda masuk dari dua sisi, lewat gerbangnya masing-masing, dan baru bertemu di satu dompet. Tidak pernah ada satu trunk di hulu.",confluence],
+ ["C \u00b7 Tulang ikan","Tiga tahap berdampingan, spur menonjol sepanjang cacah yang tersaring. Statis dan terbaca sekali lihat \u2014 untuk saat kamu mau angka, bukan gerak.",fishbone],
+].forEach(([t,n,f])=>{const c=document.createElement("div");c.className="col";
+  c.innerHTML=`<div class="cap"><b>${t}</b><span>${n}</span></div>`;c.appendChild(f());out.appendChild(c)});
+</script>
