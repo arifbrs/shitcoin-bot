@@ -270,6 +270,33 @@ async function main(): Promise<void> {
   check("ATA rent is reclaimed on settle", lot.rentReclaimedSol > 0 && lot.ataClosed === true);
   check("closed lot leaves exposure", B.deployedLiveSol() === 0);
 
+  // ── 2b. THE REAL FILL REPLACES THE MODEL ──────────────────────────────────
+  console.log("\n2b. FILL NYATA MENGGANTIKAN MODEL (tidak ada lagi 'paper' saat live)");
+  c = fresh();
+  {
+    const fills: Array<{ tradeId: string; spentSol: number; tokens: number }> = [];
+    B.__setFillHookForTest((f) => fills.push(f));
+    c.fillTokens = 987_654; // chain memberi jumlah yang BERBEDA dari model
+    B.bridgeOpen({ tradeId: "tf1", mint: "MF", symbol: "FILL", sizeSol: 0.05 });
+    await B.__drainForTest();
+    check("fill nyata dilaporkan ke mesin strategi", fills.length === 1, `(${fills.length})`);
+    check("  jumlah token = yang benar-benar diterima", fills[0]?.tokens === 987_654, `(${fills[0]?.tokens})`);
+    check("  modal = selisih saldo terukur, bukan clip yang diminta",
+      Math.abs((fills[0]?.spentSol ?? 0) - config.exec.live.sizeSol) < 1e-9, `(${fills[0]?.spentSol})`);
+    // Buy yang GAGAL tidak boleh melaporkan fill apa pun — mengadopsi nol akan menghancurkan posisi.
+    fills.length = 0;
+    c.buyResult = { ok: false, err: "no route" };
+    B.bridgeOpen({ tradeId: "tf2", mint: "MG", sizeSol: 0.05 });
+    await B.__drainForTest();
+    check("buy gagal TIDAK melaporkan fill", fills.length === 0);
+    // Begitu juga buy yang timeout tanpa token.
+    c.buyResult = { ok: false, timedOut: true }; c.fillTokens = 0;
+    B.bridgeOpen({ tradeId: "tf3", mint: "MH", sizeSol: 0.05 });
+    await B.__drainForTest();
+    check("buy tanpa token TIDAK melaporkan fill", fills.length === 0);
+    B.__setFillHookForTest(() => {});
+  }
+
   // ── 3. INVARIANT 1 — real balance is truth ────────────────────────────────
   console.log("\n3. INVARIANT 1 — the chain decides how much we can sell");
   c = fresh();

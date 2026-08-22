@@ -95,6 +95,18 @@ let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let sweepTimer: ReturnType<typeof setInterval> | undefined;
 let isPaperOpen: (tradeId: string) => boolean = () => false;
 
+/**
+ * Called with the REAL fill the moment a live buy lands, so the strategy engine can replace its
+ * modelled quantities with the ones that actually exist on chain.
+ *
+ * Without this the engine sizes and prices every subsequent decision off `curveEntryFill()` — a
+ * model of what the buy WOULD have got. The real fill differs: slippage, a curve that moved
+ * between decision and landing, a different clip after compounding. Every exit number then
+ * describes a position that was never held. This is the last place the word "paper" still meant
+ * anything once live is armed, and it is the one that mattered.
+ */
+let onLiveFill: (fill: { tradeId: string; spentSol: number; tokens: number }) => void = () => {};
+
 // ── persistence ───────────────────────────────────────────────────────────────
 
 function save(): void {
@@ -305,6 +317,8 @@ async function doOpen(a: { tradeId: string; mint: string; symbol?: string | null
     lot.tokensBought = tokens;
 
     if (tokens > 0) {
+      // Hand the REAL fill back to the strategy engine before anything else acts on the model's.
+      try { onLiveFill({ tradeId: a.tradeId, spentSol: lot.spentSol, tokens }); } catch { /* never let a consumer break the money path */ }
       // Do NOT clobber a close requested while the buy was still in flight — the queued
       // sell runs next and needs to still see an exit in progress.
       if (lot.state !== "closing") lot.state = "open";
@@ -629,8 +643,12 @@ async function sweepTick(): Promise<void> {
  * sweep needs. Without it a bag whose paper position closed while a sell failed would sit
  * on-chain forever.
  */
-export function bridgeStart(paperOpenProbe: (tradeId: string) => boolean): void {
+export function bridgeStart(
+  paperOpenProbe: (tradeId: string) => boolean,
+  fillHook?: (fill: { tradeId: string; spentSol: number; tokens: number }) => void,
+): void {
   isPaperOpen = paperOpenProbe;
+  if (fillHook) onLiveFill = fillHook;
   load();
   // Timers follow PERMISSION, not the button, for two reasons: the owner can arm and disarm
   // from the console mid-session without a restart, and a disarm leaves the sweeper running
@@ -863,6 +881,7 @@ export function __setChainForTest(ops: Partial<ChainOps> | null): void {
 export function __setArmedForTest(v: boolean | null): void { armedOverride = v; }
 export function __setPermittedForTest(v: boolean | null): void { permittedOverride = v; }
 export function __setPaperProbeForTest(fn: (tradeId: string) => boolean): void { isPaperOpen = fn; }
+export function __setFillHookForTest(fn: (f: { tradeId: string; spentSol: number; tokens: number }) => void): void { onLiveFill = fn; }
 export function __lotsForTest(): Map<string, LiveLot> { return lots; }
 export function __resetForTest(): void { lots = new Map(); expectedBalanceSol = null; inFlight = 0; chains.clear(); }
 export async function __drainForTest(): Promise<void> {

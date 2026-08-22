@@ -387,10 +387,40 @@ export class PaperTrader {
     // LIVE BRIDGE. Disarmed unless BOTH locks are open. The probe is what lets its orphan
     // sweep tell "the brain still holds this" from "there is a real bag nobody owns" — the
     // difference between a tracked position and an abandoned one.
-    bridgeStart((tradeId) => {
-      for (const p of this.positions.values()) if (p.tradeId === tradeId) return true;
-      return false;
-    });
+    bridgeStart(
+      (tradeId) => {
+        for (const p of this.positions.values()) if (p.tradeId === tradeId) return true;
+        return false;
+      },
+      // REAL FILL WINS. Once live is armed there is no simulation to speak of — this engine is
+      // the strategy, and the bridge is its hands. The only thing still modelled after a live
+      // buy was the quantity: `curveEntryFill()` computes what the buy WOULD have got, while the
+      // chain says what it DID get (slippage, a curve that moved in the 3-13s before landing, a
+      // clip resized by compounding). Leaving the model in place meant every exit number
+      // described a position nobody held. Now the position adopts reality the moment it lands.
+      (fill) => {
+        for (const pos of this.positions.values()) {
+          if (pos.tradeId !== fill.tradeId) continue;
+          if (!(fill.tokens > 0) || !(fill.spentSol > 0)) return;
+          const before = { sizeSol: pos.sizeSol, tokenQty: pos.tokenQty ?? 0 };
+          // Scale-outs are fractions of the ORIGINAL, so both must move together or a partial
+          // would sell a fraction of a quantity that no longer exists.
+          pos.sizeSol = fill.spentSol;
+          pos.originalSizeSol = fill.spentSol;
+          pos.tokenQty = fill.tokens;
+          pos.originalTokenQty = fill.tokens;
+          logRecord("events", {
+            type: "live-fill-adopted", tradeId: pos.tradeId, mint: pos.candidate.mint, symbol: pos.candidate.symbol,
+            modelledSizeSol: Number(before.sizeSol.toFixed(6)), realSizeSol: Number(fill.spentSol.toFixed(6)),
+            modelledTokens: Number(before.tokenQty.toFixed(2)), realTokens: Number(fill.tokens.toFixed(2)),
+            qtyDriftPct: before.tokenQty > 0 ? Number((((fill.tokens - before.tokenQty) / before.tokenQty) * 100).toFixed(2)) : null,
+            cfg: configHash,
+          });
+          this.save();
+          return;
+        }
+      },
+    );
   }
 
   private commandTimer?: ReturnType<typeof setInterval>;
