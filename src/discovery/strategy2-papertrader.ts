@@ -30,6 +30,7 @@ import { tokenMarketSnapshot, type TokenMarketSnapshot } from "./token-market.js
 import { raptorPrice } from "./raptor.js";
 import { stTokenSnapshot, solanaTrackerEnabled, stCredits, type StSnapshot } from "./solanatracker.js";
 import { readControl } from "../control.js";
+import { s2MirrorOpen, s2MirrorClose } from "../execution/s2-live-bridge.js";
 import { judgeVibe, feelingEnabled } from "../execution/feeling-agent.js";
 import { classifyMcMark, MC_ANOMALY_RATIO } from "./mc-anomaly.js";
 
@@ -874,6 +875,7 @@ async function closePositionInner(s: State, pos: OpenPosition, reason: string): 
   s.equityUsd += pnlUsd;
   if (pnlUsd >= 0) s.wins++; else s.losses++;
   delete s.positions[pos.mint];
+  s2MirrorClose(pos.mint, pos.sym, reason); // 1 inti: mirror jual bag nyata saat LIVE
   logRecord("events", {
     type: "strategy2-paper-close", mint: pos.mint, sym: pos.sym, reason, downtimeSec: pos.downtimeSec ?? null,
     entryCostUsd: Number(pos.entryCostUsd.toFixed(2)), exitValueUsd: Number(exitValueUsd.toFixed(2)),

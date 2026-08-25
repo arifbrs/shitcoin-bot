@@ -74,6 +74,31 @@ export function livePermitted(): boolean {
   return config.exec.liveConfirmed;
 }
 
+/**
+ * MODE GATE — OWNER RULE (2026-08-24): "kredit mengikuti mode aktif".
+ *
+ * When the console switch is LIVE, every paper/simulation consumer must go IDLE: no entries,
+ * no movement, no credit consumption — live gets every credit. When the owner switches to
+ * paper/simulate/devnet, that mode's consumption resumes by itself (this reads control.json
+ * fresh on every call, so a mode flip takes effect on the next poll without a restart).
+ *
+ * `paperIdleByMode` wraps the check with log-once semantics per consumer: entering the idle
+ * state announces it ONCE (silence afterwards = still idle, not dead), and leaving it logs the
+ * resume. Pass a module-level `state` object per consumer.
+ */
+export function paperIdleByMode(tag: string, state: { logged?: boolean }): boolean {
+  let live = false;
+  try { live = readControl().execMode === "live"; } catch { /* unreadable control file = do not idle */ }
+  if (live && !state.logged) {
+    console.warn(`[${tag}] mode LIVE aktif — paper/simulasi IDLE: tanpa entry, tanpa gerak, tanpa konsumsi kredit. Switch mode untuk melanjutkan.`);
+    state.logged = true;
+  } else if (!live && state.logged) {
+    console.warn(`[${tag}] mode bukan LIVE — paper/simulasi RESUME`);
+    state.logged = false;
+  }
+  return live;
+}
+
 export function readControl(): ControlState {
   if (!existsSync(PATH)) return { ...DEFAULT };
   try {

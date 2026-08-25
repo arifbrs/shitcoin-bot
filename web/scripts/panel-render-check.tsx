@@ -26,6 +26,14 @@ const cases: Array<[string, any]> = [
   ["pita semua naik", { ...data, combined: { ...data.combined, equity: [100, 104, 108, 112, 116].map((b) => ({ bal: b })) } }],
   ["pita datar", { ...data, combined: { ...data.combined, equity: [100, 100, 100, 100].map((b) => ({ bal: b })) } }],
   ["pita 1 titik", { ...data, combined: { ...data.combined, equity: [{ bal: 100 }] } }],
+  // REGRESI 2026-08-24: saldo live tak terbaca dulu dirender "$0.00" + pita merah semua —
+  // memalsukan fakta bahwa dompet berisi 0.2751◎. Sekarang harus "tidak terbaca", tanpa $0.00.
+  ["live saldo null", {
+    ...data,
+    liveBridge: { ...(data.liveBridge ?? {}), armed: true, walletSol: null },
+    combined: { ...(data.combined ?? {}), s1: { ...(data.combined?.s1 ?? {}), balanceSol: null, floatSol: null, balanceUsd: null, floatUsd: null }, totalUsd: null, floatUsd: null, pnlUsd: null, equity: [] },
+    paper: { ...(data.paper ?? {}), balanceSol: null, floatSol: null },
+  }],
 ];
 let bad = 0;
 // Hero: tidak boleh ada satu pun tanda mata uang — Dompet yang memegang uang.
@@ -48,6 +56,12 @@ for (const [label, d] of cases) {
   try {
     const html = renderToStaticMarkup(<EquityCurve data={d} />);
     const nan = /NaN|undefined|Infinity|\$null/.test(html);
+    if (label === "live saldo null") {
+      const ok = html.includes("tidak terbaca") && !html.includes("$0.00");
+      console.log(`  ${label.padEnd(20)} ${ok ? "✓ state tidak-terbaca, tanpa $0.00" : "*** MASIH $0.00 / tanpa pesan ***"}`);
+      if (!ok) bad++;
+      continue;
+    }
     const rects = (html.match(/<rect/g) || []).length;
     const zero = html.match(/<line[^>]*y1="([\d.]+)"/)?.[1] ?? "-";
     // batang tertinggi & terendah, untuk membuktikan tinggi penuh terpakai

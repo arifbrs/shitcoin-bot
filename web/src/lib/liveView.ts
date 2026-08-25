@@ -30,7 +30,7 @@ export function toLiveView(data: StatsResponse): StatsResponse {
     ts: r.ts,
     symbol: r.symbol || `${r.mint.slice(0, 6)}…`,
     reason: r.reason,
-    pnlPct: r.netPct ?? 0,
+    pnlPct: r.netPct ?? null,
     pnlSol: r.netSol,
     heldSec: r.heldSec,
     img: r.img ?? null,
@@ -51,7 +51,10 @@ export function toLiveView(data: StatsResponse): StatsResponse {
       mint: l.mint || `${l.symbol}-${i}`,
       symbol: l.symbol ?? p?.symbol ?? l.mint.slice(0, 6),
       img: l.img ?? (p as { img?: string | null } | undefined)?.img ?? null,
-      unrealizedPnl: p?.unrealizedPnl ?? 0,
+      // No paper twin → no honest mark for a REAL bag. `null` renders an em-dash on the card;
+      // coercing to 0 stamped "+0.0%" onto bags nobody could price — a fabricated fact about
+      // money at risk, exactly what this adapter exists to prevent.
+      unrealizedPnl: p?.unrealizedPnl ?? null,
       heldSec: l.heldSec,
       sizeSol: l.spentSol,
     };
@@ -68,18 +71,21 @@ export function toLiveView(data: StatsResponse): StatsResponse {
   // and every percentage down with it.
   //
   // Unknown stays UNKNOWN. Returning the untouched paper data would be worse (a simulation
-  // balance under a live heading), so the balance-derived fields carry null and the panels draw
-  // their own em-dashes.
+  // balance under a live heading) — but coercing to ZERO is just as false: on 2026-08-24 a
+  // transient RPC failure rendered the funded wallet as "$0.00" with an all-red tape. The
+  // balance-derived fields carry null and the wallet panel draws its explicit
+  // "saldo tidak terbaca" state until a read succeeds.
   const known = typeof b.walletSol === "number" && b.walletSol >= 0;
-  const balanceSol = known ? (b.walletSol as number) : 0;
+  const balanceSol = known ? (b.walletSol as number) : null;
   const netSol = s?.netSol ?? 0;
-  const floatSol = known ? balanceSol - netSol : 0;
+  const floatSol = known ? (balanceSol as number) - netSol : null;
   const rate = data.combined?.solUsd ?? null;
-  const usd = (sol: number): number | null => (known && rate != null && rate > 0 ? sol * rate : null);
+  const usd = (sol: number | null): number | null => (sol != null && known && rate != null && rate > 0 ? sol * rate : null);
 
   // Equity in BALANCE terms (the panel plots deviation from its first sample), so the live
-  // cumulative-P&L series is re-based onto the starting float.
-  const equity = (s?.equitySol ?? []).map((cum) => ({ t: "", bal: floatSol + cum }));
+  // cumulative-P&L series is re-based onto the starting float. Without a known balance there
+  // is no base — an empty series is the honest tape.
+  const equity = known && s?.equitySol ? s.equitySol.map((cum) => ({ t: "", bal: (floatSol as number) + cum })) : [];
 
   return {
     ...data,
@@ -108,7 +114,7 @@ export function toLiveView(data: StatsResponse): StatsResponse {
           totalUsd: usd(balanceSol),
           floatUsd: usd(floatSol),
           pnlUsd: usd(netSol),
-          pnlPct: known && floatSol > 0 ? (netSol / floatSol) * 100 : null,
+          pnlPct: known && floatSol != null && floatSol > 0 ? (netSol / floatSol) * 100 : null,
           wins: s?.wins ?? 0,
           losses: s?.losses ?? 0,
           winRate: s && s.trades > 0 ? s.wins / s.trades : 0,

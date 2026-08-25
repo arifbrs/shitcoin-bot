@@ -28,7 +28,12 @@ export interface OpenPosition {
   image?: string;
   mint: string;
   symbol: string;
-  unrealizedPnl: number; // percent
+  /**
+   * Percent. `null` when nothing can honestly price the bag right now — a LIVE lot whose paper
+   * twin is gone has no mark, and rendering 0.0% there would fabricate a fact about real money
+   * (the card draws an em-dash instead). Never coerce to 0 at the source.
+   */
+  unrealizedPnl: number | null;
   heldSec: number;
   entryPrice: number; // synthetic (always 1) for Strategy 2 — see marketCap/holders for the real numbers
   lastPrice: number; // synthetic (1 + unrealizedPnl/100)
@@ -161,7 +166,12 @@ export interface CombinedWallet {
   losses: number;
   winRate: number;
   open: number;
-  s1: { balanceUsd: number | null; floatUsd: number | null; balanceSol: number; floatSol: number; wins: number; losses: number; open: number };
+  /**
+   * `null` balanceSol/floatSol = the on-chain read failed — UNKNOWN, never zero. Rendering
+   * $0.00 there told the owner their funded wallet was empty (found live 2026-08-24); the
+   * wallet panel draws an explicit "tidak terbaca" state instead.
+   */
+  s1: { balanceUsd: number | null; floatUsd: number | null; balanceSol: number | null; floatSol: number | null; wins: number; losses: number; open: number };
   s2: { balanceUsd: number; floatUsd: number; wins: number; losses: number; open: number };
   /** Combined balance over time (both legs merged on wall-clock, SOL valued at the current rate). */
   equity: EquityPoint[];
@@ -332,9 +342,10 @@ export interface SniperPaper {
   returnPctOfFloat: number;
   exitReasons: Record<string, number>;
   tradeSizeSol: number;
-  floatSol: number;
+  /** null = on-chain balance unreadable (live view) — UNKNOWN, never zero. */
+  floatSol: number | null;
   realizedSol: number;
-  balanceSol: number;
+  balanceSol: number | null;
   compounding: boolean;
   equity: Array<{ t: string; bal: number }>;
   openPositions: SniperOpenPosition[];
@@ -453,6 +464,12 @@ export interface LiveBridgeStatus {
   realizedSol: number;
   wallet: string;
   expectedBalanceSol: number | null;
+  /**
+   * Set = pembelian dijeda karena saldo tidak cukup mendanai satu klip. Dibaca dari DISK oleh
+   * server (proses web tidak berbagi memori dengan bridge), jadi panel bisa menampilkan keadaan
+   * yang dulu hanya terlihat sebagai 177 baris log identik.
+   */
+  dryWallet?: { since: number; needSol: number; haveSol: number } | null;
   spentLast24h: number;
   caps: { maxPerTradeSol: number; maxDeployedSol: number; maxDailySpendSol: number; feeReserveSol: number; reconcileToleranceSol: number };
   clipSol: number;

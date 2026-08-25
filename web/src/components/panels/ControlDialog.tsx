@@ -29,14 +29,39 @@ export function ControlDialog({ open, onOpenChange, data }: Props) {
   const flattenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [flattenMsg, setFlattenMsg] = useState<string | null>(null);
 
+  // Deposit acknowledge — the owner topped up the bot wallet, which BY DESIGN trips
+  // reconcile-or-HALT ("unexplained balance move"). First click arms for 3s; second confirms.
+  const [ackArmed, setAckArmed] = useState(false);
+  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [ackMsg, setAckMsg] = useState<string | null>(null);
+
   useEffect(() => {
     if (open) {
       fetchWallet().then(setWallet).catch(() => setWallet(null));
       setStep("form");
       setResult(null);
       setFlattenMsg(null);
+      setAckMsg(null);
+      setAckArmed(false);
     }
   }, [open]);
+
+  function clickAck() {
+    if (!ackArmed) {
+      setAckArmed(true);
+      ackTimer.current = setTimeout(() => setAckArmed(false), 3000);
+      return;
+    }
+    if (ackTimer.current) clearTimeout(ackTimer.current);
+    setAckArmed(false);
+    setAckMsg("mengakui setoran…");
+    postControl({ walletAck: true })
+      .then((st) => {
+        const ack = (st as { walletAck?: { ok: boolean; sol: number | null } }).walletAck;
+        setAckMsg(ack?.ok ? `✓ setoran diakui — snapshot ${ack.sol?.toFixed(4)} SOL, kill switch dilepas` : "✗ gagal baca saldo on-chain — kill switch DIPERTAHANKAN");
+      })
+      .catch((e) => setAckMsg(`gagal: ${e.message}`));
+  }
 
   function requestSend(e: React.FormEvent) {
     e.preventDefault();
@@ -93,6 +118,22 @@ export function ControlDialog({ open, onOpenChange, data }: Props) {
             <span className="text-foreground">{wallet ? `${wallet.devnet.toFixed(4)} SOL` : "—"}</span>
           </div>
         </div>
+
+        {data?.liveBridge?.halted && (
+          <div className="space-y-2 border-t border-down/40 pt-4">
+            <p className="text-[10px] leading-relaxed text-down">
+              ⛔ HALTED — {data.liveBridge.haltReason ?? "kill switch"}. Kalau penyebabnya SETORAN
+              yang baru masuk, akui setoran di bawah: snapshot saldo diperbarui ke nilai on-chain
+              lalu kill switch dilepas. Kalau bukan setoranmu — jangan tekan, itu alarm.
+            </p>
+            <Button type="button" variant="outline"
+              onClick={clickAck}
+              className={`w-full font-mono text-[10px] tracking-widest ${ackArmed ? "border-gold text-gold" : ""}`}>
+              {ackArmed ? "YAKIN? KLIK LAGI UNTUK AKUI SETORAN" : "AKUI SETORAN"}
+            </Button>
+            {ackMsg && <p className="font-mono text-[10px] text-muted-foreground">{ackMsg}</p>}
+          </div>
+        )}
 
         <div className="border-t border-border pt-4">
           <p className="mb-2 text-[10px] tracking-widest text-muted-foreground">WITHDRAW SOL</p>

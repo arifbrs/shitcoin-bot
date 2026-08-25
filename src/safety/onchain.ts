@@ -337,6 +337,19 @@ export function maxLiveBatch(): number {
 }
 
 /**
+ * Endpoint URLs that are NOT currently benched, in config order (best-first for a single pick).
+ * Read-only view of the pool's health state, for callers that need an actual endpoint URL rather
+ * than a pooled method call — today that is the websocket signature-subscription connection.
+ * Never empty: when every endpoint is benched it degrades to the full list, mirroring `rpc()`'s
+ * "a remembered verdict must never be able to empty the pool" rule.
+ */
+export function healthyRpcUrls(): string[] {
+  const now = Date.now();
+  const live = endpoints.filter((e) => e.benchedUntil <= now);
+  return (live.length ? live : endpoints).map((e) => e.url);
+}
+
+/**
  * Is this a connection-level failure (host doesn't resolve / refuses / drops)?
  * Node's fetch reports these as a TypeError whose `cause.code` carries the real reason, so
  * the code is checked first and the message only as a fallback for wrapped errors.

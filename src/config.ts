@@ -212,6 +212,31 @@ export const config = {
   } as Record<string, number>,
   usingPublicRpc: rpcPool[0] === "https://api.mainnet-beta.solana.com",
   rugcheckApiKey: process.env.RUGCHECK_API_KEY?.trim() || undefined,
+  /**
+   * OWNER DECISION 2026-08-23: RUGCHECK_ENABLED=false bypasses the RugCheck API entirely.
+   * The API's 429s/timeouts were (a) slowing the gate's parallel batch to its deadline and
+   * (b) leaving ~18% of entries without rug data anyway (fail-open), so the owner chose to
+   * drop the layer rather than pay latency for partial coverage. What REMAINS on the entry
+   * path: the free instant structural checks (mint/freeze authority) + holder analysis +
+   * metadata + Jupiter intel. Re-enable by removing the env line (default = enabled).
+   */
+  rugcheckEnabled: process.env.RUGCHECK_ENABLED !== "false",
+  /**
+   * S2 LIVE MIRROR (owner, 2026-08-24: "1 inti") — Strategy 2 executes for real when the
+   * console switch is LIVE, via Jupiter, with its OWN smaller caps. Shares the guardian's
+   * halt + 24h spend ledger with S1. S2_LIVE_ENABLED=false freezes the mirror back to
+   * paper-only without touching the brain.
+   */
+  s2LiveEnabled: process.env.S2_LIVE_ENABLED !== "false",
+  s2MaxPerTradeSol: Number(process.env.S2_MAX_PER_TRADE_SOL ?? 0.02),
+  s2MaxDeployedSol: Number(process.env.S2_MAX_DEPLOYED_SOL ?? 0.06),
+  /**
+   * Execution route for the S2 live mirror: "jupiter" (default — non-custodial, tx signed
+   * locally, no platform fee) or "gmgn" (official OpenAPI swap — ±1%/side platform fee, and
+   * the bot wallet must be imported into the owner's GMGN account: server-side execution).
+   * Fees per route are logged per trade so the comparison stays measurable.
+   */
+  s2ExecRoute: (process.env.S2_EXEC_ROUTE ?? "jupiter").toLowerCase() === "gmgn" ? "gmgn" : "jupiter",
   jupiterApiKey: process.env.JUPITER_API_KEY?.trim() || undefined,
   // PumpPortal API key (portal.pumpportal.fun). The free WS covers new-token
   // launches; the per-token TRADE stream (subscribeTokenTrade — live buyers/
@@ -745,12 +770,14 @@ export const config = {
     // STALE-ENTRY GUARD (P0 fix, 2026-07-28): a candidate whose detect→decide latency has
     // already blown past a real, generous ceiling no longer describes a "snipe" — the setup
     // context (early holders, curve state, competing bots) has almost certainly moved on.
-    // PROVISIONAL — NOT tuned from the dataset it's meant to protect. Measured detect→entry
-    // latency right now: P50 54s / P90 670s / max 892s, entirely dominated by RPC-queue
-    // congestion (rpc-health.json), not this check. Owner's explicit instruction: remeasure
-    // P50/P95 for 30-60min after the new Helius key settles, THEN set a data-driven final budget
-    // (target: P50<5s, P95<15s). 120s here is a structural "this isn't a snipe anymore" bound,
-    // not a percentile reverse-engineered from the same trades used to judge profitability.
+    // REMEASURED 2026-08-22 (live, decisions↔live-exec join, n=104): detect→fill P50 ≈10s /
+    // P90 ≈14s — the old "P50 54s / P90 670s" figure was an RPC-queue-congestion artefact of
+    // 2026-07-28, fixed by the pool work; this budget is NOT the bottleneck anymore. The
+    // remaining ~7s decision→fill is execution (tx build + send + confirm), addressed by the
+    // websocket confirmation path in executor.ts, not by moving this guard.
+    // PROVISIONAL — NOT tuned from the dataset it's meant to protect. 120s here is a structural
+    // "this isn't a snipe anymore" bound, not a percentile reverse-engineered from the same
+    // trades used to judge profitability.
     staleEntryBudgetMs: Number(process.env.STALE_ENTRY_BUDGET_MS ?? 120_000),
 
     // Smart RE-ENTRY: a token we already closed can be entered again, but only
@@ -974,6 +1001,13 @@ export const config = {
     // It IS recoverable by closing the account after selling, but this bot never closes them, so
     // counting it as a cost is the honest (and conservative) treatment.
     ataRentSol: Number(process.env.ATA_RENT_SOL ?? 0.00203928),
+    // ── EXECUTION REALISM (audit 2026-08-25) ──
+    // Book paper P&L at the rate live actually delivers it, using the transfer function that
+    // `npm run live:truth` measures from chain-verified trades. Default ON: the same 680 trades
+    // that paper scored +3.84% returned −9.08% in real SOL, and a simulator whose headline number
+    // is unreachable is not a conservative simulator, it is a broken one. Set EXEC_REALISM=false
+    // to see the raw model (the raw figures stay in every CLOSE record either way).
+    execRealism: process.env.EXEC_REALISM !== "false",
     // ── RECLAIMING THAT RENT (SPL Token CloseAccount) ──
     // Per the SPL Token spec, CloseAccount returns the account's full rent-exempt lamports to a
     // destination of your choosing, and for a non-native account the only precondition is a ZERO
@@ -1253,6 +1287,9 @@ const _cfgMaterial = JSON.stringify({
   // manually on every material Strategy 2 change this session) was the ONLY thing actually
   // isolating cohorts; this makes `cfg` tell the truth too, independent of remembering to bump
   // the epoch by hand.
+  // Booking policy is material: the same trades under EXEC_REALISM produce a different
+  // ledger, so rows either side of this flag must never be pooled.
+  execRealism: config.risk.execRealism,
   strategy2Scout: config.strategy2Scout,
   strategy2NewScout: config.strategy2NewScout,
   strategy2Paper: config.strategy2Paper,

@@ -4,7 +4,8 @@ import { logRecord } from "../util/log.js";
 import { botWallet } from "./wallet.js";
 import { guardBuy, recordSpend, liveAllowed, liveExitAllowed, reconcile } from "./guardian.js";
 import { pooledRpc } from "../safety/onchain.js";
-import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus } from "./rpc.js";
+import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus, signatureSubscriptionConn } from "./rpc.js";
+import { jupiterSwapTx } from "./jupiter.js";
 
 /**
  * Execution layer. Builds REAL pump.fun transactions (via PumpPortal Local API)
@@ -72,25 +73,85 @@ export function buildSellTx(pubkey: string, mint: string, tokenAmount: number | 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Confirm a signature by POLLING getSignatureStatuses (blockhash-agnostic, works
- * for PumpPortal txs that carry their own blockhash). A TIMEOUT is NOT a failure —
- * the tx may still land — so it is reported distinctly so the caller reconciles by
- * on-chain balance rather than assuming either outcome.
+ * Confirm a signature — websocket push RACED against adaptive polling.
+ *
+ * The old loop was poll-only at a flat 1.5s cadence: a tx landing 400ms after send waited
+ * ~1.1s more to be noticed, on every buy AND every sell. Two changes, both strictly
+ * latency-only (the outcome semantics are byte-for-byte the old ones):
+ *
+ *   · WS subscription (`signatureSubscriptionConn`) fires the moment the block lands. A dead or
+ *     throttled socket is inherently harmless — it just never fires, and polling carries on.
+ *   · Polling starts IMMEDIATELY and runs 600ms while young, relaxing to 1.5s after 6s. The
+ *     first poll already existed; the tight early band is what catches fast landings without
+ *     paying the full-rate cost in the long tail (same shape as `waitForMintVisibility`).
+ *
+ * A TIMEOUT is still NOT a failure — the tx may still land — so it is reported distinctly so
+ * the caller reconciles by on-chain balance rather than assuming either outcome.
  */
-async function confirmSig(sig: string, timeoutMs = 30_000): Promise<{ confirmed: boolean; timedOut: boolean; err: string | null }> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+const SOL = "So11111111111111111111111111111111111111112";
+const CONFIRM_COMMITMENT = "confirmed" as const;
+const CONFIRM_FAST_POLL_MS = 600;
+const CONFIRM_SLOW_POLL_MS = 1_500;
+const CONFIRM_FAST_WINDOW_MS = 6_000;
+
+interface ConfirmOutcome {
+  confirmed: boolean;
+  timedOut: boolean;
+  err: string | null;
+  /** Which leg won the race — the only way to know the websocket is actually contributing. */
+  via: "ws" | "poll" | "timeout";
+  ms: number;
+}
+
+async function confirmSig(sig: string, timeoutMs = 30_000): Promise<ConfirmOutcome> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let settled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let removeListener = () => {};
+
+    const settle = (r: Omit<ConfirmOutcome, "ms">) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      clearTimeout(deadline);
+      try { removeListener(); } catch { /* listener may already be auto-removed */ }
+      resolve({ ...r, ms: Date.now() - start });
+    };
+
+    // Deadline last, so `settle` can always reference it.
+    const deadline = setTimeout(() => settle({ confirmed: false, timedOut: true, err: "confirmation timeout", via: "timeout" }), timeoutMs);
+
+    // Push leg: notification arrives within ms of the block landing. First of the two legs wins.
     try {
-      const st = await poolSignatureStatus(sig);
-      if (st.err) return { confirmed: false, timedOut: false, err: st.err };
-      if (st.confirmed) return { confirmed: true, timedOut: false, err: null };
-    } catch {
-      // A poll that could not reach ANY endpoint says nothing about the transaction. Keep
-      // polling until the deadline; the caller reconciles by balance either way.
-    }
-    await sleep(1500);
-  }
-  return { confirmed: false, timedOut: true, err: "confirmation timeout" };
+      const conn = signatureSubscriptionConn();
+      if (conn) {
+        const sid = conn.onSignature(sig, (result) => {
+          settle(
+            result.err
+              ? { confirmed: false, timedOut: false, err: JSON.stringify(result.err), via: "ws" }
+              : { confirmed: true, timedOut: false, err: null, via: "ws" },
+          );
+        }, CONFIRM_COMMITMENT);
+        removeListener = () => { void conn.removeSignatureListener(sid); };
+      }
+    } catch { /* fall back to polling alone */ }
+
+    // Poll leg: never sleeps before its FIRST check (the old code's immediate poll is preserved),
+    // then tight while young, relaxed in the tail where each extra call buys nothing.
+    const poll = async () => {
+      try {
+        const st = await poolSignatureStatus(sig);
+        if (st.err) return settle({ confirmed: false, timedOut: false, err: st.err, via: "poll" });
+        if (st.confirmed) return settle({ confirmed: true, timedOut: false, err: null, via: "poll" });
+      } catch {
+        // A poll that could not reach ANY endpoint says nothing about the transaction. Keep
+        // polling until the deadline; the caller reconciles by balance either way.
+      }
+      pollTimer = setTimeout(poll, Date.now() - start < CONFIRM_FAST_WINDOW_MS ? CONFIRM_FAST_POLL_MS : CONFIRM_SLOW_POLL_MS);
+    };
+    void poll();
+  });
 }
 
 /**
@@ -131,7 +192,7 @@ async function signSendConfirm(bytes: Uint8Array): Promise<LiveResult> {
   // Past this point a transaction EXISTS on the network. Never report it as a clean failure:
   // confirmSig distinguishes rejected from not-yet-confirmed, and the caller reconciles.
   const c = await confirmSig(sig);
-  return { ok: c.confirmed, signature: sig, timedOut: c.timedOut, err: c.err };
+  return { ok: c.confirmed, signature: sig, timedOut: c.timedOut, err: c.err, confirmVia: c.via, confirmMs: c.ms };
 }
 
 export interface LiveResult {
@@ -139,6 +200,18 @@ export interface LiveResult {
   signature?: string;
   timedOut?: boolean; // sent but not confirmed within the window — reconcile, don't assume
   err?: string | null;
+  /** Confirmation telemetry: which leg won (ws push vs poll) and how long it took. */
+  confirmVia?: "ws" | "poll" | "timeout";
+  confirmMs?: number;
+  /** Wallet SOL read right BEFORE the buy (buys only) — lets the caller bracket the spend
+   *  without a second RPC round trip. Absent on sells and pre-buy refusals. */
+  balanceBefore?: number;
+  /** GMGN route: the order id to poll for the authoritative on-chain outcome. */
+  orderId?: string;
+  /** GMGN route (buy): tokens actually received per the order report. */
+  tokensOut?: number;
+  /** GMGN route (sell): SOL actually received per the order report. */
+  solOut?: number;
 }
 
 /**
@@ -155,18 +228,24 @@ export async function liveBuy(mint: string, sizeSol: number, deployedSol: number
   if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
 
   const kp = botWallet();
+  // PARALLEL BUILD (2026-08-24): the PumpPortal build does not depend on the wallet balance,
+  // so start it NOW and let it overlap the balance read instead of queueing behind it.
+  // Measured live: buy exec p50 2.6s; this removes the smaller of the two waits (~0.15-1s)
+  // from the critical path. Failure semantics unchanged: whichever leg fails first returns
+  // its original error; the discarded build promise is side-effect-free.
+  const buildPromise = buildBuyTx(kp.publicKey.toBase58(), mint, sizeSol, pool);
   const balanceSol = await poolBalanceSol(kp.publicKey.toBase58());
   if (balanceSol == null) return { ok: false, err: "balance read failed on every endpoint — refusing (fail-closed)" };
 
   const verdict = guardBuy(sizeSol, balanceSol, deployedSol);
   if (!verdict.ok) return { ok: false, err: `guard: ${verdict.reason}` };
 
-  const bytes = await buildBuyTx(kp.publicKey.toBase58(), mint, sizeSol, pool);
+  const bytes = await buildPromise;
   if (!bytes) return { ok: false, err: "buy tx build failed (no route / bad mint)" };
 
   const r = await signSendConfirm(bytes);
   if (r.ok) recordSpend(sizeSol); // circuit-breaker ledger — only on real confirmation
-  return r;
+  return { ...r, balanceBefore: balanceSol }; // caller's spentSol bracket, free (no extra read)
 }
 
 /**
@@ -455,4 +534,84 @@ export async function devnetMirror(kind: "buy" | "sell"): Promise<MirrorResult> 
   } catch (e) {
     return { ok: false, ms: Date.now() - t0, needsFunding: false, err: (e as Error).message };
   }
+}
+export interface S2Caps {
+  maxPerTradeSol: number;
+  maxDeployedSol: number;
+}
+
+/** LIVE BUY for the S2 mirror: SOL → token via Jupiter, guardian-guarded with S2 caps. */
+export async function jupiterBuyLive(
+  tokenMint: string,
+  sizeSol: number,
+  deployedSol: number,
+  caps: S2Caps,
+): Promise<LiveResult> {
+  const gate = liveAllowed();
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+  const kp = botWallet();
+  const balanceSol = await poolBalanceSol(kp.publicKey.toBase58());
+  if (balanceSol == null) return { ok: false, err: "balance read failed on every endpoint — refusing (fail-closed)" };
+  const verdict = guardBuy(sizeSol, balanceSol, deployedSol, Date.now(), caps);
+  if (!verdict.ok) return { ok: false, err: `guard: ${verdict.reason}` };
+  const bytes = await jupiterSwapTx(SOL, tokenMint, Math.round(sizeSol * 1e9), kp.publicKey.toBase58());
+  if (!bytes) return { ok: false, err: "jupiter swap build failed (no route / api down)" };
+  const r = await signSendConfirm(bytes);
+  if (r.ok) recordSpend(sizeSol);
+  return { ...r, balanceBefore: balanceSol };
+}
+
+/** LIVE SELL for the S2 mirror: token → SOL, full bag sweep semantics like liveSell. */
+export async function jupiterSellLive(tokenMint: string, tokenQtyUi: number): Promise<LiveResult> {
+  const gate = liveExitAllowed(); // a halt must never strand a bag
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+  const kp = botWallet();
+  const bytes = await jupiterSwapTx(tokenMint, SOL, Math.round(tokenQtyUi * 1e6), kp.publicKey.toBase58());
+  if (!bytes) return { ok: false, err: "jupiter swap build failed (no route / api down)" };
+  return signSendConfirm(bytes);
+}
+
+// ── S2 EXEC ROUTE: GMGN ─────────────────────────────────────────────────────
+// Alternatif eksekusi S2 (S2_EXEC_ROUTE=gmgn). Model GMGN: submit order → poll order_id
+// sampai terminal. from_address = dompet bot — owner WAJIB meng-import wallet itu ke akun
+// GMGN-nya sendiri (model server-side GMGN). Fee platform ±1%/sisi terekam di event.
+
+import { gmgnSwap } from "../discovery/gmgn.js";
+
+export async function gmgnBuyLive(
+  tokenMint: string,
+  sizeSol: number,
+  deployedSol: number,
+  caps: S2Caps,
+): Promise<LiveResult> {
+  const gate = liveAllowed();
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+  const kp = botWallet();
+  const balanceSol = await poolBalanceSol(kp.publicKey.toBase58());
+  if (balanceSol == null) return { ok: false, err: "balance read failed on every endpoint — refusing (fail-closed)" };
+  const verdict = guardBuy(sizeSol, balanceSol, deployedSol, Date.now(), caps);
+  if (!verdict.ok) return { ok: false, err: `guard: ${verdict.reason}` };
+  const r = await gmgnSwap({
+    fromAddress: kp.publicKey.toBase58(),
+    inputToken: SOL, outputToken: tokenMint,
+    amountRaw: String(Math.round(sizeSol * 1e9)),
+  });
+  if (!r.ok) return { ok: false, err: `gmgn: ${r.err ?? r.status}`, orderId: r.orderId };
+  recordSpend(sizeSol);
+  const tokensOut = r.outRaw && r.outDecimals != null ? Number(r.outRaw) / 10 ** r.outDecimals : undefined;
+  return { ok: true, orderId: r.orderId, balanceBefore: balanceSol, tokensOut };
+}
+
+export async function gmgnSellLive(tokenMint: string, bagUi: number, decimals: number): Promise<LiveResult> {
+  const gate = liveExitAllowed(); // a halt must never strand a bag
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+  const kp = botWallet();
+  const r = await gmgnSwap({
+    fromAddress: kp.publicKey.toBase58(),
+    inputToken: tokenMint, outputToken: SOL,
+    amountRaw: String(Math.round(bagUi * 10 ** decimals)),
+  });
+  if (!r.ok) return { ok: false, err: `gmgn: ${r.err ?? r.status}`, orderId: r.orderId };
+  const solOut = r.outRaw ? Number(r.outRaw) / 1e9 : undefined;
+  return { ok: true, orderId: r.orderId, solOut };
 }

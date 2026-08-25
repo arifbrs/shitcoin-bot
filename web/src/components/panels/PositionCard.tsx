@@ -28,9 +28,12 @@ function fmtHeld(sec: number): string {
  * +300% → 45%), so a constant in the UI would draw a stop that does not exist.
  */
 export function PositionCard({ position, tag }: { position: OpenPosition; tag?: "S1" | "S2" | "LIVE" }) {
+  // `null` = nobody can price this bag right now (a LIVE lot whose paper twin is gone). That
+  // must read as absence — neutral em-dash — not as "+0.0%", which invents a fact about money.
+  const unpriced = position.unrealizedPnl == null;
   const pnl = position.unrealizedPnl ?? 0;
-  const up = pnl >= 0;
-  const accent = up ? "var(--hud-up)" : "var(--hud-down)";
+  const up = !unpriced && pnl >= 0;
+  const accent = unpriced ? "var(--hud-dim)" : up ? "var(--hud-up)" : "var(--hud-down)";
   const held = position.heldSec ?? 0;
 
   const peakPct = position.peakPct ?? 0;
@@ -52,8 +55,8 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
     : `tinggal ${fmtHeld(timeRoom)} lagi · ${position.budgetLabel ?? "batas"}`;
 
   const R1 = 27, R2 = 21, C1 = 2 * Math.PI * R1, C2 = 2 * Math.PI * R2;
-  const solPnl = position.sizeSol != null ? position.sizeSol * (pnl / 100) : null;
-  const usdPnl = position.entryCostUsd != null ? position.entryCostUsd * (pnl / 100) : null;
+  const solPnl = !unpriced && position.sizeSol != null ? position.sizeSol * (pnl / 100) : null;
+  const usdPnl = !unpriced && position.entryCostUsd != null ? position.entryCostUsd * (pnl / 100) : null;
 
   const art = position.img ?? position.image ?? null;
 
@@ -130,9 +133,15 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
             compressed into the badges next to it, which is exactly what happened when this card
             was previewed at 392px and then rendered in a 190px grid cell. */}
         <div className="shrink-0 text-right">
-          <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }}>
-            {up ? "+" : "−"}{Math.abs(pnl).toFixed(1)}%
-          </div>
+          {unpriced ? (
+            <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }} title="tidak ada harga yang bisa memvalue tas ini saat ini">
+              —
+            </div>
+          ) : (
+            <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }}>
+              {up ? "+" : "−"}{Math.abs(pnl).toFixed(1)}%
+            </div>
+          )}
           {solPnl != null && (
             <div className="mt-1 font-mono text-[9.5px] tabular-nums" style={{ color: accent }}>
               {solPnl >= 0 ? "+" : "−"}{Math.abs(solPnl).toFixed(4)}◎

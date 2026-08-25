@@ -40,7 +40,7 @@
     "curve-overlay:selftest": "tsx src/curve-overlay-selftest.ts",
     "launch-event:selftest": "tsx src/launch-event-selftest.ts",
     "scaleout:selftest": "tsx src/scaleout-selftest.ts",
-    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest && npm run rpc-rotation:selftest && npm run watchdog:selftest",
+    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run exec-realism:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest && npm run rpc-rotation:selftest && npm run watchdog:selftest",
     "profit:evaluate": "tsx src/profit-evaluator.ts",
     "shadow": "tsx src/shadow.ts",
     "structural:report": "tsx src/calibration.ts",
@@ -49,7 +49,10 @@
     "rpc-rotation:selftest": "node src/rpc-rotation-selftest.mjs",
     "ui:check": "npm --prefix web run panel:check && npm --prefix web run poscard:check && npm --prefix web run memo:check",
     "watchdog": "WATCHDOG_RUN=1 node src/watchdog.mjs",
-    "watchdog:selftest": "node src/watchdog-selftest.mjs"
+    "watchdog:selftest": "node src/watchdog-selftest.mjs",
+    "pantau": "node tools/pantau.mjs",
+    "live:truth": "tsx src/live-truth.ts",
+    "exec-realism:selftest": "tsx src/exec-realism-selftest.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

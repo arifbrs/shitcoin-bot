@@ -29,8 +29,13 @@ export interface RugcheckResult {
  * creator). Surfaces holder count + dev wallet, and adds RugCheck's own
  * insider-network detection as a soft signal. Auth via the `?key=` query param
  * (raises the free limit from ~10 to ~60/min); short timeout; non-blocking.
+ *
+ * Returns NULL when the layer is switched off (RUGCHECK_ENABLED=false, owner
+ * decision 2026-08-23) — every caller must already tolerate null (the fast path
+ * does; the swing runGate was guarded to match).
  */
-export async function rugcheckEnrichment(mint: string, signal?: AbortSignal): Promise<RugcheckResult> {
+export async function rugcheckEnrichment(mint: string, signal?: AbortSignal): Promise<RugcheckResult | null> {
+  if (!config.rugcheckEnabled) return null;
   try {
     const keyQuery = config.rugcheckApiKey ? `?key=${config.rugcheckApiKey}` : "";
     const report = await fetchJson<RugcheckReport>(

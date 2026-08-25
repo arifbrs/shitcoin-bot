@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { config } from "../config.js";
 import { ui, logRecord } from "../util/log.js";
+import { pooledRpc } from "../safety/onchain.js";
 import type { Candidate } from "../types.js";
 
 export interface NewTokenEvent {
@@ -33,6 +34,53 @@ const KNOWN_QUOTE_ASSETS = new Set([
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
   "So11111111111111111111111111111111111111112",   // wrapped SOL instruction account
 ]);
+
+/**
+ * FEED-LAG PROBE (2026-08-22). `detectedAt` records when WE saw a launch — it says nothing
+ * about how long the feed itself sat on the transaction, and that gap is the one part of
+ * detect→entry latency no amount of local optimization can recover. This samples roughly
+ * every Nth launch, reads the create tx's on-chain blockTime once, and logs the delta.
+ * Fire-and-forget: a probe failure must never touch the candidate pipeline. Cost at the
+ * default 1/50 ≈ 200-400 getTransaction calls/day against an ~8 rps pool — noise.
+ *
+ * FIRST VERSION PRODUCED ZERO SAMPLES IN 400+ CALLS, and rpc-health.json caught why: the probe
+ * fired <1s after the WS event, when nodes have not INDEXED the transaction yet — getTransaction
+ * returns null blockTime for its own freshest txs. The read must therefore RETRY on a schedule
+ * that outlives indexing lag (+15s/+60s/+180s); blockTime is immutable once present, so a late
+ * hit is as good as an early one. A give-up after the last attempt is logged too — a probe
+ * whose silence is indistinguishable from "never ran" is exactly how this bug hid for hours.
+ * Analyze with: grep '"type":"feed-lag"' logs/events-*.jsonl
+ */
+const FEED_LAG_SAMPLE = Math.max(1, Number(process.env.FEED_LAG_SAMPLE ?? 50));
+const FEED_LAG_RETRIES_MS = [15_000, 60_000, 180_000];
+let launchCount = 0;
+
+function probeFeedLag(signature: string | undefined, detectedAtMs: number): void {
+  if (!signature) return;
+  if (++launchCount % FEED_LAG_SAMPLE !== 0) return;
+  const attempt = async (idx: number): Promise<void> => {
+    await new Promise((r) => setTimeout(r, FEED_LAG_RETRIES_MS[idx]));
+    let tx: { blockTime?: number | null } | null = null;
+    try {
+      tx = await pooledRpc<{ blockTime?: number | null }>("getTransaction", [
+        signature,
+        { maxSupportedTransactionVersion: 0 },
+      ]);
+    } catch {
+      return; // transport/quota hiccup — best-effort probe, never a pipeline concern
+    }
+    const blockTimeSec = tx?.blockTime;
+    if (!blockTimeSec) {
+      if (idx + 1 < FEED_LAG_RETRIES_MS.length) return void attempt(idx + 1);
+      logRecord("events", { type: "feed-lag-miss", signature }); // still unindexed after ~4 min
+      return;
+    }
+    const lagMs = detectedAtMs - blockTimeSec * 1000;
+    if (lagMs < -5_000 || lagMs > 600_000) return; // clock skew or stale replay — not a measurement
+    logRecord("events", { type: "feed-lag", signature, lagMs });
+  };
+  void attempt(0);
+}
 
 /**
  * PumpPortal's legacy feed has emitted create-v2 rows with USDC in `mint` while the unique
@@ -132,6 +180,7 @@ export function listenNewTokens(onCandidate: (c: Candidate) => void): () => void
         return;
       }
       onCandidate(normalized.candidate);
+      probeFeedLag(msg.signature, normalized.candidate.detectedAt);
     });
 
     ws.on("close", () => {

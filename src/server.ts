@@ -10,7 +10,8 @@ import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
 import { solPriceUsd } from "./execution/jupiter.js";
 import { guardStatus, halt, resume } from "./execution/guardian.js";
-import { bridgeStatus } from "./execution/live-bridge.js";
+import { acknowledgeDeposit, bridgeStatus } from "./execution/live-bridge.js";
+import { poolBalanceSol, poolLatestBlockhashFull } from "./execution/rpc.js";
 
 /**
  * The dashboard (this process) now runs standalone from the sniper (src/index.ts) — the two
@@ -728,11 +729,31 @@ function exitProximity(opts: { peakPct: number; fromPeakPct: number; engine: "S1
  * seconds and a chain read on that path would spend the RPC budget the trader needs. `null`
  * means UNKNOWN and must stay null all the way to the UI — never coerced to zero.
  */
+let cachedBlockhash: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
 let cachedWalletSol: number | null = null;
+// Failure-streak visibility: the $0.00 incident (2026-08-24) was a balance read failing for
+// minutes with ZERO trace in this process's log. After 3 consecutive misses, say so once —
+// silence means "healthy", never "we stopped looking".
+let walletReadMissStreak = 0;
+const noteWalletRead = (v: number | null): void => {
+  if (v != null) {
+    if (walletReadMissStreak >= 3) console.warn(`[wallet] bacaan saldo pulih setelah ${walletReadMissStreak} gagal beruntun — saldo ${v.toFixed(4)} SOL`);
+    walletReadMissStreak = 0;
+    cachedWalletSol = v;
+  } else {
+    walletReadMissStreak++;
+    if (walletReadMissStreak === 3) console.warn("[wallet] 3× bacaan saldo gagal beruntun di semua endpoint — panel dompet akan menampilkan 'tidak terbaca', bukan nol");
+  }
+};
+// POOL, NOT RAW (2026-08-24): this poll used to hit `config.rpcUrl` directly — endpoint #0,
+// forever, bypassing rotation. That is the exact anti-pattern safety/onchain.ts documents:
+// one throttled key eats every read while four siblings sit idle, and the dashboard's own
+// polling then competes with the trader for the same key OUTSIDE the pool's rate limiter.
+// The pool's token bucket + rotation is the shared quota treaty; join it.
 setInterval(() => {
-  void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => { /* keep the last known value */ });
+  void poolBalanceSol(botPubkey()).then(noteWalletRead).catch(() => noteWalletRead(null));
 }, 20_000);
-void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => {});
+void poolBalanceSol(botPubkey()).then(noteWalletRead).catch(() => noteWalletRead(null));
 
 function artFor(mint: string | undefined): string | null {
   if (!mint) return null;
@@ -2262,6 +2283,16 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     // dry-run so it's ready before live). Halting blocks every real spend.
     if (next.guardHalt === true) halt("kill switch (console)");
     if (next.guardHalt === false) resume();
+    // DEPOSIT ACKNOWLEDGE: an owner top-up trips reconcile-or-HALT by definition (a balance
+    // move the bridge did not make). Acknowledging re-seeds the expected-balance snapshot to
+    // the CURRENT on-chain value and then lifts the halt — in that order, so the next
+    // reconcile tick cannot immediately re-halt on the same drift. A failed read returns an
+    // error WITHOUT resuming: never lift a kill switch on an unknown balance.
+    let walletAckResult: { ok: boolean; sol: number | null } | null = null;
+    if (next.walletAck === true) {
+      walletAckResult = await acknowledgeDeposit();
+      if (walletAckResult.ok) resume();
+    }
     // One-shot COMMAND (flatten all / close one / reset run) — the trader executes it on
     // its next command-poll. Timestamped id so it runs exactly once.
     if (next.command === "flatten" || next.command === "reset-run" || (next.command === "close" && typeof next.mint === "string")) {
@@ -2283,7 +2314,7 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     }
     const state = writeControl(patch);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(state));
+    res.end(JSON.stringify({ ...state, walletAck: walletAckResult ?? undefined }));
     scheduleBroadcast();
     return;
   }
@@ -2299,15 +2330,21 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   // Latest mainnet blockhash — lets the browser build a funding tx without
-  // exposing our Helius key client-side. Auth-gated.
+  // exposing our Helius key client-side. Auth-gated. Served through the rotating
+  // pool (poolLatestBlockhash) + a 20s cache: a raw Connection here bypassed
+  // rotation AND re-fetched an almost-identical blockhash on every browser open.
   if (path === "/api/blockhash") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     try {
-      const { Connection } = await import("@solana/web3.js");
-      const conn = new Connection(config.rpcUrl, "confirmed");
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+      let bh = cachedBlockhash;
+      if (!bh || Date.now() - bh.at > 20_000) {
+        const fresh = await poolLatestBlockhashFull();
+        if (!fresh) throw new Error("no pool endpoint answered getLatestBlockhash");
+        bh = { ...fresh, at: Date.now() };
+        cachedBlockhash = bh;
+      }
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      res.end(JSON.stringify({ blockhash, lastValidBlockHeight, botAddress: botPubkey() }));
+      res.end(JSON.stringify({ blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight, botAddress: botPubkey() }));
     } catch (e) {
       res.writeHead(502, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: (e as Error).message }));
@@ -2316,10 +2353,13 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   // Bot wallet status (address + balances) for the Controls view.
+  // Mainnet read goes through the ROTATING POOL: this used to be a raw read against
+  // config.rpcUrl (endpoint #0, forever) — the exact bypass that made /api/wallet return -1
+  // whenever that one key was throttled, even while six siblings sat healthy.
   if (path === "/api/wallet") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     const [mainnet, devnet] = await Promise.all([
-      balanceSol(config.rpcUrl).catch(() => -1),
+      poolBalanceSol(botPubkey()).then((v) => v ?? -1).catch(() => -1),
       balanceSol(config.exec.devnetRpc).catch(() => -1),
     ]);
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });

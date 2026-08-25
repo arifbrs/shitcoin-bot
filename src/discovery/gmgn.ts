@@ -257,3 +257,64 @@ export async function gmgnCreatedTokens(chain: string, walletAddress: string, ex
   const r = await callProxy<GmgnCreatorHistory>("getCreatedTokens", [chain, walletAddress, extra]);
   return r && Array.isArray(r.tokens) ? r : null;
 }
+
+// ── EKSEKUSI (S2_EXEC_ROUTE=gmgn) ───────────────────────────────────────────
+// Submit swap sungguhan lewat GMGN OpenAPI + poll order sampai terminal state.
+// from_address = dompet bot (owner WAJIB meng-import wallet itu ke akun GMGN-nya sendiri —
+// model GMGN server-side). Fee platform GMGN ±1%/sisi; seluruh angka fee terekam di event
+// supaya perbandingan rute Jupiter-vs-GMGN jadi data, bukan tebakan.
+
+export interface GmgnSwapResult {
+  ok: boolean;
+  orderId?: string;
+  status?: string;
+  inRaw?: string;
+  outRaw?: string;
+  inDecimals?: number;
+  outDecimals?: number;
+  platformFeeSol?: number;
+  err?: string | null;
+}
+
+export async function gmgnSwap(p: {
+  fromAddress: string;
+  inputToken: string;
+  outputToken: string;
+  amountRaw: string;
+  slippagePct?: number;
+  antiMev?: boolean;
+  pollTimeoutMs?: number;
+}): Promise<GmgnSwapResult> {
+  const sub = await callProxy<{ order_id?: string; error?: string }>("swap", [{
+    chain: "sol", from_address: p.fromAddress,
+    input_token: p.inputToken, output_token: p.outputToken,
+    input_amount: p.amountRaw, slippage: p.slippagePct ?? 15,
+    is_anti_mev: p.antiMev !== false,
+  }]);
+  const orderId = sub?.order_id;
+  if (!orderId) return { ok: false, err: sub?.error ?? "swap submit: no order_id" };
+
+  const deadline = Date.now() + (p.pollTimeoutMs ?? 45_000);
+  let lastStatus = "pending";
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    const o = await callProxy<Record<string, unknown>>("getOrder", [orderId, "sol"]);
+    if (!o) continue;
+    lastStatus = String(o.status ?? o.state ?? "?");
+    const state = Number(o.state ?? 0);
+    if (lastStatus === "confirmed" || lastStatus === "successful" || state >= 30) {
+      const report = (o.report ?? {}) as Record<string, unknown>;
+      return {
+        ok: true, orderId, status: lastStatus,
+        inRaw: String(report.input_amount ?? ""), outRaw: String(report.output_amount ?? ""),
+        inDecimals: report.input_token_decimals as number | undefined,
+        outDecimals: report.output_token_decimals as number | undefined,
+        platformFeeSol: report.platform_fee != null ? Number(report.platform_fee) : undefined,
+      };
+    }
+    if (lastStatus === "failed" || lastStatus === "expired") {
+      return { ok: false, orderId, status: lastStatus, err: `order ${lastStatus}` };
+    }
+  }
+  return { ok: false, orderId, status: lastStatus, err: "poll timeout — order mungkin masih diproses; cek order get" };
+}

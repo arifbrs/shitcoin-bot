@@ -29,14 +29,21 @@ const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim();
 // (all are exist-auth — see OpenApiClient.ts's own auth-mode comment), so the private key is
 // intentionally NOT loaded here. If a genuinely signed method is ever added, load it explicitly
 // at that point, not implicitly for a proxy whose whole purpose is staying read-only.
-void privateKeyRaw;
+//
+// 2026-08-24: a signed method WAS added, explicitly, per that instruction — S2_EXEC_ROUTE=gmgn
+// (owner asked to try GMGN as an execution route). The private key signs the API REQUEST
+// (Ed25519/RSA auth signature per GMGN's own protocol); it is NOT a wallet custody key and
+// never leaves this process. The swap itself executes against `from_address` = the bot wallet.
+const swapEnabled = process.env.S2_EXEC_ROUTE === "gmgn";
+const privateKeyPem = swapEnabled && privateKeyRaw ? privateKeyRaw : undefined;
+if (swapEnabled) console.warn("[gmgn-proxy] S2_EXEC_ROUTE=gmgn — metode swap/order AKTIF (signed auth dimuat).");
 
 if (!apiKey) {
   console.error("[gmgn-proxy] GMGN_API_KEY not set — nothing to proxy. Exiting.");
   process.exit(1);
 }
 
-const client = new OpenApiClient({ apiKey, host: "https://openapi.gmgn.ai" });
+const client = new OpenApiClient({ apiKey, host: "https://openapi.gmgn.ai", privateKeyPem });
 const bucket = TokenBucket.perSecond(20); // rate=20, capacity=20 — GMGN's REAL documented limit, verified 2026-07-27
 
 // Method name -> weight (verified: trending=1, kline=2, trenches=3, signal=3, hot-searches=3;
@@ -58,6 +65,12 @@ const DISPATCH: Record<string, (args: unknown[]) => Promise<unknown>> = {
   getTrendingSwaps: (a) => client.getTrendingSwaps(a[0] as string, a[1] as string, a[2] as Record<string, string | number | string[]>),
   getTrenches: (a) => client.getTrenches(a[0] as string, a[1] as string[] | undefined, a[2] as string[] | undefined, a[3] as number | undefined, a[4] as Record<string, number | string> | undefined),
   getTokenSignalV2: (a) => client.getTokenSignalV2(a[0] as string, a[1] as Parameters<typeof client.getTokenSignalV2>[1]),
+  // EKSEKUSI (signed) — hanya terdaftar saat S2_EXEC_ROUTE=gmgn. Tanpa itu, method ini
+  // tidak ada di peta = tidak bisa dicapai siapa pun, apa pun body yang dikirim.
+  ...(swapEnabled ? {
+    swap: (a: unknown[]) => client.swap(a[0] as Parameters<typeof client.swap>[0]),
+    getOrder: (a: unknown[]) => client.queryOrder(a[0] as string, a[1] as string),
+  } : {}),
   getHotSearches: (a) => client.getHotSearches(a[0] as Parameters<typeof client.getHotSearches>[0]),
   getKol: (a) => client.getKol(a[0] as string | undefined, a[1] as number | undefined),
   getSmartMoney: (a) => client.getSmartMoney(a[0] as string | undefined, a[1] as number | undefined),

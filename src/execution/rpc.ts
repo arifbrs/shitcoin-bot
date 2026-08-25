@@ -1,4 +1,5 @@
-import { pooledRpc } from "../safety/onchain.js";
+import { Connection } from "@solana/web3.js";
+import { pooledRpc, healthyRpcUrls } from "../safety/onchain.js";
 
 /**
  * MAINNET RPC FOR THE MONEY PATH — every call routed through the rotating pool.
@@ -61,10 +62,50 @@ export async function poolSignatureStatus(signature: string): Promise<SigStatus>
   return { confirmed: done, err: null, found: true };
 }
 
+/**
+ * ONE long-lived Connection used ONLY for signature subscriptions (websocket push).
+ *
+ * Why: `confirmSig` used to discover a landed transaction purely by polling, on a 1.5s cadence —
+ * so a tx that lands 400ms after send waits ~1.1s more to be noticed. A websocket notification
+ * arrives within milliseconds of the block landing. Measured 2026-08-22: buy exec p50 was 5.41s
+ * with the poll-only loop; every ~100-1500ms shaved here is entry/exit latency straight off the
+ * money path.
+ *
+ * web3.js derives the wss:// endpoint from the https:// URL automatically, and a failed socket is
+ * INHERENTLY safe here: the caller always keeps its polling fallback running, so a silent
+ * websocket costs nothing — it just stops contributing. Cached per endpoint URL (one persistent
+ * socket instead of a per-trade handshake); rebuilt lazily if health rotation moves the pick.
+ * The connection is never used for method calls — those stay on the rotating pool.
+ */
+let sigSubConn: { url: string; conn: Connection } | null = null;
+
+export function signatureSubscriptionConn(): Connection | null {
+  const url = healthyRpcUrls()[0];
+  if (!url) return null;
+  if (sigSubConn?.url === url) return sigSubConn.conn;
+  try {
+    sigSubConn = { url, conn: new Connection(url, { commitment: COMMITMENT }) };
+    return sigSubConn.conn;
+  } catch {
+    sigSubConn = null;
+    return null;
+  }
+}
+
 export async function poolLatestBlockhash(): Promise<string | null> {
   try {
     const r = await pooledRpc<{ value: { blockhash: string } }>("getLatestBlockhash", [{ commitment: COMMITMENT }]);
     return r?.value?.blockhash ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Blockhash + its expiry height (what /api/blockhash serves the browser funding flow). */
+export async function poolLatestBlockhashFull(): Promise<{ blockhash: string; lastValidBlockHeight: number } | null> {
+  try {
+    const r = await pooledRpc<{ value: { blockhash: string; lastValidBlockHeight: number } }>("getLatestBlockhash", [{ commitment: COMMITMENT }]);
+    return r?.value?.blockhash ? { blockhash: r.value.blockhash, lastValidBlockHeight: r.value.lastValidBlockHeight } : null;
   } catch {
     return null;
   }
@@ -92,6 +133,49 @@ export async function poolTokenAccountAmount(pubkey: string): Promise<string | n
       { commitment: COMMITMENT },
     ]);
     return r?.value?.amount ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * REAL SOL MOVEMENT OF ONE CONFIRMED TRANSACTION, for our wallet.
+ *
+ * Returns `post − pre` lamports for `pubkey`, in SOL: negative for a buy (SOL left), positive
+ * for a sell (SOL came back). `null` means UNREADABLE — never "zero".
+ *
+ * WHY THIS EXISTS (audit, 2026-08-25). Both legs used to measure money with a wallet-balance
+ * bracket taken around the swap. That is wrong in two different directions and both were
+ * measured in production:
+ *
+ *   · CONTAMINATED. The `after` read happens outside the exec lock, so any other transaction
+ *     landing in the gap is attributed to this trade. On 2026-08-22..24 that inflated one 0.01◎
+ *     buy to a booked 0.0368◎, and pushed 25% of buys BELOW their own order size.
+ *   · ASYMMETRIC. The 2026-08-24 "exact spend" fix replaced the buy bracket with the order size
+ *     (0.01◎) while the sell leg kept its balance delta — which includes the ATA rent coming
+ *     back. Every trade after it was booked ≈0.0023◎ too good: +20.6% of notional, verified
+ *     against 135/135 on-chain transactions. It turned a real −15.65% into a printed +1.71%.
+ *
+ * The transaction's own pre/post balances are immune to both: they are that transaction's
+ * effect and nothing else's, no matter what else the wallet was doing at the same moment.
+ * Fees, priority fees, ATA rent paid and ATA rent reclaimed are all inside the number.
+ */
+export async function poolTxWalletDelta(signature: string, pubkey: string): Promise<number | null> {
+  try {
+    const r = await pooledRpc<{
+      meta: { preBalances: number[]; postBalances: number[]; err: unknown } | null;
+      transaction: { message: { accountKeys: Array<{ pubkey: string } | string> } };
+    }>("getTransaction", [
+      signature,
+      { commitment: COMMITMENT, maxSupportedTransactionVersion: 0, encoding: "jsonParsed" },
+    ]);
+    if (!r?.meta) return null;                       // not yet visible, or dropped
+    const keys = r.transaction?.message?.accountKeys ?? [];
+    const i = keys.findIndex((k) => (typeof k === "string" ? k : k?.pubkey) === pubkey);
+    if (i < 0) return null;                          // our wallet is not in this tx at all
+    const pre = r.meta.preBalances?.[i], post = r.meta.postBalances?.[i];
+    if (typeof pre !== "number" || typeof post !== "number") return null;
+    return (post - pre) / 1e9;
   } catch {
     return null;
   }

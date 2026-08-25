@@ -27,6 +27,21 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
   const paper = data.strategy2Primary?.paper;
   if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
 
+  // LIVE + on-chain read failed → UNKNOWN. The old fallback rendered $0.00 with an all-red
+  // tape, which told the owner their funded wallet was empty. Say "unreadable" instead.
+  if (c.s1?.balanceSol == null || c.s1.floatSol == null) {
+    return (
+      <div className="flex h-full flex-col justify-center gap-1.5">
+        <p className="font-mono text-[13px] text-muted-foreground">saldo tidak terbaca</p>
+        <p className="font-mono text-[10px] leading-relaxed text-muted-foreground/60">
+          Bacaan on-chain gagal sebentar (RPC). Uang TIDAK hilang — dompet tetap terbaca begitu
+          salah satu endpoint menjawab. Panel ini tidak akan pernah menampilkan nol palsu untuk
+          saldo yang tidak diketahui.
+        </p>
+      </div>
+    );
+  }
+
   const rate = c.solUsd;
   const totalUsd = c.totalUsd ?? 0;
   const floatUsd = c.floatUsd ?? 0;

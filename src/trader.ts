@@ -10,6 +10,7 @@ import { pumpCandles } from "./safety/pump-candles.js";
 import { jupiterSellSol, solPriceUsd } from "./execution/jupiter.js";
 import { simulateBuyMainnet, devnetMirror } from "./execution/executor.js";
 import { bridgeOpen, bridgeSellFraction, bridgeClose, bridgeStart, bridgeStop } from "./execution/live-bridge.js";
+import { applyExecutionRealism, realismBanner } from "./execution/exec-realism.js";
 import { assessBuySimulation, lateEnrichmentAction } from "./execution/semantics.js";
 import {
   clampedScaleSellQty,
@@ -20,6 +21,7 @@ import {
   curveSellSolGross,
   gasPerSideSol,
   launchpadFeePct,
+  rebaseOverlayForAdoptedFill,
   replayObservedCurveDelta,
   syntheticAmmExitProceedsSol,
   syntheticAmmReservesFromQuote,
@@ -384,6 +386,10 @@ export class PaperTrader {
     this.commandTimer = setInterval(() => this.pollCommand(), 2_000); // console command bus
     // Continuous ledger audit: the recorded numbers must reconcile with the booked P&L, always.
     this.integrityTimer = setInterval(() => this.verifyLedger(), 60_000);
+    // Say it out loud, once. A ledger corrected to real execution and a raw one look identical
+    // on screen, and the whole failure this fixes was a number nobody knew to distrust.
+    const banner = realismBanner();
+    if (banner) ui.info(banner);
     // LIVE BRIDGE. Disarmed unless BOTH locks are open. The probe is what lets its orphan
     // sweep tell "the brain still holds this" from "there is a real bag nobody owns" — the
     // difference between a tracked position and an abandoned one.
@@ -403,17 +409,40 @@ export class PaperTrader {
           if (pos.tradeId !== fill.tradeId) continue;
           if (!(fill.tokens > 0) || !(fill.spentSol > 0)) return;
           const before = { sizeSol: pos.sizeSol, tokenQty: pos.tokenQty ?? 0 };
+          // RE-BASE THE COUNTERFACTUAL OVERLAY (P0, measured 2026-08-22). Swapping in the real
+          // basis while the overlay still carried the PAPER entry's curve impact produced
+          // fantasy executable marks: NEVER's exec peak jumped to +1668% (trail band loosened
+          // to its top rung, winner gave everything back) purely because the cost basis shrank
+          // ~12x under an unchanged proceeds number. The overlay must describe the position we
+          // ACTUALLY hold: subtract the hypothetical paper buy's impact, add the real fill's.
+          let overlayRebased = false;
+          if (pos.lastVSol != null && pos.lastVTokens != null && pos.lastRealSol != null) {
+            const next = rebaseOverlayForAdoptedFill(
+              { vSol: pos.lastVSol, vTokens: pos.lastVTokens, realSol: pos.lastRealSol },
+              { sizeSol: before.sizeSol, tokenQty: before.tokenQty },
+              { spentSol: fill.spentSol, tokens: fill.tokens, pool: pos.candidate.pool },
+            );
+            pos.lastVSol = next.vSol;
+            pos.lastVTokens = next.vTokens;
+            pos.lastRealSol = next.realSol;
+            overlayRebased = true;
+          }
           // Scale-outs are fractions of the ORIGINAL, so both must move together or a partial
           // would sell a fraction of a quantity that no longer exists.
           pos.sizeSol = fill.spentSol;
           pos.originalSizeSol = fill.spentSol;
           pos.tokenQty = fill.tokens;
           pos.originalTokenQty = fill.tokens;
+          // The high-water mark was tracked under the old (paper-scale) basis; keep it and the
+          // trail re-seeds from the first honest post-adoption mark instead of inheriting fantasy.
+          pos.peakExecProceeds = undefined;
           logRecord("events", {
             type: "live-fill-adopted", tradeId: pos.tradeId, mint: pos.candidate.mint, symbol: pos.candidate.symbol,
             modelledSizeSol: Number(before.sizeSol.toFixed(6)), realSizeSol: Number(fill.spentSol.toFixed(6)),
             modelledTokens: Number(before.tokenQty.toFixed(2)), realTokens: Number(fill.tokens.toFixed(2)),
             qtyDriftPct: before.tokenQty > 0 ? Number((((fill.tokens - before.tokenQty) / before.tokenQty) * 100).toFixed(2)) : null,
+            overlayRebased,
+            hwmReset: true,
             cfg: configHash,
           });
           this.save();
@@ -1771,7 +1800,14 @@ export class PaperTrader {
       const grossOut = curveSellSolGross(wVSol!, wVTokens!, qSell);
       wVSol = (wVSol ?? 0) - grossOut; wVTokens = (wVTokens ?? 0) + qSell; if (wRealSol != null) wRealSol = Math.max(0, wRealSol - grossOut);
       const costBasis = pos.sizeSol * (qSell / pos.tokenQty);
-      const bankedPnl = proceeds - costBasis;
+      // Same correction as the final leg, for the same reason: a scale-out at +50% is exactly
+      // the kind of gain the chain says only half-materialises. Leaving partials raw while
+      // correcting the remaining leg would quietly restore the optimism through the side door.
+      const rawBanked = proceeds - costBasis;
+      const bankedRealism = costBasis > 0
+        ? applyExecutionRealism((rawBanked / costBasis) * 100)
+        : { pct: 0, applied: false, ratio: null, band: null, bandN: null, calN: null };
+      const bankedPnl = costBasis > 0 ? costBasis * (bankedRealism.pct / 100) : rawBanked;
       pos.partialPnlSol += bankedPnl;
       this.hypotheticalRealizedPnlSol += bankedPnl; // audit P0-2: hypothetical always, primary gated below
       // Owner (2026-07-27, after a profitable MANUAL_CLOSE on a would-fail-stage position
@@ -1970,6 +2006,17 @@ export class PaperTrader {
       legPnlPct = Math.max(-100, grossPnl - cost - extraHaircut);
       effCostPct = cost + extraHaircut;
     }
+    // ── EXECUTION REALISM ────────────────────────────────────────────────────
+    // The model has now said what the trade was worth. This says what it would have BEEN PAID,
+    // using the measured transfer function between this simulator's claims and the chain's
+    // answer on the same trades (see execution/exec-realism.ts). Applied here and nowhere else:
+    // every exit DECISION above ran on the raw mark and is untouched — only the booking changes.
+    const rawLegPnlPct = legPnlPct;
+    const realism = applyExecutionRealism(legPnlPct);
+    legPnlPct = realism.pct;
+    // Keep the itemised trail coherent: cost is defined as gross minus what we realized, so it
+    // has to absorb the execution reality too, otherwise the record no longer adds up.
+    effCostPct = grossPnl - legPnlPct;
     const legSol = pos.sizeSol * (legPnlPct / 100); // SOL from the remaining leg
     // Total realized for this trade = remaining leg + any partial already banked (0 today).
     const pnlSol = legSol + pos.partialPnlSol;
@@ -2049,6 +2096,14 @@ export class PaperTrader {
       peak: pos.peakPriceUsd,
       grossPnlPct: Number(grossPnl.toFixed(2)),
       costPct: Number(effCostPct.toFixed(2)),
+      // ── WHAT THE MODEL SAID, BESIDE WHAT EXECUTION WOULD PAY ──
+      // Never overwrite the raw figure: comparing cohorts across the day this landed is only
+      // possible because both numbers survive in the same row.
+      rawPnlPct: Number(rawLegPnlPct.toFixed(2)),
+      execRealismApplied: realism.applied,
+      execRealismRatio: realism.ratio,
+      execRealismBand: realism.band,
+      execRealismCalN: realism.calN,
       pnlPct: Number(pnlPct.toFixed(2)),
       sizeSol: pos.sizeSol,
       tokenQty: pos.tokenQty != null ? Number(pos.tokenQty.toFixed(2)) : undefined, // faithful fill: qty sold
