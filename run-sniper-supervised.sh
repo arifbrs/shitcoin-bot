@@ -54,6 +54,20 @@ export ENTRY_MC_FLOOR_SOL=55
 # Biayanya membuang 28% entry, jadi pengumpulan data melambat 1,38x.
 export ENTRY_MC_CEIL_SOL=74
 
+# ── A/B LANTAI ENTRY-MC (2026-08-25) ──────────────────────────────────────────
+# Dinyalakan setelah audit eksekusi: dengan pembukuan yang dikoreksi ke hasil chain, pita
+# 55-74 yang dipakai di atas terukur -2,47% ±0,96 pada n=3.710. Selangnya TIDAK melewati nol,
+# jadi pita ini bukan "belum terbukti" melainkan terbukti rugi. Sementara itu 10% dari seluruh
+# keputusan ditolak karena duduk di 46-55 SOL (~5,7 trade/jam, sepertiga volume tambahan) dan
+# kita tidak punya SATU pun observasi di sana: setiap log sejak 2026-08-08 lahir di bawah
+# lantai 55 (4.964 trade, MC masuk minimum 55,0 maksimum 74,0).
+# Menurunkan lantai berdasarkan itu adalah tebakan. Ini mengukurnya: separuh aliran, dipilih
+# dari hash decisionId SAJA, masuk lewat lantai 46; separuh lagi tetap 55 sebagai kontrol.
+# Baca dengan `npm run mc-ab:report`. Aturan berhenti sudah terdaftar di experiments/mc-band-ab.ts
+# (400 trade/arm atau 7 hari) — jangan putuskan sebelum itu.
+export ENTRY_MC_AB=true
+export ENTRY_MC_AB_LO_FLOOR_SOL=46
+
 # FILTER DEV-BUY (2026-08-10). Dev yang membeli >3 SOL ke launch-nya sendiri memegang pasokan yang
 # harus dijual ke rally mana pun yang menyusul. Terukur pada 1.689 trade band, lalu DIVALIDASI ULANG
 # di dalam cohort hidup (qdoru7, n=1.002) sebelum dipasang: dev<3 EV +2,28% lawan −3,79%, selisih

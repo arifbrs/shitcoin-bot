@@ -11,6 +11,7 @@ import { jupiterSellSol, solPriceUsd } from "./execution/jupiter.js";
 import { simulateBuyMainnet, devnetMirror } from "./execution/executor.js";
 import { bridgeOpen, bridgeSellFraction, bridgeClose, bridgeStart, bridgeStop } from "./execution/live-bridge.js";
 import { applyExecutionRealism, realismBanner } from "./execution/exec-realism.js";
+import { mcBandFor, mcBandAbBanner, type McArm } from "./experiments/mc-band-ab.js";
 import { assessBuySimulation, lateEnrichmentAction } from "./execution/semantics.js";
 import {
   clampedScaleSellQty,
@@ -98,6 +99,11 @@ interface Position {
   // as "take-profit progress", so the console showed 0 partials even on positions that had sold
   // three tiers. Kept ONLY so old persisted snapshots still parse; scaleTier is the truth.
   partialsTaken: number;
+  /** Which entry-MC floor admitted this trade. null = outside the experiment; never pool it. */
+  mcArm?: McArm | null;
+  /** The band actually applied, carried so a reader never has to guess it from its own env. */
+  mcFloor?: number;
+  mcCeiling?: number;
   partialPnlSol: number; // realized SOL from partial sells so far (added to final close)
   // The same figure BEFORE execution realism. Exists so the CLOSE record can report a raw
   // whole-trade number next to the booked one. Without it `rawPnlPct` was the remaining LEG
@@ -428,6 +434,8 @@ export class PaperTrader {
     // on screen, and the whole failure this fixes was a number nobody knew to distrust.
     const banner = realismBanner();
     if (banner) ui.info(banner);
+    const abBanner = mcBandAbBanner();
+    if (abBanner) ui.info(abBanner);
     // LIVE BRIDGE. Disarmed unless BOTH locks are open. The probe is what lets its orphan
     // sweep tell "the brain still holds this" from "there is a real bag nobody owns" — the
     // difference between a tracked position and an abandoned one.
@@ -722,15 +730,25 @@ export class PaperTrader {
      *
      * KEPUTUSAN TRADING TIDAK BERUBAH — gerbang sama, ambang sama, hanya lebih awal.
      */
+    // Arm A/B lantai entry-MC untuk kandidat ini (null = di luar eksperimen).
+    let mcArm: McArm | null = null;
+    let mcFloor: number | undefined;
+    let mcCeiling: number | undefined;
     {
       const mcNow = (priceMode === "sol" && entryVSol && entryVTokens)
         ? (entryVSol / entryVTokens) * 1_000_000_000 : undefined;
+      // A/B: the band this candidate must clear is decided by its arm, from decisionId alone.
+      // With the experiment off this is the production band, byte for byte.
+      const band = mcBandFor(c.decisionId);
+      mcArm = band.arm;
+      mcFloor = band.floor;
+      mcCeiling = band.ceiling;
       if (mcNow != null) {
-        const band = config.gate.entryMcBandSol;
         if (mcNow < band.floor || mcNow > band.ceiling) {
           const why = mcNow < band.floor ? `below floor ${band.floor}` : `above ceiling ${band.ceiling}`;
-          ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${mcNow.toFixed(1)} SOL ${why} SOL (MC band)`);
-          return { opened: false, code: "ENTRY_MC_BAND", detail: `${mcNow.toFixed(1)} SOL ${why}` };
+          const tag = band.arm ? ` [${band.arm}]` : "";
+          ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${mcNow.toFixed(1)} SOL ${why} SOL (MC band)${tag}`);
+          return { opened: false, code: "ENTRY_MC_BAND", detail: `${mcNow.toFixed(1)} SOL ${why}${tag}` };
         }
       }
       const devMax = config.gate.entryDevBuyMaxSol;
@@ -927,6 +945,7 @@ export class PaperTrader {
       costPct,
       originalSizeSol: sizeSol,
       partialsTaken: 0,
+      mcArm, mcFloor, mcCeiling,
       partialPnlSol: 0,
       rawPartialPnlSol: 0,
       priceFailCount: 0,
@@ -958,7 +977,7 @@ export class PaperTrader {
     if (c.creator) this.watcher.watch(c.creator); // start real-time dev watch
     this.tradeStream.watch(c.mint); // start live crowd streaming for this token
     this.save();
-    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, measurementEpoch: config.measurementEpoch,
+    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, mcArm, mcFloor, mcCeiling, measurementEpoch: config.measurementEpoch,
       policyId: config.strategyVersion, armId: process.env.ARM_ID ?? "live",
       mint: c.mint, symbol: c.symbol, mode: c.mode, price, liquidityUsd: liq, devOnlyBuys, execStage,
       decisionLatencyMs: c.detectedAt ? Date.now() - c.detectedAt : undefined, // #8: detect→entry latency (honest "how late do we enter")
@@ -2155,6 +2174,10 @@ export class PaperTrader {
       execRealismRatio: realism.ratio,
       execRealismBand: realism.band,
       execRealismCalN: realism.calN,
+      // Arm lantai entry-MC. null = di luar eksperimen — jangan pernah digabung ke salah satu sisi.
+      mcArm: pos.mcArm ?? null,
+      mcFloor: pos.mcFloor ?? null,
+      mcCeiling: pos.mcCeiling ?? null,
       pnlPct: Number(pnlPct.toFixed(2)),
       sizeSol: pos.sizeSol,
       tokenQty: pos.tokenQty != null ? Number(pos.tokenQty.toFixed(2)) : undefined, // faithful fill: qty sold

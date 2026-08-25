@@ -569,6 +569,18 @@ export const config = {
       floor: Number(process.env.ENTRY_MC_FLOOR_SOL ?? 30),   // ~1.07× launch — demand actually showed up
       ceiling: Number(process.env.ENTRY_MC_CEIL_SOL ?? 45),  // ~1.6× launch — don't buy the pump
     },
+    /**
+     * ── A/B LANTAI ENTRY-MC (2026-08-25) ──
+     * Setiap kandidat diberi arm dari hash decisionId-nya SAJA, lalu lantai arm itu yang
+     * memutuskan. LO memakai loFloorSol, HI memakai lantai produksi di atas; plafonnya sama.
+     * Ada karena pita produksi terukur −2,47% ±0,96 di n=3.710 setelah koreksi eksekusi,
+     * sementara pita 46–54 nol observasi — menurunkan lantai tanpa ini murni tebakan.
+     * Lihat experiments/mc-band-ab.ts. Mati secara default.
+     */
+    entryMcAb: {
+      enabled: process.env.ENTRY_MC_AB === "true",
+      loFloorSol: Number(process.env.ENTRY_MC_AB_LO_FLOOR_SOL ?? 46),
+    },
     // ── LAUNCH-TIME MC FLOOR (owner's idea) — applied at the CREATE EVENT, before the queue ──
     // A pump.fun curve's virtual reserves are identical for every token at birth (vSol 30 /
     // vTokens 1.073e9 → MC 27.96), so a dev CANNOT choose a starting market cap. Any MC above
@@ -1290,6 +1302,9 @@ const _cfgMaterial = JSON.stringify({
   // Booking policy is material: the same trades under EXEC_REALISM produce a different
   // ledger, so rows either side of this flag must never be pooled.
   execRealism: config.risk.execRealism,
+  // Admission berubah per-arm: baris LO dan HI tidak boleh dianggap satu populasi
+  // dengan baris dari run tanpa A/B.
+  entryMcAb: config.gate.entryMcAb,
   strategy2Scout: config.strategy2Scout,
   strategy2NewScout: config.strategy2NewScout,
   strategy2Paper: config.strategy2Paper,
