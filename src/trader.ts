@@ -99,6 +99,12 @@ interface Position {
   // three tiers. Kept ONLY so old persisted snapshots still parse; scaleTier is the truth.
   partialsTaken: number;
   partialPnlSol: number; // realized SOL from partial sells so far (added to final close)
+  // The same figure BEFORE execution realism. Exists so the CLOSE record can report a raw
+  // whole-trade number next to the booked one. Without it `rawPnlPct` was the remaining LEG
+  // while `pnlPct` was the whole trade — two different denominators in adjacent columns, which
+  // read as the correction moving a winner the wrong way (Anastasia, 2026-08-25: leg +29.25%
+  // raw booked as +30.74% trade, and both were right).
+  rawPartialPnlSol: number;
   partialPnlIncludedInPrimary?: number; // audit P0-2 + manual-close-always-counts: how much of partialPnlSol already made it into the PRIMARY ledger (vs still pending, e.g. banked while execStage was would-fail)
   priceFailCount: number; // consecutive failed price reads (guards false LIQUIDITY_GONE)
   peakVSol: number; // highest curve SOL reserve seen (activity high-water mark)
@@ -182,6 +188,38 @@ function bondingCurveCostPct(vSol: number | undefined, sizeSol: number, pool?: s
  * band loosens as gains grow (bank small winners tight, let mega-runners ride). Returns
  * null below the first threshold (not armed yet — a coin that never pumped isn't trailed).
  */
+/**
+ * Compose a trade's P&L from its remaining leg and its banked partials — BOTH ways at once.
+ *
+ * The point of this function is that the raw and the booked figure come out of the same
+ * arithmetic, over the same denominator, or not at all. They used to be assembled separately:
+ * the booked number covered the whole trade while the "raw" one covered only the remaining leg.
+ * On a scaled-out winner (Anastasia, 2026-08-25) that printed leg +29.25% raw beside trade
+ * +30.74% booked, which reads as the correction inflating a winner. Both numbers were correct
+ * and the comparison was meaningless — the worst kind of reporting bug, because it survives
+ * every check except someone doing the arithmetic by hand.
+ */
+export function composeTradePnl(p: {
+  sizeSol: number;          // stake still riding on the final leg (shrinks with each partial)
+  originalSizeSol: number;  // stake at entry — the denominator for anything called "the trade"
+  legPct: number;           // final leg, AFTER execution realism
+  rawLegPct: number;        // final leg, before it
+  partialSol: number;       // banked partials, AFTER execution realism
+  rawPartialSol: number;    // banked partials, before it
+}): { pnlSol: number; pnlPct: number; rawPnlSol: number; rawPnlPct: number } {
+  const legSol = p.sizeSol * (p.legPct / 100);
+  const rawLegSol = p.sizeSol * (p.rawLegPct / 100);
+  const pnlSol = legSol + p.partialSol;
+  const rawPnlSol = rawLegSol + p.rawPartialSol;
+  const denom = p.originalSizeSol > 0 ? p.originalSizeSol : 0;
+  return {
+    pnlSol,
+    rawPnlSol,
+    pnlPct: denom > 0 ? (pnlSol / denom) * 100 : 0,
+    rawPnlPct: denom > 0 ? (rawPnlSol / denom) * 100 : 0,
+  };
+}
+
 function dynamicTrailPct(peakGainPct: number): number | null {
   let trail: number | null = null;
   for (const t of config.risk.dynamicTrail) if (peakGainPct >= t.gain) trail = t.trail;
@@ -890,6 +928,7 @@ export class PaperTrader {
       originalSizeSol: sizeSol,
       partialsTaken: 0,
       partialPnlSol: 0,
+      rawPartialPnlSol: 0,
       priceFailCount: 0,
       peakVSol: entryVSol, // fresh live reserve at entry (not stale discovery vSol)
       entryVSol,
@@ -1809,6 +1848,7 @@ export class PaperTrader {
         : { pct: 0, applied: false, ratio: null, band: null, bandN: null, calN: null };
       const bankedPnl = costBasis > 0 ? costBasis * (bankedRealism.pct / 100) : rawBanked;
       pos.partialPnlSol += bankedPnl;
+      pos.rawPartialPnlSol = (pos.rawPartialPnlSol ?? 0) + rawBanked;
       this.hypotheticalRealizedPnlSol += bankedPnl; // audit P0-2: hypothetical always, primary gated below
       // Owner (2026-07-27, after a profitable MANUAL_CLOSE on a would-fail-stage position
       // didn't show up anywhere): a would-fail buy is still excluded from primary AT PARTIAL
@@ -2017,11 +2057,17 @@ export class PaperTrader {
     // Keep the itemised trail coherent: cost is defined as gross minus what we realized, so it
     // has to absorb the execution reality too, otherwise the record no longer adds up.
     effCostPct = grossPnl - legPnlPct;
+    // Raw and booked assembled together, over one denominator — see composeTradePnl().
+    const composed = composeTradePnl({
+      sizeSol: pos.sizeSol, originalSizeSol: pos.originalSizeSol,
+      legPct: legPnlPct, rawLegPct: rawLegPnlPct,
+      partialSol: pos.partialPnlSol, rawPartialSol: pos.rawPartialPnlSol ?? 0,
+    });
     const legSol = pos.sizeSol * (legPnlPct / 100); // SOL from the remaining leg
-    // Total realized for this trade = remaining leg + any partial already banked (0 today).
-    const pnlSol = legSol + pos.partialPnlSol;
-    // Original notional (pre-partial) for a representative % of the whole trade.
-    const pnlPct = (pnlSol / pos.originalSizeSol) * 100;
+    const pnlSol = composed.pnlSol;
+    const pnlPct = composed.pnlPct;
+    const rawTradePnlSol = composed.rawPnlSol;
+    const rawTradePnlPct = composed.rawPnlPct;
     // HYPOTHETICAL ledger — every close, regardless of whether the buy would have executed.
     this.hypotheticalRealizedPnlPct += legPnlPct;
     this.hypotheticalRealizedPnlSol += legSol;
@@ -2099,7 +2145,12 @@ export class PaperTrader {
       // ── WHAT THE MODEL SAID, BESIDE WHAT EXECUTION WOULD PAY ──
       // Never overwrite the raw figure: comparing cohorts across the day this landed is only
       // possible because both numbers survive in the same row.
-      rawPnlPct: Number(rawLegPnlPct.toFixed(2)),
+      // Whole trade, raw — same denominator and same scope as `pnlPct` above it.
+      rawPnlPct: Number(rawTradePnlPct.toFixed(2)),
+      rawPnlSol: Number(rawTradePnlSol.toFixed(6)),
+      // Remaining leg only, raw — what the transfer function was actually handed.
+      rawLegPnlPct: Number(rawLegPnlPct.toFixed(2)),
+      rawPartialSol: Number((pos.rawPartialPnlSol ?? 0).toFixed(6)),
       execRealismApplied: realism.applied,
       execRealismRatio: realism.ratio,
       execRealismBand: realism.band,
