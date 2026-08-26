@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import { postControl } from "@/lib/api";
 import type { OpenPosition } from "@/types/stats";
 
 function fmtHeld(sec: number): string {
@@ -28,6 +30,30 @@ function fmtHeld(sec: number): string {
  * +300% → 45%), so a constant in the UI would draw a stop that does not exist.
  */
 export function PositionCard({ position, tag }: { position: OpenPosition; tag?: "S1" | "S2" | "LIVE" }) {
+  // TUTUP MANUAL. Perintah close per-mint dilayani oleh mesin sniper; S2 punya namespace
+  // perintahnya sendiri dan hanya mengenal flatten, jadi tombolnya tidak ditawarkan di sana —
+  // menawarkan tombol yang diam-diam tidak melakukan apa-apa lebih buruk daripada tidak ada.
+  const canClose = Boolean(position.mint) && tag !== "S2";
+  const [armed, setArmed] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+
+  function clickClose(): void {
+    if (sent) return;
+    if (!armed) {
+      setArmed(true);
+      armTimer.current = setTimeout(() => setArmed(false), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmed(false);
+    setSent("mengirim…");
+    postControl({ command: "close", mint: position.mint })
+      .then(() => setSent("✓ terkirim"))
+      .catch((e: Error) => { setSent(null); setArmed(false); void e; });
+  }
+
   // `null` = nobody can price this bag right now (a LIVE lot whose paper twin is gone). That
   // must read as absence — neutral em-dash — not as "+0.0%", which invents a fact about money.
   const unpriced = position.unrealizedPnl == null;
@@ -175,7 +201,32 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
         </div>
       </div>
 
-      {hot && (
+      {/*
+        TUTUP MANUAL — keputusan owner direkam sebagai data, bukan sekadar tindakan.
+        Backend sudah lama menerima {command:"close", mint} tapi tidak pernah ada tombolnya:
+        konsol cuma bisa flatten SEMUA posisi. Jadi satu-satunya kebijakan exit yang pernah
+        terekam adalah kebijakan otomatis. Baris ini membuka jalur kedua — apa yang ditutup
+        manusia, kapan, dan pada mark berapa — supaya "style"-nya bisa disimpulkan dari data
+        alih-alih dari ingatan.
+        Dua ketuk, meniru pola flatten yang sudah ada: satu ketuk salah menghapus satu titik
+        data, dan pada mode live kelak, satu posisi sungguhan.
+      */}
+      {canClose && (
+        <button
+          type="button"
+          onClick={clickClose}
+          className="relative mt-2 w-full rounded border px-2 py-1 font-mono text-[9px] tracking-wide transition-colors"
+          style={{
+            borderColor: armed ? accent : "var(--hud-line)",
+            color: armed ? accent : "var(--muted-foreground)",
+          }}
+          title="Tutup posisi ini sekarang. Tercatat sebagai MANUAL_CLOSE beserta mark yang sedang tampil."
+        >
+          {sent ?? (armed ? "yakin? ketuk lagi" : "tutup posisi")}
+        </button>
+      )}
+
+            {hot && (
         <div className="relative mt-2.5 flex items-center gap-1.5 border-t pt-2 font-mono text-[9px]"
              style={{ borderColor: `color-mix(in srgb, ${accent} 16%, transparent)`, color: accent }}>
           <span className="h-[5px] w-[5px] animate-pulse rounded-full motion-reduce:animate-none" style={{ background: accent }} />
