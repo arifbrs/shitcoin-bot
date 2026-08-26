@@ -7,6 +7,7 @@ import { execSync } from "node:child_process";
 import { config, configHash } from "./config.js";
 import { readControl, writeControl } from "./control.js";
 import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
+import { applyExecutionRealism } from "./execution/exec-realism.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
 import { solPriceUsd } from "./execution/jupiter.js";
 import { guardStatus, halt, resume } from "./execution/guardian.js";
@@ -1248,7 +1249,34 @@ function buildStats() {
   // after the last RESET marker. Prior runs live in the run-ledger below.
   let lastReset = -1;
   for (let i = 0; i < allTrades.length; i++) if (allTrades[i]!.action === "RESET") lastReset = i;
-  const trades = lastReset >= 0 ? allTrades.slice(lastReset + 1) : allTrades;
+  let trades = lastReset >= 0 ? allTrades.slice(lastReset + 1) : allTrades;
+  /**
+   * ── SATU REZIM AKUNTANSI SAJA ─────────────────────────────────────────────
+   *
+   * Sejak 2026-08-25T10:01Z P&L paper dibukukan pada laju yang benar-benar cair (lihat
+   * execution/exec-realism.ts). Baris sebelum itu dibukukan dengan cara lama. Menjumlahkan
+   * keduanya menghasilkan angka yang bukan apa-apa: saat audit ini ditulis ada 211 baris
+   * terkoreksi lawan 4.958 baris lama, jadi "cum P&L" di halaman utama praktis adalah angka
+   * lama dengan sedikit angka baru menempel.
+   *
+   * Yang memisahkan BUKAN cfg. Hash cfg berubah pada tiap suntingan kode — hari ini lima kali —
+   * dan memfilter dengannya akan mereset kurva ekuitas karena hal-hal yang tidak ada
+   * hubungannya dengan uang. Yang memisahkan adalah rezim pembukuannya sendiri, dan itu
+   * tertulis di tiap baris.
+   *
+   * Baris lama tidak dibuang; ia dilaporkan terpisah di `legacy` supaya tetap bisa dilihat
+   * dan tidak pernah ikut terjumlah.
+   */
+  const inRegime = (t: { execRealismApplied?: boolean }): boolean =>
+    (t.execRealismApplied === true) === config.risk.execRealism;
+  const legacyTrades = trades.filter((t) => !inRegime(t as { execRealismApplied?: boolean }));
+  const legacyCloses = legacyTrades.filter((t) => t.action === "CLOSE");
+  const legacyRealizedSol = legacyCloses
+    .filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN")
+    .reduce((s, t) => s + (t.pnlSol ?? (t.sizeSol ?? config.risk.paperTradeSizeSol) * ((t.pnlPct ?? 0) / 100)), 0);
+  trades = trades.filter((t) => inRegime(t as { execRealismApplied?: boolean }));
+
+
   // Post-exit learning: after each close we keep sampling the token's price. The
   // summaries tell us how often our exits were PREMATURE (it ran after we sold) and
   // how much upside we left — the data to tune hold time.
@@ -1436,6 +1464,13 @@ function buildStats() {
         image: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint) ?? undefined,
         img: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint),
         entryPrice: p.entryPriceUsd, lastPrice: p.lastPriceUsd, unrealizedPnl: p.lastPnlPct, peak: p.peakPriceUsd,
+        // MARK vs YANG AKAN DIBAYAR. `unrealizedPnl` adalah mark paper apa adanya — dan mark
+        // paper pada token yang sedang bergerak justru yang terbukti tidak bisa dieksekusi:
+        // klaim 50-100% cair ~66%, klaim di atas 100% cair ~10%. Kartu bertuliskan +120% BUKAN
+        // +120% yang akan diterima. Koreksinya sengaja tidak menyentuh keputusan exit (itu
+        // suntingan strategi, bukan tampilan), jadi angka ini murni untuk dibaca manusia.
+        unrealizedPnlAdj: typeof p.lastPnlPct === "number"
+          ? Number(applyExecutionRealism(p.lastPnlPct).pct.toFixed(1)) : undefined,
         heldSec: p.openedAt ? Math.round((nowMs - p.openedAt) / 1000) : undefined, armed: p.armed,
         sizeSol: config.risk.paperTradeSizeSol,
         ...exitProximity({
@@ -2098,6 +2133,16 @@ function buildStats() {
       equityLast: equity.length ? equity[equity.length - 1] : null,
       equityPoints: equity.length,
       openPositions,
+      /**
+       * Baris dari rezim pembukuan LAIN — tidak ikut dijumlah di angka mana pun di atas.
+       * Dilaporkan supaya "kenapa cum P&L-ku mengecil?" punya jawaban di layar, bukan hanya
+       * di commit log.
+       */
+      legacy: {
+        corrected: config.risk.execRealism,
+        closed: legacyCloses.length,
+        realizedSol: Number(legacyRealizedSol.toFixed(4)),
+      },
     },
     // AUDIT P0-2 — "what if every simulated buy had actually landed on-chain, would-fail
     // included". Comparison/research data ONLY. Never use this for tuning or as a performance

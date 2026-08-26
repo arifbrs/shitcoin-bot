@@ -34,6 +34,12 @@ export interface OpenPosition {
    * (the card draws an em-dash instead). Never coerce to 0 at the source.
    */
   unrealizedPnl: number | null;
+  /**
+   * Perkiraan P&L yang benar-benar cair kalau posisi ini dijual sekarang, memakai kurva
+   * eksekusi terukur. `unrealizedPnl` di atasnya adalah mark kuotasi — dan mark itulah yang
+   * terbukti tidak bisa dieksekusi pada token yang sedang bergerak.
+   */
+  unrealizedPnlAdj?: number;
   heldSec: number;
   entryPrice: number; // synthetic (always 1) for Strategy 2 — see marketCap/holders for the real numbers
   lastPrice: number; // synthetic (1 + unrealizedPnl/100)
@@ -349,6 +355,11 @@ export interface SniperPaper {
   compounding: boolean;
   equity: Array<{ t: string; bal: number }>;
   openPositions: SniperOpenPosition[];
+  /**
+   * Baris dari rezim pembukuan LAIN, dilaporkan terpisah dan TIDAK pernah ikut dijumlah di
+   * angka mana pun di atas. `corrected` menyatakan rezim mana yang sedang berlaku.
+   */
+  legacy?: { corrected: boolean; closed: number; realizedSol: number };
 }
 
 export interface RecentDecision {

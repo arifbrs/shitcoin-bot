@@ -24,6 +24,7 @@ import type { StatsResponse } from "@/types/stats";
  */
 export function EquityCurve({ data }: { data: StatsResponse }) {
   const c = data.combined;
+  const legacy = data.paper?.legacy;
   const paper = data.strategy2Primary?.paper;
   if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
 
@@ -116,6 +117,22 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
         float {money(floatUsd)}
         {rate != null && rate > 0 && <> / {(floatUsd / rate).toFixed(4)} ◎</>}
       </p>
+
+      {/*
+        Baris dari rezim pembukuan LAMA. Sejak 2026-08-25 P&L paper dibukukan pada laju yang
+        benar-benar cair; baris sebelum itu tidak. Menjumlahkan keduanya menghasilkan angka yang
+        bukan apa-apa, jadi angka di atas hanya memuat rezim yang sedang berlaku — dan baris ini
+        ada supaya "kenapa cum P&L-ku berubah?" punya jawaban di layar, bukan di commit log.
+      */}
+      {legacy != null && legacy.closed > 0 && (
+        <p
+          className="mb-2 -mt-1 font-mono text-[9px] tabular-nums text-muted-foreground/50"
+          title="Trade lama dibukukan sebelum koreksi eksekusi terpasang. Angka di atas sengaja tidak menjumlahkannya."
+        >
+          {legacy.closed.toLocaleString("id-ID")} trade lama ({legacy.realizedSol >= 0 ? "+" : "−"}
+          {Math.abs(legacy.realizedSol).toFixed(2)} ◎) tidak dijumlah — pembukuan berbeda
+        </p>
+      )}
 
       <AssetRow
         sym="SOL" accent="var(--hud-gold)"

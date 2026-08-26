@@ -147,6 +147,23 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
               {solPnl >= 0 ? "+" : "−"}{Math.abs(solPnl).toFixed(4)}◎
             </div>
           )}
+          {/*
+            MARK vs YANG AKAN DIBAYAR. Angka besar di atas adalah mark paper. Terukur terhadap
+            chain, mark paper pada token yang sedang BERGERAK justru yang paling tidak bisa
+            dieksekusi: klaim 50-100% cair sekitar dua pertiga, klaim di atas 100% cair
+            sepersepuluh. Kartu +120% bukan +120% yang akan diterima, dan sebelum baris ini
+            tidak ada apa pun di layar yang mengatakannya.
+            Hanya ditampilkan kalau koreksinya BERBEDA secara berarti — menempelkan angka kedua
+            yang identik ke setiap kartu hanya melatih orang mengabaikan keduanya.
+          */}
+          {!unpriced && position.unrealizedPnlAdj != null && Math.abs(position.unrealizedPnlAdj - pnl) >= 1 && (
+            <div
+              className="mt-0.5 font-mono text-[9px] tabular-nums text-muted-foreground"
+              title="Perkiraan yang benar-benar cair saat dijual, dari kurva eksekusi yang diukur terhadap chain. Mark di atas adalah harga kuotasi."
+            >
+              cair ≈ {position.unrealizedPnlAdj >= 0 ? "+" : "−"}{Math.abs(position.unrealizedPnlAdj).toFixed(1)}%
+            </div>
+          )}
           {solPnl == null && usdPnl != null && (
             <div className="mt-1 font-mono text-[9.5px] tabular-nums" style={{ color: accent }}>
               {usdPnl >= 0 ? "+" : "−"}${Math.abs(usdPnl).toFixed(2)}
