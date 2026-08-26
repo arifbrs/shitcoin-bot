@@ -124,6 +124,17 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
         bukan apa-apa, jadi angka di atas hanya memuat rezim yang sedang berlaku — dan baris ini
         ada supaya "kenapa cum P&L-ku berubah?" punya jawaban di layar, bukan di commit log.
       */}
+      {/*
+        Kualifikasi "executable only" ditulis oleh simulasi buy, yang tidak berjalan pada mode
+        ini — jadi angka di atas memuat SEMUA trade, bukan hanya yang terbukti mendarat. Tanpa
+        baris ini panel akan diam-diam mengganti arti angkanya sendiri.
+      */}
+      {data.paper?.execStageUnresolved && (
+        <p className="mb-2 -mt-1 font-mono text-[9px] tabular-nums text-muted-foreground/50"
+           title="execStage tetap 'pending' karena simulasi buy hanya berjalan pada execMode simulate. Angka memuat semua trade, bukan hanya yang terbukti dapat dieksekusi.">
+          semua trade dihitung — bukti "dapat dieksekusi" tidak dikumpulkan pada mode ini
+        </p>
+      )}
       {legacy != null && legacy.closed > 0 && (
         <p
           className="mb-2 -mt-1 font-mono text-[9px] tabular-nums text-muted-foreground/50"

@@ -1407,13 +1407,42 @@ function buildStats() {
   // regardless of what the entry simulation predicted. Every dashboard number that reads as
   // P&L, win/loss, or a tuning signal below is computed from `execCloses`/`execPartials` (this
   // qualification) only. The unfiltered `closes` above still feeds `paperHypothetical`.
+  /**
+   * ── "EXECUTABLE ONLY" BUTUH BUKTI, DAN BUKTINYA BISA TIDAK PERNAH DIKUMPULKAN ──
+   *
+   * Angka utama sengaja hanya menghitung trade yang simulasi mainnet buktikan BENAR-BENAR
+   * mendarat (audit P0-2): buy would-fail tidak pernah mempertaruhkan SOL. Aturan itu benar
+   * selama `execStage` memang terisi.
+   *
+   * Ia tidak terisi di sini. Cap `executable` ditulis oleh simulasi buy yang hanya berjalan
+   * sinkron ketika execMode "simulate" DAN skipWouldFail menyala; pada execMode "dry-run"
+   * keduanya tidak, jadi setiap baris ditutup dengan execStage "pending". Terukur saat ini:
+   * 214 CLOSE rezim berlaku, SEMUANYA pending, sementara 3.710 baris "executable" seluruhnya
+   * milik rezim pembukuan lama.
+   *
+   * Akibatnya panel utama menghitung NOL trade sejak mode berpindah -- angka yang terpampang
+   * seluruhnya sejarah, dan tampak hidup. Itu persis mode kegagalan yang sedang diaudit.
+   *
+   * Menyaring habis data karena buktinya tidak pernah dikumpulkan bukan kehati-hatian, itu
+   * kebutaan. Jadi: pakai kualifikasi selama ADA buktinya; kalau tidak ada sama sekali, hitung
+   * semuanya dan katakan begitu, dengan lantang, di payload -- supaya layar bisa menjelaskan
+   * dirinya sendiri alih-alih menampilkan nol yang misterius.
+   */
+  const execEvidence = closes.some((t) => {
+    const st = (t as { execStage?: string }).execStage;
+    return st === "executable" || st === "would-fail";
+  });
+  const execStageUnresolved = !execEvidence && closes.length > 0;
+
   const qualifyingTradeIds = new Set(
     closes
       .filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN")
       .map((t) => (t as { tradeId?: string }).tradeId)
       .filter((id): id is string => Boolean(id)),
   );
-  const execCloses = closes.filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN");
+  const execCloses = execStageUnresolved
+    ? closes // buktinya tidak pernah dikumpulkan — lihat catatan di atas
+    : closes.filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN");
   // #8 entry-latency telemetry: how long from detect → entry (honest about "momentum
   // follower, not opening sniper"). Also per-mode P&L split (owner wants clean per-mode data).
   const lat = opens.map((t) => (t as { decisionLatencyMs?: number }).decisionLatencyMs).filter((x): x is number => typeof x === "number");
@@ -1502,6 +1531,7 @@ function buildStats() {
   // qualification computed above instead of checking the partial's own execStage in isolation.
   const execPartials = partials.filter((t) => {
     const id = (t as { tradeId?: string }).tradeId;
+    if (execStageUnresolved) return true; // sama alasannya dengan execCloses di atas
     return id ? qualifyingTradeIds.has(id) : (t as { execStage?: string }).execStage === "executable";
   });
   // Realized SOL = remaining-leg SOL from every close + every banked partial-TP. EXECUTABLE ONLY
@@ -2138,6 +2168,12 @@ function buildStats() {
        * Dilaporkan supaya "kenapa cum P&L-ku mengecil?" punya jawaban di layar, bukan hanya
        * di commit log.
        */
+      /**
+       * true = kualifikasi "executable only" TIDAK bisa diterapkan karena simulasi buy tidak
+       * pernah berjalan pada mode ini, jadi angka di atas memuat SEMUA trade rezim berlaku.
+       * Bukan klaim yang lebih lemah — klaim yang berbeda, dan layar harus mengatakannya.
+       */
+      execStageUnresolved,
       legacy: {
         corrected: config.risk.execRealism,
         closed: legacyCloses.length,

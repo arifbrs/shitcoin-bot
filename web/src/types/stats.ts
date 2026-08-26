@@ -359,6 +359,11 @@ export interface SniperPaper {
    * Baris dari rezim pembukuan LAIN, dilaporkan terpisah dan TIDAK pernah ikut dijumlah di
    * angka mana pun di atas. `corrected` menyatakan rezim mana yang sedang berlaku.
    */
+  /**
+   * true = kualifikasi "executable only" tidak bisa diterapkan (simulasi buy tidak berjalan
+   * pada mode ini), jadi angka di atas memuat SEMUA trade rezim berlaku.
+   */
+  execStageUnresolved?: boolean;
   legacy?: { corrected: boolean; closed: number; realizedSol: number };
 }
 
