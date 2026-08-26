@@ -723,6 +723,18 @@ export const config = {
     sampleMs: 30_000, // sample its price this often
     maxTracked: 40, // cap concurrently-tracked closed tokens (bounds swap-api load)
     prematureRisePct: 25, // if price rose ≥ this % vs our exit within the window → exit was PREMATURE
+    /**
+     * ── PROBE JEDA KELUAR (2026-08-26) ──
+     * Offset (detik) untuk menyampel harga SETELAH sinyal keluar, per-exit, di luar irama 30
+     * detik di atas. Dipilih menutupi sebaran jeda live yang TERUKUR terhadap chain: p50 3,9s,
+     * p90 38,7s. Tanpa ini jendela 0-40 detik praktis kosong (215 observasi dalam tiga hari
+     * lawan median umur sampel 1.234 detik), dan pertanyaan "berapa banyak kerugian yang murni
+     * karena kita telat keluar" tidak bisa dijawab sama sekali.
+     * Biaya: 6 panggilan swap-api per exit, ~7/menit pada laju sekarang, dari anggaran 120/menit.
+     */
+    lagProbeSec: (process.env.POST_EXIT_LAG_SEC ?? "2,4,8,15,30,60")
+      .split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x > 0),
+    maxLagProbes: Number(process.env.POST_EXIT_MAX_LAG_PROBES ?? 10),
   },
 
   // pump.fun candles (free OHLCV, swap-api v1) — raw chart fed to the Feeling Agent.

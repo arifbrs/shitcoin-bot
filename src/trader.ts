@@ -344,6 +344,8 @@ export class PaperTrader {
   /** tradeIds already summarised — survives entry deletion, so a late pass cannot re-emit. */
   private postExitDone = new Set<string>();
   private postExitTimer?: ReturnType<typeof setInterval>;
+  /** Bounded concurrency for the post-exit lag probe — see startLagProbe(). */
+  private lagProbesInFlight = 0;
   // Learned winner profile (pattern memory): avg entry conditions of coins that peaked
   // ≥100%. Refreshed lazily from the patterns log; fed to the agent as an analysis prior.
   private tradeSeq = 0; // monotonic within a process — combined with time+random for a stable unique tradeId
@@ -576,10 +578,33 @@ export class PaperTrader {
       return { opened: false, code: "CAPACITY_OR_DUPLICATE" };
     }
 
+    /**
+     * ── DI MANA WAKTU MASUK ITU HABIS ──────────────────────────────────────
+     *
+     * Terukur 2026-08-26: seluruh latensi masuk ada di sini. deteksi→keputusan p50 2,92s /
+     * p90 5,97s, sementara keputusan→OPEN nol. Kurva peluruhan nilai memuncak di detik ke-4,
+     * jadi separuh entry mendarat di atau sesudah puncaknya — ini lever terbesar yang belum
+     * disentuh, dan sebelum ini tidak ada satu pun angka yang memberi tahu bagian MANA dari
+     * 2,92 detik itu yang bisa diperbaiki.
+     *
+     * Komentar pada pembacaan kurva di bawah menduga RPC free-tier ~2,9s per panggilan, yang
+     * berarti SATU round trip menghabiskan seluruh anggaran. Dugaan itu masuk akal dan tetap
+     * dugaan — inilah yang mengukurnya. Biayanya satu Date.now() per tahap.
+     */
+    const stage0 = Date.now();
+    let stageAt = stage0;
+    const stageMs: Record<string, number> = {};
+    const mark = (name: string): void => {
+      const now = Date.now();
+      stageMs[name] = now - stageAt;
+      stageAt = now;
+    };
+
     // ── SETUP CLASSIFIER (deterministic, the entry decision — owner spec) ──
     // Classify TOXIC/CLEAN/UNKNOWN from launch data. TOXIC → hard skip. UNKNOWN → skip unless
     // we allow sniping the unknown (small bounded size, many shots). Momentum is NOT consulted.
     const setup = classifySetup(c);
+    mark("setup");
     c.setup = setup;
     this.onSetupVerdict?.(c.mint, setup.verdict, setup.confidence); // stamp observatory → shadow setup ≠ blind (audit fix)
     if (setup.verdict === "TOXIC") {
@@ -686,6 +711,11 @@ export class PaperTrader {
     if (c.bondingCurveKey) {
       const first = await bondingCurvePriceSol(c.bondingCurveKey);
       const bc = first && first.priceSol > 0 ? first : await bondingCurvePriceSol(c.bondingCurveKey);
+      // Dicatat terpisah: pembacaan kedua hanya jalan kalau yang pertama gagal, jadi kalau
+      // tahap ini kira-kira dua kali tahap lain, jawabannya bukan "RPC lambat" melainkan
+      // "RPC menjawab kosong lalu kita membayarnya dua kali".
+      stageMs.curveReads = first && first.priceSol > 0 ? 1 : 2;
+      mark("curve");
       if (bc) {
         // The live account is authoritative over a possibly incomplete launch event. Fail before
         // committing capital when the quote unit is not SOL or Mayhem can alter supply/liquidity.
@@ -764,6 +794,7 @@ export class PaperTrader {
     // burns a fee. This is the owner's "MC kecil tapi holder banyak" signal.
     if (priceMode === "sol") {
       const { count: holders, source: holderSource } = await holderCountP; // started in parallel with the curve read above
+      mark("holdersAwait"); // ~0 kalau paralelnya benar-benar bekerja; besar = ia tidak paralel
       // SETUP-SNIPER enters EARLY (holders naturally low), so we DON'T require the momentum-era
       // 10-holder demand bar (audit: that was the hybrid "demand confirmation"). We only reject
       // the truly dead-on-arrival case: holders ≤1 = just the dev, buying it only burns fee.
@@ -835,6 +866,7 @@ export class PaperTrader {
     // default). Otherwise it's pure telemetry and runs in the background.
     if (readControl().execMode === "simulate" && config.exec.skipWouldFail) {
       const sim = await simulateBuyMainnet(c.mint, sizeSol, c.pool ?? "auto");
+      mark("buySim");
       execStage = assessBuySimulation(sim).stage;
       if (execStage === "would-fail") {
         ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — BUY simulation would fail; entry not executable`);
@@ -977,7 +1009,13 @@ export class PaperTrader {
     if (c.creator) this.watcher.watch(c.creator); // start real-time dev watch
     this.tradeStream.watch(c.mint); // start live crowd streaming for this token
     this.save();
-    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, mcArm, mcFloor, mcCeiling, measurementEpoch: config.measurementEpoch,
+    mark("rest");
+    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, mcArm, mcFloor, mcCeiling,
+      // Rincian latensi masuk. `openMs` adalah keseluruhan open(); `detectMs` menambahkan
+      // waktu yang sudah hilang SEBELUM kandidat sampai ke sini.
+      stageMs, openMs: Date.now() - stage0,
+      detectMs: c.detectedAt != null ? Date.now() - c.detectedAt : null,
+      measurementEpoch: config.measurementEpoch,
       policyId: config.strategyVersion, armId: process.env.ARM_ID ?? "live",
       mint: c.mint, symbol: c.symbol, mode: c.mode, price, liquidityUsd: liq, devOnlyBuys, execStage,
       decisionLatencyMs: c.detectedAt ? Date.now() - c.detectedAt : undefined, // #8: detect→entry latency (honest "how late do we enter")
@@ -2345,13 +2383,19 @@ export class PaperTrader {
   /** Start tracking a just-closed token's price to learn if the exit was premature. */
   private registerPostExit(pos: Position, mint: string, symbol: string | undefined, reason: string, exitPrice: number, exitPnlPct: number, heldSec: number): void {
     if (!config.postExit.enabled) return;
-    if (this.postExit.size >= config.postExit.maxTracked) return; // bound load
     const tradeId = pos.tradeId;
+    const capped = this.postExit.size >= config.postExit.maxTracked; // bound the 45-min tracker
     // Baseline in SOL from the swap-api tape so post-exit samples are same-unit,
     // regardless of the position's price mode. Fire-and-forget.
     void latestPriceSol(mint).then((p) => {
       const base = p ?? (exitPrice > 0 ? exitPrice : 0);
       if (base <= 0) return;
+      // The lag probe runs even when the 45-minute tracker is full. At ~70 exits an hour that
+      // tracker saturates almost permanently, and the seconds right after an exit are exactly
+      // the window we have no data for — capping the probe on the tracker's budget would keep
+      // it that way.
+      this.startLagProbe(tradeId, mint, symbol, reason, base, pos);
+      if (capped) return;
       if (this.postExitDone.has(tradeId) || this.postExit.has(tradeId)) return; // never track one trade twice
       this.postExit.set(tradeId, {
         tradeId, decisionId: pos.decisionId, mint, symbol, reason, exitTs: Date.now(),
@@ -2360,6 +2404,66 @@ export class PaperTrader {
         regimeId: regimeOf(pos),
       });
     });
+  }
+
+  /**
+   * WHAT THE PRICE DID IN THE SECONDS AFTER WE DECIDED TO SELL.
+   *
+   * Paper marks an exit at the price on the tick that triggered it. Live sells later — measured
+   * against the chain: p50 3.9s, p90 38.7s. Everything in between is unmodelled, and it is the
+   * leading candidate for why paper's winners do not survive execution (a claim above +100%
+   * returns about a tenth of itself in real SOL).
+   *
+   * We could not test that, because nothing recorded it. The 45-minute tracker samples every
+   * 30s for ALL tracked tokens at once, so a token's first sample lands 0–30s after its exit at
+   * random: across three days that left 215 observations under 40 seconds, against a median
+   * sample age of 1,234s. A tape built to answer "should we have held for minutes?" cannot
+   * answer "what happened in the next four seconds?".
+   *
+   * So this probes on its own schedule, per exit, at the offsets the live lag distribution
+   * actually occupies. It records the elapsed time it MEASURED rather than the offset it aimed
+   * for — the shared rate limiter can delay a sample, and a delayed sample is still a true
+   * observation of a different offset, whereas a sample labelled with its intention is a lie.
+   */
+  private startLagProbe(
+    tradeId: string, mint: string, symbol: string | undefined, reason: string,
+    baselineSol: number, pos: Position,
+  ): void {
+    if (!config.postExit.lagProbeSec.length) return;
+    // Bounded so a burst of exits cannot crowd the price budget that OPEN positions depend on.
+    if (this.lagProbesInFlight >= config.postExit.maxLagProbes) {
+      logRecord("post-exit", { type: "lag-skipped", tradeId, mint, inFlight: this.lagProbesInFlight });
+      return;
+    }
+    this.lagProbesInFlight++;
+    const t0 = Date.now();
+    const armId = process.env.ARM_ID ?? "live";
+    const regimeId = regimeOf(pos);
+    void (async () => {
+      try {
+        for (const target of config.postExit.lagProbeSec) {
+          const wait = t0 + target * 1_000 - Date.now();
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          const price = await latestPriceSol(mint);
+          const elapsed = (Date.now() - t0) / 1000;
+          if (!price || price <= 0) {
+            logRecord("post-exit", { type: "lag", tradeId, mint, symbol: symbol ?? null, reason,
+              targetSec: target, secSinceExit: Number(elapsed.toFixed(2)), pctVsExit: null,
+              policyId: config.strategyVersion, armId, regimeId, mcArm: pos.mcArm ?? null, cfg: configHash });
+            continue;
+          }
+          logRecord("post-exit", {
+            type: "lag", tradeId, mint, symbol: symbol ?? null, reason,
+            targetSec: target,
+            secSinceExit: Number(elapsed.toFixed(2)),
+            pctVsExit: Number((((price - baselineSol) / baselineSol) * 100).toFixed(2)),
+            policyId: config.strategyVersion, armId, regimeId,
+            mcArm: pos.mcArm ?? null, cfg: configHash,
+          });
+        }
+      } catch { /* a probe that fails costs a measurement, never a position */ }
+      finally { this.lagProbesInFlight--; }
+    })();
   }
 
   /**

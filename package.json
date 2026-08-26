@@ -40,7 +40,7 @@
     "curve-overlay:selftest": "tsx src/curve-overlay-selftest.ts",
     "launch-event:selftest": "tsx src/launch-event-selftest.ts",
     "scaleout:selftest": "tsx src/scaleout-selftest.ts",
-    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run exec-realism:selftest && npm run mc-band-ab:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest && npm run rpc-rotation:selftest && npm run watchdog:selftest",
+    "correctness:selftest": "npm run typecheck && npm run measurement:selftest && npm run exec-realism:selftest && npm run mc-band-ab:selftest && npm run exit-lag:selftest && npm run curve-layout:selftest && npm run curve-overlay:selftest && npm run launch-event:selftest && npm run setup:selftest && npm run execution-semantics:selftest && npm run actor-memory:selftest && npm run arm-spec:selftest && npm run arm-admission:selftest && npm run arm-ledger:selftest && npm run arm-exit:selftest && npm run exposure-reservations:selftest && npm run scaleout:selftest && npm run graduation-math:selftest && npm run rpc-quota:selftest && npm run mc-anomaly:selftest && npm run rpc-rotation:selftest && npm run watchdog:selftest",
     "profit:evaluate": "tsx src/profit-evaluator.ts",
     "shadow": "tsx src/shadow.ts",
     "structural:report": "tsx src/calibration.ts",
@@ -54,7 +54,10 @@
     "live:truth": "tsx src/live-truth.ts",
     "exec-realism:selftest": "tsx src/exec-realism-selftest.ts",
     "mc-band-ab:selftest": "tsx src/mc-band-ab-selftest.ts",
-    "mc-ab:report": "tsx src/mc-band-ab-report.ts"
+    "mc-ab:report": "tsx src/mc-band-ab-report.ts",
+    "exit-lag:report": "tsx src/exit-lag-report.ts",
+    "exit-lag:selftest": "tsx src/exit-lag-selftest.ts",
+    "entry-latency:report": "tsx src/entry-latency-report.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
