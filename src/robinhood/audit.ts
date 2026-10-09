@@ -256,29 +256,45 @@ for (const list of dupeTimes.values()) {
 // dibandingkan sendiri: sisa positif = posisi yang seharusnya masih dipegang.
 // Selisih yang PUNYA PENJELASAN TERCATAT (baris rekonsiliasi untuk kunci itu) dihitung terpisah —
 // tidak disembunyikan, tapi juga tidak lagi membuat seluruh pemeriksaan merah tanpa alasan jelas.
-const opensEffective = opens.filter((o) => !reconciledCloseKeys.has(`${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`));
+// Hanya OPEN RIIL yang boleh "dimakan" CLOSE rekonsiliasi. OPEN rekonsiliasi adalah baris
+// penyeimbang yang memang ditulis untuk posisi yang DIPEGANG state — ia harus tetap terhitung.
+const opensEffective = opens.filter((o) => {
+  const key = `${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`;
+  return o["reconciled"] === true || !reconciledCloseKeys.has(key);
+});
 const keyResidual = new Map<string, number>();
 for (const o of opensEffective) keyResidual.set(`${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`, (keyResidual.get(`${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`) ?? 0) + 1);
 for (const c of closes) keyResidual.set(`${c["variant"]}|${c["token"]}|${c["life"] ?? 1}`, (keyResidual.get(`${c["variant"]}|${c["token"]}|${c["life"] ?? 1}`) ?? 0) - 1);
 let expectedOpen = 0, explainedKeys = 0;
-const unexplainedKeys: string[] = [];
-for (const [key, r] of keyResidual) {
-  if (r <= 0) continue;
-  expectedOpen += r;
-  if (reconciledCloseKeys.has(key)) explainedKeys++;
-  else unexplainedKeys.push(`${key} (+${r})`);
-}
+// (perhitungan per-kunci ditangani blok di bawah)
 const stateHeld = new Map<string, number>();
 for (const [id, vs] of Object.entries((state.variants ?? {}) as Record<string, { positions?: Array<{ token: string }>; life?: number }>)) {
   for (const p of vs.positions ?? []) stateHeld.set(`${id}|${p.token}|${vs.life ?? 1}`, (stateHeld.get(`${id}|${p.token}|${vs.life ?? 1}`) ?? 0) + 1);
 }
-const stateKeyed = [...stateHeld.values()].reduce((a, b) => a + b, 0);
-const parityOk = expectedOpen === stateKeyed || (expectedOpen !== stateKeyed && unexplainedKeys.length === 0 && Math.abs(expectedOpen - stateKeyed) <= explainedKeys);
+// KOREKSI 2026-10-09: sisa positif per kunci BUKAN otomatis anomali — ia cocok dengan posisi yang
+// memang dipegang state (re-entry dalam life yang sama: buka → tutup → buka lagi). Yang benar-benar
+// salah adalah SELISIH antara sisa itu dan jumlah yang dipegang, per kunci.
+let unexplainedGap = 0;
+const unexplainedList: string[] = [];
+for (const [key, r] of keyResidual) {
+  if (r <= 0) continue;
+  expectedOpen += r;
+  const heldHere = stateHeld.get(key) ?? 0;
+  const gap = r - heldHere;
+  if (gap <= 0) continue;
+  if (reconciledCloseKeys.has(key)) { explainedKeys += gap; continue; }
+  unexplainedGap += gap;
+  unexplainedList.push(`${key} (+${gap} vs state ${heldHere})`);
+}
+// Sisi sebaliknya: state memegang lebih banyak daripada yang dicatat ledger.
+let extraHeld = 0;
+for (const [key, held] of stateHeld) extraHeld += Math.max(0, held - Math.max(0, keyResidual.get(key) ?? 0));
+const parityOk = unexplainedGap === 0 && extraHeld === 0;
 console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
 console.log(`\n1) ARITMETIKA   : ${compared} trade dihitung ulang (${equitySkip} dilewati: data harga tak lengkap) · selisih max $${maxDiff.toExponential(2)} ${maxDiff <= 0.01 ? "→ COCOK (selisih = pembulatan log)" : "→ TIDAK COCOK"}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
 console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` (${sizingDerived} entry lama: equity direkonstruksi)` : ""}`);
-console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${stateKeyed} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} kunci dijelaskan baris rekonsiliasi` : ""}${unexplainedKeys.length ? ` · TAK TERJELASKAN: ${unexplainedKeys.slice(0, 4).join(", ")}` : ""} · (varian,token) tutup-dobel=${dupCount}`);
+console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""} · (varian,token) tutup-dobel=${dupCount}`);
 
 console.log(`\n4) BATAS RISIKO : ${breaches.length} dari ${closes.filter((c) => num(c["pnlUsd"]) < 0).length} trade rugi melebihi stop nominal + biaya`);
 const totalLoss = closes.filter((c) => num(c["pnlUsd"]) < 0).reduce((a, c) => a + num(c["pnlUsd"]), 0);

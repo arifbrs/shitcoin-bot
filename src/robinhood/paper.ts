@@ -960,10 +960,12 @@ function reconcileLedgerOnStart(st: State): void {
       const keyLife = Number(lifeStr ?? 1);
       const curLife = st.variants[id]?.life ?? 1;
       if (keyLife !== curLife) continue;                       // hanya untuk life berjalan
-      if ((held.get(`${id}|${token}`) ?? 0) === 0) continue;    // hanya bila state MEMANG memegangnya
-      if ((openCount.get(key) ?? 0) > 0) continue;              // sudah ada OPEN sah → tak perlu
-      const deficit = (recClose.get(key) ?? 0) - (recOpen.get(key) ?? 0);
-      for (let i = 0; i < deficit; i++) {
+      const want = held.get(`${id}|${token}`) ?? 0;
+      if (want === 0) continue;                                 // state tidak memegangnya → tak perlu
+      // Sisa SETELAH memperhitungkan baris rekonsiliasi — syarat lama (`openCount === 0`) melewatkan
+      // kasus yang justru paling sering: OPEN sah ada, tetapi CLOSE rekonsiliasi lama "memakannya".
+      const have = (openCount.get(key) ?? 0) + (recOpen.get(key) ?? 0) - (closeCount.get(key) ?? 0) - (recClose.get(key) ?? 0);
+      for (let i = have; i < want; i++) {
         const p = (st.variants[id]?.positions ?? []).find((x) => x.token === token);
         logRecord("rh-paper", {
           action: "RH_OPEN", reconciled: true, reason: "penyeimbang: posisi ini NYATA (dipegang state); CLOSE rekonsiliasi lama salah menutupnya",
