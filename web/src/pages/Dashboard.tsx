@@ -75,11 +75,27 @@ export default function Dashboard() {
               dan panel lamanya dipindah ke balik <details> supaya tidak lagi mendominasi layar. */}
           <div className="mx-auto max-w-[1700px] space-y-4">
             <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
-              <LaneTag name={`Robinhood · ${data.laneRobinhood?.variants.length ?? "?"} varian`} status="AKTIF" tone="up" note="Paper $5/trade di Ethereum L2 4663 · review harian 08:00 · nol eksekusi" />
-              <LaneTag name="GMGN" status="AKTIF" tone="up" note="Proxy + watch (pace 10s) + sinyal & kualitas wallet · laporan harian" />
-              <LaneTag name="DexScreener" status="AKTIF" tone="up" note="13 endpoint + 6 stream WS realtime (diukur gratis) · watchlist & promosi berbayar" />
-              <LaneTag name="OKX · strict-paper" status="AKTIF" tone="up" note="Uang kertas 0,1 SOL · tx unsigned + simulasi · ledger hash-chain · nol tanda tangan" />
-              <LaneTag name="Solana (S1 + S2)" status="DIMATIKAN" tone="dim" note="Dihentikan 2026-10-07 · data lama tetap tersimpan di logs/" />
+              {/* STATUS DARI DATA, BUKAN HARDCODE (2026-10-09): kartu ini dulu selalu "AKTIF" walau
+                  lane-nya mati. Sekarang diambil dari laneHealth (mtime berkas state), jadi dashboard
+                  tidak bisa lagi berbohong soal lane hidup/mati. */}
+              {(() => {
+                const h = (k: string): { status: string; tone: "up" | "dim"; note: string } => {
+                  const v = data.laneHealth?.[k];
+                  if (!v) return { status: "?", tone: "dim", note: "kesehatan lane belum tersedia" };
+                  const ago = v.ageSec == null ? "berkas tak ada" : v.ageSec < 90 ? `${v.ageSec}s lalu` : v.ageSec < 5_400 ? `${Math.round(v.ageSec / 60)}m lalu` : `${(v.ageSec / 3_600).toFixed(1)}j lalu`;
+                  return { status: v.fresh ? "AKTIF" : "DIAM", tone: v.fresh ? "up" : "dim", note: `tulis ${ago}` };
+                };
+                const rh = h("robinhood"), gg = h("gmgn"), dx = h("dex"), ok = h("okxPaper");
+                return (
+                  <>
+                    <LaneTag name={`Robinhood · ${data.laneRobinhood?.variants.length ?? "?"} varian`} status={rh.status} tone={rh.tone} note={`Paper $5/trade di Ethereum L2 4663 · nol eksekusi · ${rh.note}`} />
+                    <LaneTag name="GMGN" status={gg.status} tone={gg.tone} note={`Proxy + watch + sinyal & kualitas wallet · ${gg.note}`} />
+                    <LaneTag name="DexScreener" status={dx.status} tone={dx.tone} note={`13 endpoint + 6 stream WS · ${dx.note}`} />
+                    <LaneTag name="OKX · strict-paper" status={ok.status} tone={ok.tone} note={`Uang kertas 0,1 SOL · ledger hash-chain · ${ok.note}`} />
+                    <LaneTag name="Solana (S1 + S2)" status="DIMATIKAN" tone="dim" note="Dihentikan 2026-10-07 · data lama tetap tersimpan di logs/" />
+                  </>
+                );
+              })()}
             </div>
             <LaneRobinhood data={data.laneRobinhood} />
             <LaneGmgn />

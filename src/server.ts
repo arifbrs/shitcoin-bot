@@ -2051,6 +2051,10 @@ function buildStats() {
     // ditulis (mark 30 detik) — bukan polling. Cache internal 4 detik; murah (state kecil +
     // log harian + 2 file laporan). GMGN TIDAK ikut di sini karena sumbernya file events besar.
     laneRobinhood: buildRobinhoodPaper(),
+    // KESEHATAN LANE (2026-10-09): sebelumnya kartu status di dashboard HARDCODE "AKTIF" — kalau
+    // lane mati, kartunya tetap hijau (dashboad bisa berbohong). Ini dihitung dari mtime berkas
+    // state yang ditulis tiap siklus: murah (statSync), tanpa membaca isi, tanpa kuota API.
+    laneHealth: buildLaneHealth(),
     // LANE BARU (2026-10-08): DexScreener (13 endpoint + 6 stream WS realtime) dan OKX strict-paper
     // (uang kertas + verifikasi hash-chain ledger). Keduanya ikut payload SSE supaya panel ikut push
     // saat state ditulis; cache internal masing-masing 4 detik (ledger 60 detik).
@@ -2439,6 +2443,31 @@ function latestMd(prefix: string, maxChars = 9_000): { file: string; text: strin
     const text = readFileSync(join(config.logDir, f), "utf8");
     return { file: f, text: text.length > maxChars ? `${text.slice(0, maxChars)}\n… (dipotong)` : text };
   } catch { return null; }
+}
+
+/**
+ * Kesehatan lane dari mtime berkas state — bukan dari niat. Ambang per lane mengikuti irama
+ * siklusnya (dengan kelonggaran ~3×): RH paper menulis tiap tick mark (10s), Dex tiap siklus (5m),
+ * OKX paper tiap putaran toplist (detik), GMGN watch tiap 15m.
+ */
+function buildLaneHealth(): Record<string, { ageSec: number | null; fresh: boolean }> {
+  const probe = (file: string, freshWithinSec: number): { ageSec: number | null; fresh: boolean } => {
+    try {
+      const st = statSync(join(config.logDir, file));
+      const ageSec = Math.round((Date.now() - st.mtimeMs) / 1000);
+      return { ageSec, fresh: ageSec <= freshWithinSec };
+    } catch { return { ageSec: null, fresh: false }; }
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    // RH diperiksa dari STATE (ditulis tiap tick mark 10 detik), BUKAN berkas harian: berkas harian
+    // hanya bertambah saat ada trade, jadi 30 menit tanpa trade = "DIAM" palsu (alarm palsu yang
+    // menetap melatih orang mengabaikan peringatan — prinsip yang sama dengan alarm S2 dulu).
+    robinhood: probe("rh-paper-state.json", 5 * 60),
+    gmgn: probe("gmgn-full-watch-state.json", 45 * 60),
+    dex: probe("dex-full-state.json", 15 * 60),
+    okxPaper: probe("okx-strict-paper-v2-state.json", 5 * 60),
+  };
 }
 
 /** Lane DexScreener (2026-10-08): 13 endpoint REST (siklus 5 menit) + 6 stream WS realtime. */
