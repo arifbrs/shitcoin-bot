@@ -6,6 +6,7 @@ import { guardBuy, recordSpend, liveAllowed, liveExitAllowed, reconcile } from "
 import { pooledRpc } from "../safety/onchain.js";
 import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus, signatureSubscriptionConn } from "./rpc.js";
 import { jupiterSwapTx } from "./jupiter.js";
+import { okxSwapTx } from "./okx.js";
 
 /**
  * Execution layer. Builds REAL pump.fun transactions (via PumpPortal Local API)
@@ -180,13 +181,29 @@ async function confirmSigVia(conn: Connection, sig: string, timeoutMs = 30_000):
  * double spend — see the note in execution/rpc.ts.
  */
 async function signSendConfirm(bytes: Uint8Array): Promise<LiveResult> {
-  let sig: string;
+  let signed: Uint8Array;
   try {
     const vtx = VersionedTransaction.deserialize(bytes);
     vtx.sign([botWallet()]); // <5ms local signature — the whole point: no human approval
-    sig = await poolSendRawTransaction(vtx.serialize());
+    signed = vtx.serialize();
+  } catch {
+    try {
+      // OKX currently returns v0 transactions, but its API contract also permits legacy Solana
+      // transactions. Supporting both here prevents a valid route-format change becoming a
+      // mysterious execution outage.
+      const tx = Transaction.from(bytes);
+      tx.partialSign(botWallet());
+      signed = tx.serialize({ requireAllSignatures: true, verifySignatures: true });
+    } catch (e) {
+      return { ok: false, err: `transaction decode/sign failed: ${(e as Error).message}` };
+    }
+  }
+
+  let sig: string;
+  try {
+    sig = await poolSendRawTransaction(signed);
   } catch (e) {
-    // Nothing was signed and sent successfully, so there is no position to reconcile.
+    // Nothing was sent successfully, so there is no position to reconcile.
     return { ok: false, err: (e as Error).message };
   }
   // Past this point a transaction EXISTS on the network. Never report it as a clean failure:
@@ -212,6 +229,9 @@ export interface LiveResult {
   tokensOut?: number;
   /** GMGN route (sell): SOL actually received per the order report. */
   solOut?: number;
+  /** Route-build latency before local signing, when the provider exposes it. */
+  buildMs?: number;
+  txFormat?: "versioned" | "legacy";
 }
 
 /**
@@ -569,6 +589,57 @@ export async function jupiterSellLive(tokenMint: string, tokenQtyUi: number): Pr
   const bytes = await jupiterSwapTx(tokenMint, SOL, Math.round(tokenQtyUi * 1e6), kp.publicKey.toBase58());
   if (!bytes) return { ok: false, err: "jupiter swap build failed (no route / api down)" };
   return signSendConfirm(bytes);
+}
+
+// ── S2 EXEC ROUTE: OKX ONCHAINOS ───────────────────────────────────────────
+// OKX builds a ready-to-sign Solana transaction in one REST call. The wallet key remains local;
+// submission and confirmation use this project's own rotating RPC pool and guardian ledger.
+
+const okxExecutionGate = (): { ok: true } | { ok: false; reason: string } => {
+  if (!config.okx.enabled) return { ok: false, reason: "OKX REST disabled or credentials incomplete" };
+  if (!config.okx.executionEnabled) return { ok: false, reason: "OKX_EXECUTION_ENABLED != true" };
+  return { ok: true };
+};
+
+export async function okxBuyLive(
+  tokenMint: string,
+  sizeSol: number,
+  deployedSol: number,
+  caps: S2Caps,
+): Promise<LiveResult> {
+  const providerGate = okxExecutionGate();
+  if (!providerGate.ok) return { ok: false, err: `okx blocked: ${providerGate.reason}` };
+  const gate = liveAllowed();
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+
+  const kp = botWallet();
+  const owner = kp.publicKey.toBase58();
+  // Build and balance read are independent. Overlap them so OKX's measured ~200-300ms builder
+  // does not sit behind an RPC round trip on the entry path.
+  const buildPromise = okxSwapTx(SOL, tokenMint, Math.round(sizeSol * 1e9), owner);
+  const balanceSol = await poolBalanceSol(owner);
+  if (balanceSol == null) return { ok: false, err: "balance read failed on every endpoint — refusing (fail-closed)" };
+  const verdict = guardBuy(sizeSol, balanceSol, deployedSol, Date.now(), caps);
+  if (!verdict.ok) return { ok: false, err: `guard: ${verdict.reason}` };
+
+  const built = await buildPromise;
+  if (!built) return { ok: false, err: "okx swap build failed (no route / malformed transaction / api down)" };
+  const r = await signSendConfirm(built.bytes);
+  if (r.ok) recordSpend(sizeSol);
+  return { ...r, balanceBefore: balanceSol, buildMs: built.buildMs, txFormat: built.format };
+}
+
+export async function okxSellLive(tokenMint: string, tokenQtyUi: number, decimals: number): Promise<LiveResult> {
+  const providerGate = okxExecutionGate();
+  if (!providerGate.ok) return { ok: false, err: `okx blocked: ${providerGate.reason}` };
+  const gate = liveExitAllowed(); // a global halt must never trap a bag
+  if (!gate.ok) return { ok: false, err: `live blocked: ${gate.reason}` };
+  const kp = botWallet();
+  const amountRaw = Math.round(tokenQtyUi * 10 ** decimals);
+  const built = await okxSwapTx(tokenMint, SOL, amountRaw, kp.publicKey.toBase58());
+  if (!built) return { ok: false, err: "okx sell build failed (no route / malformed transaction / api down)" };
+  const r = await signSendConfirm(built.bytes);
+  return { ...r, buildMs: built.buildMs, txFormat: built.format };
 }
 
 // ── S2 EXEC ROUTE: GMGN ─────────────────────────────────────────────────────

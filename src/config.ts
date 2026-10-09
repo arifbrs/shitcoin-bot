@@ -223,21 +223,74 @@ export const config = {
   rugcheckEnabled: process.env.RUGCHECK_ENABLED !== "false",
   /**
    * S2 LIVE MIRROR (owner, 2026-08-24: "1 inti") — Strategy 2 executes for real when the
-   * console switch is LIVE, via Jupiter, with its OWN smaller caps. Shares the guardian's
-   * halt + 24h spend ledger with S1. S2_LIVE_ENABLED=false freezes the mirror back to
+   * console switch is LIVE, via the selected Jupiter/OKX/GMGN route, with its OWN smaller caps.
+   * Shares the guardian's halt + 24h spend ledger with S1. S2_LIVE_ENABLED=false freezes it to
    * paper-only without touching the brain.
    */
   s2LiveEnabled: process.env.S2_LIVE_ENABLED !== "false",
   s2MaxPerTradeSol: Number(process.env.S2_MAX_PER_TRADE_SOL ?? 0.02),
   s2MaxDeployedSol: Number(process.env.S2_MAX_DEPLOYED_SOL ?? 0.06),
   /**
-   * Execution route for the S2 live mirror: "jupiter" (default — non-custodial, tx signed
-   * locally, no platform fee) or "gmgn" (official OpenAPI swap — ±1%/side platform fee, and
-   * the bot wallet must be imported into the owner's GMGN account: server-side execution).
-   * Fees per route are logged per trade so the comparison stays measurable.
+   * Execution route for the S2 live mirror: "jupiter" (default), "okx" (OnchainOS builds a
+   * Solana transaction, signed locally), or "gmgn" (server-side execution; wallet imported in
+   * the owner's GMGN account). Fees and route are logged per trade.
    */
-  s2ExecRoute: (process.env.S2_EXEC_ROUTE ?? "jupiter").toLowerCase() === "gmgn" ? "gmgn" : "jupiter",
+  s2ExecRoute: (() => {
+    const route = (process.env.S2_EXEC_ROUTE ?? "jupiter").trim().toLowerCase();
+    return route === "gmgn" || route === "okx" ? route : "jupiter";
+  })() as "jupiter" | "okx" | "gmgn",
   jupiterApiKey: process.env.JUPITER_API_KEY?.trim() || undefined,
+  /**
+   * OKX OnchainOS provider. Market/radar reads are opt-in with OKX_SHADOW_ENABLED. Execution has
+   * a SECOND independent lock (`OKX_EXECUTION_ENABLED`) and still passes through the global live
+   * gate, wallet-balance read, guardian caps and spend ledger. Secrets never enter config hashes.
+   */
+  okx: {
+    enabled: process.env.OKX_SHADOW_ENABLED === "true" && Boolean(
+      process.env.OKX_API_KEY?.trim() &&
+      process.env.OKX_SECRET_KEY?.trim() &&
+      process.env.OKX_API_PASSPHRASE?.trim(),
+    ),
+    baseUrl: process.env.OKX_BASE_URL?.trim() || "https://web3.okx.com",
+    maxRps: numEnv(process.env.OKX_MAX_RPS, 1, 0.1),
+    timeoutMs: numEnv(process.env.OKX_TIMEOUT_MS, 8_000, 1_000),
+    executionEnabled: process.env.OKX_EXECUTION_ENABLED === "true",
+    slippagePercent: Math.min(50, numEnv(process.env.OKX_SLIPPAGE_PERCENT, 3, 0.01)),
+    /**
+     * WebSocket lane (wss://wsdex.okx.com/ws/v6/dex). Separate switch from the REST lane on
+     * purpose: bounded REST polling cannot replace a push feed on the entry hot path, whereas a
+     * stream has no per-call cost once connected. They fail independently and are measured
+     * independently, so one being down must not silently disable the other.
+     */
+    wsEnabled: process.env.OKX_WS_ENABLED === "true",
+    wsUrl: process.env.OKX_WS_URL?.trim() || "wss://wsdex.okx.com/ws/v6/dex",
+    /** Channels to subscribe on connect, comma-separated. Empty = connect but subscribe nothing. */
+    wsChannels: (process.env.OKX_WS_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    /**
+     * Shadow copy-trading. Records what following a tracked wallet WOULD have produced. It never
+     * buys: the copy lane has to earn its way past the same fixed-horizon evidence bar that the
+     * GMGN smart-money lane failed, where most "smart money buys" landed AFTER our own entry.
+     */
+    copyShadow: process.env.OKX_COPY_SHADOW === "true",
+    /** Wallets to track on address-tracker-activity. OKX caps this at 200 per subscription. */
+    trackedWallets: (process.env.OKX_TRACKED_WALLETS ?? "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 200),
+    /** REST fallback used when the account has no WebSocket entitlement. First page seeds the
+     *  deduper; only rows first observed after startup become observations/copy candidates. */
+    restSignalEnabled: process.env.OKX_REST_SIGNAL_ENABLED !== "false",
+    // 30s ≈86.4k calls/month if left on continuously, under the documented 100k premium free
+    // allowance before accounting for other studies. Faster polling is explicit and quota-aware.
+    restSignalPollMs: numEnv(process.env.OKX_REST_SIGNAL_POLL_MS, 30_000, 5_000),
+    restCopyPollMs: numEnv(process.env.OKX_REST_COPY_POLL_MS, 60_000, 15_000),
+    restCopyMaxWallets: Math.min(200, Math.floor(numEnv(process.env.OKX_REST_COPY_MAX_WALLETS, 25, 1))),
+    /** Persistent pre-execution candidate ledger. This is deliberately safe-by-construction:
+     * candidates can be WATCH/REJECT only and have no route to a signer or broadcaster. */
+    candidateQueueEnabled: process.env.OKX_CANDIDATE_QUEUE_ENABLED !== "false",
+    candidateMaxLagMs: numEnv(process.env.OKX_CANDIDATE_MAX_LAG_MS, 60_000, 1_000),
+    candidateMinAmountUsd: numEnv(process.env.OKX_CANDIDATE_MIN_AMOUNT_USD, 0, 0),
+    candidateMaxRecords: Math.min(10_000, Math.floor(numEnv(process.env.OKX_CANDIDATE_MAX_RECORDS, 1_000, 100))),
+    /** Fixed horizons (seconds) at which every OKX signal/copy candidate is scored. */
+    horizonsSec: (process.env.OKX_HORIZONS_SEC ?? "60,300,900,2700").split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
+  },
   // PumpPortal API key (portal.pumpportal.fun). The free WS covers new-token
   // launches; the per-token TRADE stream (subscribeTokenTrade — live buyers/
   // sellers, unique traders) needs a key funded with ≥0.02 SOL. Leave empty to

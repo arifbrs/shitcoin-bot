@@ -105,7 +105,9 @@ export async function gmgnTokenInfo(chain: string, mint: string): Promise<GmgnTo
 }
 
 export interface GmgnTokenSecurity {
-  is_honeypot: number | null; honeypot: number; is_open_source: number | null; open_source: number;
+  // TEMUAN LIVE 2026-10-07: GMGN mengirim `1` ATAU `true` (boolean) untuk honeypot — tipe harus
+  // menerima keduanya; pemeriksa yang hanya mengenali angka membuat honeypot lolos.
+  is_honeypot: number | boolean | null; honeypot: number; is_open_source: number | null; open_source: number;
   top_10_holder_rate: string; burn_status: string; buy_tax: string; sell_tax: string;
 }
 export async function gmgnTokenSecurity(chain: string, mint: string): Promise<GmgnTokenSecurity | null> {
@@ -317,4 +319,30 @@ export async function gmgnSwap(p: {
     }
   }
   return { ok: false, orderId, status: lastStatus, err: "poll timeout — order mungkin masih diproses; cek order get" };
+}
+
+/**
+ * `portfolio wallet_stat` — VERIFIED live 2026-10-07 (exist-auth, no key needed): realized
+ * profit/pnl, buy/sell counts, biaya, plus `pnl_stat.{token_num,winrate}` — angka kualitas
+ * wallet yang selama ini tidak kita punya (tag "smart_degen" saja tidak cukup; winrate-lah
+ * yang memisahkan). Satu wallet per call supaya bentuk responsnya pasti objek tunggal.
+ */
+export interface GmgnWalletStat {
+  wallet_address?: string; native_balance?: string;
+  realized_profit?: string | number; realized_profit_pnl?: string | number;
+  buy?: number; sell?: number; bought_cost?: string; bought_fee?: string;
+  sold_income?: string; sold_fee?: string; total_cost?: string; last_timestamp?: number;
+  pnl_stat?: { token_num?: number; winrate?: number; pnl?: string | number };
+  [key: string]: unknown;
+}
+export async function gmgnWalletStats(chain: string, wallets: string[], period = "7d"): Promise<GmgnWalletStat | null> {
+  const r = await callProxy<GmgnWalletStat>("getWalletStats", [chain, wallets, period]);
+  return r && typeof r === "object" && !Array.isArray(r) ? r : null;
+}
+
+/** Top trader sebuah token (by profit) — dipakai pembacaan koin utk menilai siapa yang diuntungkan. */
+export interface GmgnTopTraderRow { address: string; wallet_tag_v2?: string; profit?: number; realized_profit?: number; amount_percentage?: number; unrealized_pnl?: number | null; [k: string]: unknown }
+export async function gmgnTopTraders(chain: string, mint: string, orderBy = "profit", limit = 20): Promise<GmgnTopTraderRow[] | null> {
+  const res = await callProxy<{ list?: unknown[] }>("getTokenTopTraders", [chain, mint, { limit, order_by: orderBy, direction: "desc" }]);
+  return Array.isArray(res?.list) ? (res!.list as GmgnTopTraderRow[]) : null;
 }

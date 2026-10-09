@@ -13,6 +13,14 @@ import { solPriceUsd } from "./execution/jupiter.js";
 import { guardStatus, halt, resume } from "./execution/guardian.js";
 import { acknowledgeDeposit, bridgeStatus } from "./execution/live-bridge.js";
 import { poolBalanceSol, poolLatestBlockhashFull } from "./execution/rpc.js";
+import {
+  OKX_ENDPOINTS, okxCredentialWarnings, okxLeaderboardWalletTypeCodes,
+  okxLeaderboardWalletTypeLabel, type OkxEndpointSpec,
+} from "./discovery/okx.js";
+import { verifyStrictLedger } from "./discovery/okx-strict-ledger.js";
+import { fetchCandles } from "./chart-data.js";
+import { strictPaperReport } from "./okx-strict-paper-report.js";
+import { inspectRobinhoodToken, searchRobinhoodTokens } from "./robinhood/intelligence.js";
 
 /**
  * The dashboard (this process) now runs standalone from the sniper (src/index.ts) — the two
@@ -193,6 +201,61 @@ const SERVER_START = Date.now();
 type DecisionRow = { ts?: string; candidate?: { mint?: string; symbol?: string; mode?: string; source?: string; holders?: number; marketCapUsd?: number }; gate?: { verdict?: string; checks?: GateCheck[]; score?: number }; action?: string };
 const CLOSE_WINDOW_MAX = 400; // payload bound only — the real span is decided by ledger continuity
 
+interface OkxAggregate {
+  total: number;
+  priced: number;
+  wins: number;
+  sumPct: number;
+  /** Two heaps give an exact streaming median without sorting the entire 7-day log on every
+   * dashboard refresh. lower is a max-heap, upper a min-heap. */
+  lower: number[];
+  upper: number[];
+}
+
+function okxHeapPush(heap: number[], value: number, before: (a: number, b: number) => boolean): void {
+  heap.push(value);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = Math.floor((i - 1) / 2);
+    if (!before(heap[i]!, heap[parent]!)) break;
+    [heap[i], heap[parent]] = [heap[parent]!, heap[i]!];
+    i = parent;
+  }
+}
+
+function okxHeapPop(heap: number[], before: (a: number, b: number) => boolean): number | null {
+  if (heap.length === 0) return null;
+  const root = heap[0]!;
+  const last = heap.pop()!;
+  if (heap.length === 0) return root;
+  heap[0] = last;
+  let i = 0;
+  for (;;) {
+    const left = i * 2 + 1, right = left + 1;
+    let best = i;
+    if (left < heap.length && before(heap[left]!, heap[best]!)) best = left;
+    if (right < heap.length && before(heap[right]!, heap[best]!)) best = right;
+    if (best === i) break;
+    [heap[i], heap[best]] = [heap[best]!, heap[i]!];
+    i = best;
+  }
+  return root;
+}
+
+const okxMaxBefore = (a: number, b: number): boolean => a > b;
+const okxMinBefore = (a: number, b: number): boolean => a < b;
+function okxMedianAdd(aggregate: OkxAggregate, value: number): void {
+  if (aggregate.lower.length === 0 || value <= aggregate.lower[0]!) okxHeapPush(aggregate.lower, value, okxMaxBefore);
+  else okxHeapPush(aggregate.upper, value, okxMinBefore);
+  if (aggregate.lower.length > aggregate.upper.length + 1) {
+    const moved = okxHeapPop(aggregate.lower, okxMaxBefore);
+    if (moved != null) okxHeapPush(aggregate.upper, moved, okxMinBefore);
+  } else if (aggregate.upper.length > aggregate.lower.length) {
+    const moved = okxHeapPop(aggregate.upper, okxMinBefore);
+    if (moved != null) okxHeapPush(aggregate.lower, moved, okxMaxBefore);
+  }
+}
+
 const STORE = {
   decisions: {
     total: 0, passed: 0, rejected: 0, bought: 0,
@@ -253,6 +316,25 @@ const STORE = {
     latency: new Ring<{ preMs?: number; gateMs?: number; openMs?: number; totalMs?: number }>(200),
     execLadder: { theoretical: 0, "tx-built": 0, unavailable: 0, "would-fail": 0, executable: 0 } as Record<string, number>,
     integrity: null as Record<string, unknown> | null, // newest ledger-reconciliation result
+    // OKX Web3 dashboard data. These are folded from the local JSONL stream in the SAME pass as
+    // the rest of the dashboard, so opening /api/okx/overview never spends OKX API quota.
+    okx: {
+      signalCount: 0,
+      copyCount: 0,
+      candidateCount: 0,
+      recentSignals: new Ring<Row>(30),
+      recentCopies: new Ring<Row>(30),
+      recentCandidates: new Ring<Row>(30),
+      recentObservations: new Ring<Row>(30),
+      recentStudyOutcomes: new Ring<Row>(30),
+      observationAgg: {} as Record<string, OkxAggregate>,
+      studyAgg: {} as Record<string, OkxAggregate>,
+      laneStatus: null as Row | null,
+      studyStatus: null as Row | null,
+      radarSweep: null as Row | null,
+      radarSelection: null as Row | null,
+      lastEventAt: null as string | null,
+    },
   },
   trades: [] as Row[],
   patterns: [] as Row[],
@@ -303,6 +385,56 @@ function refreshStore(): void {
   tailStream("events", (r) => {
     const t = String(r["type"] ?? "?");
     E.counts[t] = (E.counts[t] ?? 0) + 1;
+
+    // OKX product view — local log projection only. Source events are counted once here;
+    // observation-open/settlement rows are deliberately NOT counted as another signal.
+    const O = E.okx;
+    if (t.startsWith("okx-") && typeof r["ts"] === "string") O.lastEventAt = r["ts"] as string;
+    const okxData = r["data"] && typeof r["data"] === "object" ? r["data"] as Row : null;
+    const okxChannel = String(r["channel"] ?? "");
+    const okxSide = String(okxData?.["tradeType"] ?? okxData?.["side"] ?? okxData?.["direction"] ?? "").toLowerCase();
+    const isBuy = !okxSide || okxSide.includes("buy") || okxSide === "1";
+    if (t === "okx-rest-signal" || (t === "okx-ws-event" && (okxChannel === "dex-market-new-signal-openapi" || okxChannel === "kol_smartmoney-tracker-activity"))) {
+      O.signalCount++;
+      O.recentSignals.push(r);
+    }
+    if (t === "okx-rest-copy" || (t === "okx-ws-event" && okxChannel === "address-tracker-activity" && isBuy)) {
+      O.copyCount++;
+      O.recentCopies.push(r);
+    }
+    if (t === "okx-candidate") {
+      O.candidateCount++;
+      O.recentCandidates.push(r);
+    }
+    if (t === "okx-observation") {
+      const kind = String(r["kind"] ?? "signal");
+      const horizon = Number(r["horizonSec"]);
+      if (Number.isFinite(horizon) && horizon > 0) {
+        const key = `${kind}:${horizon}`;
+        const a = O.observationAgg[key] ??= { total: 0, priced: 0, wins: 0, sumPct: 0, lower: [], upper: [] };
+        a.total++;
+        const pct = typeof r["pctChange"] === "number" && Number.isFinite(r["pctChange"]) ? r["pctChange"] as number : null;
+        if (pct != null) { a.priced++; a.sumPct += pct; okxMedianAdd(a, pct); if (pct > 0) a.wins++; }
+      }
+      O.recentObservations.push(r);
+    }
+    if (t === "okx-outcome") {
+      const verdict = String(r["verdict"] ?? "UNKNOWN");
+      const horizon = Number(r["horizonSec"]);
+      if (Number.isFinite(horizon) && horizon > 0) {
+        const key = `${verdict}:${horizon}`;
+        const a = O.studyAgg[key] ??= { total: 0, priced: 0, wins: 0, sumPct: 0, lower: [], upper: [] };
+        a.total++;
+        const pct = typeof r["pctChange"] === "number" && Number.isFinite(r["pctChange"]) ? r["pctChange"] as number : null;
+        if (pct != null) { a.priced++; a.sumPct += pct; okxMedianAdd(a, pct); if (pct > 0) a.wins++; }
+      }
+      O.recentStudyOutcomes.push(r);
+    }
+    if (t === "okx-lane-status") O.laneStatus = r;
+    else if (t === "okx-study-status") O.studyStatus = r;
+    else if (t === "okx-radar-sweep") O.radarSweep = r;
+    else if (t === "okx-radar-selection") O.radarSelection = r;
+
     if (t.startsWith("strategy2-") && t.endsWith("-rejected") && r["strategy2Epoch"] === config.strategy2Epoch) {
       E.gateRejectionsEpoch[t] = (E.gateRejectionsEpoch[t] ?? 0) + 1;
     }
@@ -1915,6 +2047,15 @@ function buildStats() {
      * ikut benar tanpa perubahan di sana. Begitu S2 dihidupkan lagi, objeknya kembali sendiri.
      */
     strategy2Primary: strategy2Alive() ? buildStrategy2Primary() : undefined,
+    // LANE ROBINHOOD (2026-10-07): ikut di payload SSE supaya panel update PUSH setiap state
+    // ditulis (mark 30 detik) — bukan polling. Cache internal 4 detik; murah (state kecil +
+    // log harian + 2 file laporan). GMGN TIDAK ikut di sini karena sumbernya file events besar.
+    laneRobinhood: buildRobinhoodPaper(),
+    // LANE BARU (2026-10-08): DexScreener (13 endpoint + 6 stream WS realtime) dan OKX strict-paper
+    // (uang kertas + verifikasi hash-chain ledger). Keduanya ikut payload SSE supaya panel ikut push
+    // saat state ditulis; cache internal masing-masing 4 detik (ledger 60 detik).
+    laneDex: buildDexOverview(),
+    laneOkxPaper: buildOkxPaper(),
     latencyBreakdown, // where detect→entry time actually goes
     setupToxicCodes: D.setupToxicCodes, // which toxic verdict is doing the filtering
     // Launches dropped at the create event by the launch-MC floor — they never reached the
@@ -2253,6 +2394,578 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+// ── OKX Web3 product projection ──────────────────────────────────────────────
+// Everything below reads configuration, process state, the radar cache, and rows already on
+// disk. It MUST stay network-free: the browser refreshes this view, and a dashboard repaint is
+// never a valid reason to consume provider quota or slow the signal lane.
+
+const okxNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+};
+
+// ── LANE VIEWS (dashboard multi-lane, 2026-10-07) ────────────────────────────
+// Reader state LOKAL saja (quotaCost = 0) dengan cache pendek: dashboard boleh poll sesukanya
+// tanpa membaca ulang berkas events harian yang besar setiap request.
+const laneCache = new Map<string, { at: number; data: unknown }>();
+/** Cache chart manual (klik koin) + single-flight: dua klik cepat = satu panggilan GT. */
+const chartCache = new Map<string, { at: number; data: unknown }>();
+const chartInflight = new Map<string, Promise<unknown>>();
+let chartLastFetchAt = 0;
+function cachedLane(key: string, ttlMs: number, build: () => unknown): unknown {
+  const hit = laneCache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+  const data = build();
+  laneCache.set(key, { at: Date.now(), data });
+  return data;
+}
+function readJsonSafe<T>(p: string): T | null {
+  try { return JSON.parse(readFileSync(p, "utf8")) as T; } catch { return null; }
+}
+function recentRowFiles(prefix: string, days: number): string[] {
+  try {
+    const cut = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    return readdirSync(config.logDir)
+      .filter((f) => f.startsWith(prefix) && f.endsWith(".jsonl") && f.slice(prefix.length, prefix.length + 10) >= cut)
+      .sort().map((f) => join(config.logDir, f));
+  } catch { return []; }
+}
+function latestMd(prefix: string, maxChars = 9_000): { file: string; text: string } | null {
+  try {
+    const files = readdirSync(config.logDir).filter((f) => f.startsWith(prefix) && f.endsWith(".md")).sort();
+    const f = files[files.length - 1];
+    if (!f) return null;
+    const text = readFileSync(join(config.logDir, f), "utf8");
+    return { file: f, text: text.length > maxChars ? `${text.slice(0, maxChars)}\n… (dipotong)` : text };
+  } catch { return null; }
+}
+
+/** Lane DexScreener (2026-10-08): 13 endpoint REST (siklus 5 menit) + 6 stream WS realtime. */
+function buildDexOverview(): Record<string, unknown> {
+  return cachedLane("dex", 4_000, () => {
+    const now = Date.now();
+    const state = readJsonSafe<{
+      seen?: Record<string, { at: number; kind: string; amt?: number }>;
+      watch?: Record<string, { at: number; chain: string; symbol: string; liqUsd: number | null; vol24: number | null; chg24: number | null; mcUsd: number | null }>;
+    }>(join(config.logDir, "dex-full-state.json"));
+    const watch = Object.entries(state?.watch ?? {});
+    // Pergerakan terbesar dulu — beserta likuiditasnya, supaya "naik 900% tapi liq $0k" terbaca
+    // sebagai jebakan di layar, bukan sebagai peluang.
+    const movers = watch
+      .filter(([, w]) => w.chg24 != null)
+      .sort((a, b) => Math.abs(b[1].chg24 ?? 0) - Math.abs(a[1].chg24 ?? 0))
+      .slice(0, 8)
+      .map(([key, w]) => ({ symbol: w.symbol, chain: w.chain, token: key.split("|")[1] ?? "", chg24: w.chg24, liqUsd: w.liqUsd, vol24: w.vol24 }));
+    // Promosi berbayar: entri "boost-amt|<chain>|<token>" menyimpan total belanja terakhir per token.
+    const promotions = Object.entries(state?.seen ?? {})
+      .filter(([k, v]) => k.startsWith("boost-amt|") && (v.amt ?? 0) > 0)
+      .map(([k, v]) => {
+        const parts = k.split("|");
+        const chain = parts[1] ?? "?";
+        const token = parts[2] ?? "";
+        const w = state?.watch?.[`${chain}|${token}`];
+        return { chain, token, amountUsd: v.amt ?? 0, symbol: w?.symbol ?? null, liqUsd: w?.liqUsd ?? null, vol24: w?.vol24 ?? null, chg24: w?.chg24 ?? null };
+      })
+      .sort((a, b) => b.amountUsd - a.amountUsd)
+      .slice(0, 10);
+    const discovered: Record<string, number> = {};
+    let cycles24h = 0, ws: Record<string, unknown> | null = null, wsReconnects = 0;
+    let lastCycle: Record<string, unknown> | null = null;
+    let metas: Array<{ slug: string; tokens: number; vol: number }> = [];
+    for (const f of recentRowFiles("events-", 2)) {
+      let text: string;
+      try { text = readFileSync(f, "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        if (!line.includes('"dex-')) continue;
+        try {
+          const r = JSON.parse(line) as Record<string, unknown>;
+          const ts = Date.parse(String(r["ts"] ?? ""));
+          if (!Number.isFinite(ts) || now - ts > 86_400_000) continue;
+          const type = String(r["type"]);
+          const short = type.replace("dex-", "");
+          discovered[short] = (discovered[short] ?? 0) + 1;
+          if (type === "dex-cycle") { cycles24h++; lastCycle = { ts: r["ts"], calls: r["calls"], ms: r["ms"], watch: r["watch"] }; }
+          if (type === "dex-ws-status") ws = { ts: r["ts"], alive: r["alive"], streams: r["streams"] };
+          if (type === "dex-ws-reconnect") wsReconnects++;
+          if (type === "dex-metas" && Array.isArray(r["top"])) metas = (r["top"] as Array<{ slug: string; tokens: number; vol: number }>).slice(0, 5);
+        } catch { /* baris rusak — abaikan */ }
+      }
+    }
+    return {
+      updatedAt: new Date().toISOString(),
+      watchlistTotal: watch.length, seenTotal: Object.keys(state?.seen ?? {}).length,
+      cycles24h, lastCycle, ws, wsReconnects, discovered, metas, promotions, movers, quotaCost: 0,
+    };
+  }) as Record<string, unknown>;
+}
+
+/**
+ * Lane OKX strict-paper (2026-10-08): uang kertas — prosesnya tidak mengimpor signer/broadcast.
+ * Termasuk VERIFIKASI hash-chain ledger (dihitung ulang dari berkas, cache 60 detik): angka paper
+ * yang ledger-nya rusak ditandai di layar, bukan dipercaya diam-diam.
+ */
+function buildOkxPaper(): Record<string, unknown> {
+  const lane = cachedLane("okx-paper", 4_000, () => {
+    const state = readJsonSafe<{
+      updatedAt?: string;
+      positions?: Record<string, {
+        status?: string; policyVersion?: number; symbol?: string | null; mint?: string; source?: string;
+        detectedAt?: number; walletType?: string | null;
+        adaptive?: { exit?: { pnlPct?: number; triggerReason?: string } | null } | null;
+      }>;
+      budget?: { premiumUsed?: number; basicUsed?: number; premiumPaused?: boolean; basicPaused?: boolean };
+      primed?: { scanner?: boolean; ranking?: boolean; signal?: boolean; trackers?: string[] };
+      pendingCandidates?: Record<string, { symbol?: string | null; mint?: string }>;
+      scoutCache?: Record<string, unknown>;
+    }>(join(config.logDir, "okx-strict-paper-v2-state.json"));
+    const positions = Object.entries(state?.positions ?? {}).map(([id, p]) => ({ id, ...p }));
+    const open = positions.filter((p) => p.status === "OPEN");
+    const closed = positions.filter((p) => p.status === "CLOSED");
+    const kinds: Record<string, number> = {};
+    const reasons: Record<string, number> = {};
+    const closes: Array<Record<string, unknown>> = [];
+    try {
+      const tail = readFileSync(join(config.logDir, "okx-strict-paper-v2.jsonl"), "utf8").slice(-400_000).split("\n");
+      for (const line of tail) {
+        if (!line.trim()) continue;
+        try {
+          const r = JSON.parse(line) as Record<string, unknown>;
+          const ts = Date.parse(String(r["ts"] ?? ""));
+          if (!Number.isFinite(ts) || Date.now() - ts > 86_400_000) continue;
+          const type = String(r["type"]);
+          kinds[type] = (kinds[type] ?? 0) + 1;
+          if (type === "CANDIDATE_TERMINAL") {
+            const raw = r["reasons"] ?? r["reason"];
+            const list = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+            for (const one of list) if (one) reasons[String(one).trim()] = (reasons[String(one).trim()] ?? 0) + 1;
+          }
+          if (type === "POSITION_CLOSED" && closes.length < 8) {
+            const pnlLamports = Number(r["pnlLamports"] ?? 0);
+            closes.push({
+              ts: r["ts"], symbol: r["symbol"] ?? r["mint"] ?? "?",
+              pnlSol: Number((pnlLamports / 1e9).toFixed(6)),
+              trigger: (r["adaptive"] as { exit?: { triggerReason?: string } } | undefined)?.exit?.triggerReason ?? r["reason"] ?? null,
+            });
+          }
+        } catch { /* baris rusak — abaikan */ }
+      }
+    } catch { /* ledger belum ada */ }
+    return {
+      updatedAt: state?.updatedAt ?? null,
+      open: open.map((p) => ({ id: p.id, symbol: p.symbol ?? p.mint ?? "?", source: p.source ?? "?", detectedAt: p.detectedAt ?? null, policyVersion: p.policyVersion ?? null })),
+      closedTotal: closed.length,
+      pending: Object.keys(state?.pendingCandidates ?? {}).length,
+      scoutCache: Object.keys(state?.scoutCache ?? {}).length,
+      budget: state?.budget ?? null,
+      primed: { scanner: state?.primed?.scanner ?? false, ranking: state?.primed?.ranking ?? false, signal: state?.primed?.signal ?? false, trackers: state?.primed?.trackers?.length ?? 0 },
+      activity24h: kinds, rejectReasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 6), recentCloses: closes.reverse(),
+      quotaCost: 0,
+    };
+  }) as Record<string, unknown>;
+  const ledger = cachedLane("okx-paper-ledger", 60_000, () => {
+    const v = verifyStrictLedger(join(config.logDir, "okx-strict-paper-v2.jsonl"));
+    return { ok: v.ok, records: v.records.length, lastSeq: v.records.at(-1)?.seq ?? 0, error: v.error };
+  });
+  return { ...lane, ledger };
+}
+
+/** Lane Robinhood: state 10 varian + trade terakhir + laporan backtest/review terakhir. */
+function buildRobinhoodPaper(): Record<string, unknown> {
+  return cachedLane("rh-paper", 4_000, () => {
+    const startEnv = Number(process.env.RH_START_EQUITY_USD);
+    const startEquity = Number.isFinite(startEnv) && startEnv > 0 ? startEnv : 100;
+    const state = readJsonSafe<{
+      startedAt?: number; cycles?: number;
+      variants?: Record<string, {
+        equityUsd?: number; trades?: number; wins?: number; losses?: number; maxDdPct?: number;
+        bankruptAt?: number; life?: number; lifeHistory?: Array<{ endEquityUsd: number }>;
+        positions?: Array<{ symbol?: string; lastPrice?: number; lastMarkAt?: number; notionalUsd?: number }>;
+      }>;
+    }>(join(config.logDir, "rh-paper-state.json"));
+    const now = Date.now();
+    const laneDays = state?.startedAt ? (now - state.startedAt) / 86_400_000 : 0;
+    const variants = Object.entries(state?.variants ?? {}).map(([id, v]) => {
+      const positions = (v.positions ?? []).map((p) => ({
+        symbol: p.symbol ?? "?", lastPrice: p.lastPrice ?? 0,
+        markAgeSec: p.lastMarkAt ? Math.round((now - p.lastMarkAt) / 1000) : null,
+        notionalUsd: typeof p.notionalUsd === "number" ? p.notionalUsd : 0,
+      }));
+      // EXPOSURE TERBUKA (2026-10-07 malam): batas 50% berlaku PER-ENTRY, bukan agregat — v10
+      // terbukti bisa menyentuh equity NEGATIF (-$1.61, dd 101.6%) dan v01 pernah $175 exposure di
+      // atas $69.73 equity. Angka ini ditampilkan supaya risikonya terbaca, bukan tersembunyi.
+      const exposureUsd = positions.reduce((a, p) => a + p.notionalUsd, 0);
+      const trades = v.trades ?? 0;
+      const equityUsd = v.equityUsd ?? startEquity;
+      // Status berlapis: BANKRUT (equity < $4 atau sedang menunggu restart life baru) > SIAP > jalan.
+      // Tanpa ini, varian yang modalnya habis tampil seolah masih berdagang.
+      const status = v.bankruptAt != null || equityUsd < 4 ? "bankrut" : laneDays >= 7 && trades >= 10 ? "siap direview" : "jalan";
+      // LIFE-2: P&L per-life (equity−100) + kumulatif (semua life yang sudah selesai + life berjalan).
+      const historyPnl = (v.lifeHistory ?? []).reduce((a, l) => a + (l.endEquityUsd - startEquity), 0);
+      return {
+        id, equityUsd: Number(equityUsd.toFixed(2)), pnlUsd: Number((equityUsd - startEquity).toFixed(2)),
+        life: v.life ?? 1, cumulativePnlUsd: Number((historyPnl + equityUsd - startEquity).toFixed(2)),
+        bankrupt: v.bankruptAt != null,
+        trades, wins: v.wins ?? 0, losses: v.losses ?? 0,
+        winRate: trades ? Number((((v.wins ?? 0) / trades) * 100).toFixed(1)) : null,
+        maxDdPct: Number((v.maxDdPct ?? 0).toFixed(2)), openPositions: positions.length, positions,
+        exposureUsd: Number(exposureUsd.toFixed(2)),
+        status,
+      };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+    const rows: Array<Record<string, unknown>> = [];
+    for (const f of recentRowFiles("rh-paper-", 2)) {
+      try {
+        for (const line of readFileSync(f, "utf8").split("\n")) {
+          if (!line.includes('"RH_')) continue;
+          try { rows.push(JSON.parse(line) as Record<string, unknown>); } catch { /* baris rusak */ }
+        }
+      } catch { /* skip */ }
+    }
+    const recent = rows.slice(-30).reverse().map((r) => ({
+      action: String(r["action"] ?? "?"), variant: String(r["variant"] ?? "?"), symbol: String(r["symbol"] ?? "?"),
+      pnlUsd: typeof r["pnlUsd"] === "number" ? r["pnlUsd"] : null,
+      pnlPct: typeof r["pnlPct"] === "number" ? r["pnlPct"] : null,
+      reason: typeof r["reason"] === "string" ? r["reason"] : null,
+      ts: String(r["ts"] ?? ""),
+      entryPriceUsd: typeof r["entryPriceUsd"] === "number" ? r["entryPriceUsd"] : null,
+      exitPriceUsd: typeof r["exitPriceUsd"] === "number" ? r["exitPriceUsd"] : null,
+    }));
+    const backtest = latestMd("rh-backtest-");
+    const review = latestMd("robinhood-review-");
+    return {
+      updatedAt: new Date().toISOString(), startEquityUsd: startEquity,
+      laneDays: Number(laneDays.toFixed(2)), cycles: state?.cycles ?? 0,
+      openTotal: variants.reduce((a, v) => a + v.openPositions, 0), variants, recent,
+      backtestMd: backtest?.text ?? null, backtestFile: backtest?.file ?? null,
+      reviewMd: review?.text ?? null, reviewFile: review?.file ?? null,
+    };
+  }) as Record<string, unknown>;
+}
+
+/** Lane GMGN: sinyal 24 jam, kualitas wallet (state permanen), trade terpantau, laporan harian. */
+function buildGmgnOverview(): Record<string, unknown> {
+  return cachedLane("gmgn", 60_000, () => {
+    const now = Date.now();
+    const dayMs = 86_400_000;
+    const signals: Array<Record<string, unknown>> = [];
+    const watched: Array<Record<string, unknown>> = [];
+    let lastCycle: Record<string, unknown> | null = null;
+    for (const f of recentRowFiles("events-", 2)) {
+      try {
+        for (const line of readFileSync(f, "utf8").split("\n")) {
+          if (!line.includes('"gmgn-')) continue;
+          try {
+            const r = JSON.parse(line) as Record<string, unknown>;
+            const t = String(r["type"] ?? "");
+            if (t === "gmgn-signal") signals.push(r);
+            else if (t === "gmgn-watched-trade") watched.push(r);
+            else if (t === "gmgn-full-cycle") lastCycle = r;
+          } catch { /* baris rusak */ }
+        }
+      } catch { /* skip */ }
+    }
+    const tsOf = (r: Record<string, unknown>): number => Date.parse(String(r["ts"] ?? "")) || 0;
+    const sig24 = signals.filter((r) => now - tsOf(r) <= dayMs);
+    const byType = new Map<number, Array<Record<string, unknown>>>();
+    for (const s of sig24) {
+      const t = Number(s["signalType"] ?? 0);
+      const a = byType.get(t);
+      if (a) a.push(s); else byType.set(t, [s]);
+    }
+    const signals24h = [...byType.entries()].map(([signalType, rows]) => ({
+      signalType, count: rows.length,
+      sample: rows.slice(-4).map((r) => ({ sym: String(r["sym"] ?? "?"), mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null, ts: String(r["ts"] ?? "") })),
+    })).sort((a, b) => b.count - a.count);
+    const state = readJsonSafe<{ walletQuality?: Record<string, { at?: number; tags?: string[]; winrate?: number | null; realizedProfit?: number | null; tokens?: number | null }> }>(join(config.logDir, "gmgn-full-watch-state.json"));
+    const wallets = Object.entries(state?.walletQuality ?? {}).map(([wallet, q]) => ({
+      wallet, tags: q.tags ?? [], winrate: q.winrate ?? null, realizedProfit: q.realizedProfit ?? null, tokens: q.tokens ?? null, at: q.at ?? 0,
+    })).sort((a, b) => (b.winrate ?? -1) - (a.winrate ?? -1)).slice(0, 20);
+    const report = latestMd("gmgn-report-", 12_000);
+    return {
+      updatedAt: new Date().toISOString(),
+      signals24h,
+      recentSignals: sig24.slice(-12).reverse().map((r) => ({
+        sym: String(r["sym"] ?? "?"), signalType: Number(r["signalType"] ?? 0),
+        mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null,
+        triggerMc: typeof r["triggerMc"] === "number" ? r["triggerMc"] : null,
+        ath: typeof r["ath"] === "number" ? r["ath"] : null,
+        holders: typeof r["holders"] === "number" ? r["holders"] : null,
+        rugRatio: typeof r["rugRatio"] === "number" ? r["rugRatio"] : null,
+        ts: String(r["ts"] ?? ""),
+      })),
+      wallets, walletsScored: Object.keys(state?.walletQuality ?? {}).length,
+      watchedTrades24h: watched.filter((r) => now - tsOf(r) <= dayMs).length,
+      watchedRecent: watched.slice(-8).reverse().map((r) => ({
+        symbol: String(r["symbol"] ?? "?"), side: String(r["side"] ?? "?"), maker: String(r["maker"] ?? ""),
+        amountUsd: typeof r["amountUsd"] === "number" ? r["amountUsd"] : null,
+        watchType: String(r["watchType"] ?? "?"), ts: String(r["ts"] ?? ""),
+      })),
+      lastCycle: lastCycle ? {
+        ts: String(lastCycle["ts"] ?? ""), calls: Number(lastCycle["calls"] ?? 0), ms: Number(lastCycle["ms"] ?? 0),
+        positions: Number(lastCycle["positions"] ?? 0), candidates: Number(lastCycle["candidates"] ?? 0),
+        signals: Number(lastCycle["signals"] ?? 0), walletsScored: Number(lastCycle["walletsScored"] ?? 0),
+      } : null,
+      reportMd: report?.text ?? null, reportFile: report?.file ?? null,
+    };
+  }) as Record<string, unknown>;
+}
+
+function buildOkxStatus(): Record<string, unknown> {
+  const entries = Object.entries(OKX_ENDPOINTS) as Array<[string, OkxEndpointSpec]>;
+  const counts = Object.fromEntries(["live", "params-unknown", "unavailable", "unprobed"].map(
+    (status) => [status, entries.filter(([, spec]) => spec.status === status).length],
+  ));
+  const control = readControl();
+  const guardian = guardStatus();
+  const blockers: string[] = [];
+  if (!config.okx.enabled) blockers.push("OKX read lane disabled or credentials incomplete");
+  if (!config.okx.executionEnabled) blockers.push("OKX_EXECUTION_ENABLED is not true");
+  if (config.s2ExecRoute !== "okx") blockers.push(`S2 route is ${config.s2ExecRoute}, not okx`);
+  if (!config.s2LiveEnabled) blockers.push("S2 live bridge is disabled");
+  if (!config.exec.liveConfirmed) blockers.push("global live permission is not confirmed");
+  if (control.execMode !== "live") blockers.push(`console mode is ${control.execMode}, not live`);
+  if (control.paused) blockers.push("trading is paused");
+  if (guardian.halted) blockers.push(`guardian halted${guardian.haltReason ? `: ${guardian.haltReason}` : ""}`);
+
+  return {
+    enabled: config.okx.enabled,
+    executionEnabled: config.okx.executionEnabled,
+    executionRouteSelected: config.s2ExecRoute === "okx",
+    // "Armed" now means every configuration/runtime gate visible to the server is open. The
+    // signing key, balance, route, exposure and caps are still re-checked fail-closed per order.
+    executionArmed: blockers.length === 0,
+    executionBlockers: blockers,
+    executionChecksAtOrder: ["signing key", "wallet balance", "route", "per-trade cap", "deployed cap", "24h spend cap"],
+    controlMode: control.execMode,
+    paused: control.paused,
+    guardianHalted: guardian.halted,
+    route: config.s2ExecRoute,
+    slippagePercent: config.okx.slippagePercent,
+    websocketEnabled: config.okx.wsEnabled,
+    websocketChannels: config.okx.wsChannels,
+    restSignalFallback: config.okx.restSignalEnabled,
+    restSignalPollMs: config.okx.restSignalPollMs,
+    copyShadow: config.okx.copyShadow,
+    candidateQueueEnabled: config.okx.candidateQueueEnabled,
+    candidateMaxLagMs: config.okx.candidateMaxLagMs,
+    candidateMinAmountUsd: config.okx.candidateMinAmountUsd,
+    trackedWallets: config.okx.trackedWallets.length,
+    restCopyMaxWallets: config.okx.restCopyMaxWallets,
+    endpointTotal: entries.length,
+    endpointCounts: counts,
+    warnings: okxCredentialWarnings(),
+    endpoints: entries.map(([id, spec]) => ({ id, ...spec })),
+  };
+}
+
+interface OkxRadarFileRow {
+  walletAddress?: string;
+  firstSeen?: string;
+  lastSeen?: string;
+  sweepCount?: number;
+  cellHits?: number;
+  cells?: string[];
+  walletTypeCodes?: string[];
+  walletTypes?: string[];
+  lastRealizedPnlUsd?: number | null;
+  lastWinRatePercent?: number | null;
+  lastAvgBuyValueUsd?: number | null;
+  lastTxs?: number | null;
+  lastActiveTimestamp?: number | null;
+}
+
+let okxRadarCache: { mtimeMs: number; snapshot: Record<string, unknown> } | null = null;
+function okxRadarSnapshot(): Record<string, unknown> {
+  const path = join(config.logDir, "okx-radar-wallets.json");
+  if (!existsSync(path)) return { available: false, totalWallets: 0, copyableWallets: 0, updatedAt: null, topWallets: [] };
+  try {
+    const stat = statSync(path);
+    if (okxRadarCache?.mtimeMs === stat.mtimeMs) return okxRadarCache.snapshot;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, OkxRadarFileRow>;
+    const rows = Object.values(parsed).filter((row) => typeof row.walletAddress === "string" && row.walletAddress.length > 0);
+    const activeCutoff = Date.now() - 48 * 3_600_000;
+    const excluded = new Set(["developer", "newWallet", "insider", "sniper", "suspectedPhishing", "bundledTrader"]);
+    const normalized = rows.map((row) => {
+      const walletTypeCodes = okxLeaderboardWalletTypeCodes(row.cells ?? [], row.walletTypeCodes ?? []);
+      const walletTypes = walletTypeCodes.length
+        ? walletTypeCodes.map(okxLeaderboardWalletTypeLabel).filter((v): v is NonNullable<typeof v> => v !== null)
+        : row.walletTypes ?? [];
+      return { ...row, walletTypeCodes, walletTypes };
+    });
+    const copyable = normalized
+      .filter((row) => (row.sweepCount ?? 0) >= 2)
+      .filter((row) => (row.lastWinRatePercent ?? 0) >= 50)
+      .filter((row) => {
+        const raw = row.lastActiveTimestamp ?? 0;
+        const at = raw > 0 && raw < 1e12 ? raw * 1000 : raw;
+        return at >= activeCutoff;
+      })
+      // Same rule as okxRadarSelect(): exclude a wallet only when ALL its known identities are
+      // inherently uncopyable. A smart-money wallet that also appears as "fresh" stays visible.
+      .filter((row) => !(row.walletTypes?.length && row.walletTypes.every((type) => excluded.has(type))))
+      .sort((a, b) => ((b.sweepCount ?? 0) - (a.sweepCount ?? 0)) || ((b.cellHits ?? 0) - (a.cellHits ?? 0)) || ((b.lastRealizedPnlUsd ?? 0) - (a.lastRealizedPnlUsd ?? 0)));
+    const snapshot = {
+      available: true,
+      totalWallets: rows.length,
+      copyableWallets: copyable.length,
+      updatedAt: new Date(stat.mtimeMs).toISOString(),
+      topWallets: copyable.slice(0, 12).map((row) => ({
+        walletAddress: row.walletAddress,
+        sweepCount: row.sweepCount ?? 0,
+        cellHits: row.cellHits ?? 0,
+        walletTypes: row.walletTypes ?? [],
+        realizedPnlUsd: row.lastRealizedPnlUsd ?? null,
+        winRatePercent: row.lastWinRatePercent ?? null,
+        avgBuyValueUsd: row.lastAvgBuyValueUsd ?? null,
+        txs: row.lastTxs ?? null,
+        lastActiveTimestamp: row.lastActiveTimestamp ?? null,
+      })),
+    };
+    okxRadarCache = { mtimeMs: stat.mtimeMs, snapshot };
+    return snapshot;
+  } catch {
+    return { available: false, totalWallets: 0, copyableWallets: 0, updatedAt: null, topWallets: [] };
+  }
+}
+
+function okxSourceEvent(row: Row): Record<string, unknown> {
+  const data = row["type"] === "okx-candidate"
+    ? row
+    : row["data"] && typeof row["data"] === "object" ? row["data"] as Row : {};
+  const token = data["token"] && typeof data["token"] === "object" ? data["token"] as Row : {};
+  const mint = String(data["tokenAddress"] ?? data["tokenContractAddress"] ?? data["mint"] ?? token["tokenAddress"] ?? token["tokenContractAddress"] ?? "");
+  const symbol = String(data["symbol"] ?? data["tokenSymbol"] ?? token["symbol"] ?? "");
+  const wallet = String(data["walletAddress"] ?? data["triggerWalletAddress"] ?? data["trader"] ?? data["userAddress"] ?? "");
+  return {
+    ts: row["ts"] ?? null,
+    channel: row["channel"] ?? (row["type"] === "okx-rest-copy" ? "address-tracker-activity-rest" : "dex-market-new-signal-openapi-rest"),
+    mint,
+    symbol: symbol || null,
+    wallet: wallet || null,
+    walletType: data["walletType"] ?? data["tag"] ?? null,
+    amountUsd: okxNumber(data["amountUsd"] ?? data["valueUsd"] ?? data["quoteAmountUsd"] ?? data["volumeUsd"]),
+    marketCapUsd: okxNumber(data["marketCapUsd"] ?? data["marketCap"] ?? token["marketCapUsd"]),
+    holders: okxNumber(data["holders"] ?? token["holders"]),
+    detectLagMs: okxNumber(row["detectLagMs"]),
+    status: data["status"] ?? null,
+    executionState: data["executionState"] ?? null,
+    reasons: Array.isArray(data["reasons"]) ? data["reasons"] : [],
+  };
+}
+
+function okxOutcomeEvent(row: Row): Record<string, unknown> {
+  return {
+    ts: row["ts"] ?? null,
+    kind: row["kind"] ?? null,
+    mint: row["mint"] ?? null,
+    symbol: row["symbol"] ?? null,
+    wallet: row["wallet"] ?? null,
+    verdict: row["verdict"] ?? null,
+    horizonSec: okxNumber(row["horizonSec"]),
+    pctChange: okxNumber(row["pctChange"]),
+    status: row["status"] ?? row["verdict"] ?? null,
+  };
+}
+
+function okxAggregateRows(values: Record<string, OkxAggregate>, labelKey: "kind" | "verdict"): Array<Record<string, unknown>> {
+  return Object.entries(values).map(([key, a]) => {
+    const split = key.lastIndexOf(":");
+    const label = split >= 0 ? key.slice(0, split) : key;
+    const horizonSec = split >= 0 ? Number(key.slice(split + 1)) : 0;
+    const median = a.lower.length === 0
+      ? null
+      : a.lower.length === a.upper.length
+        ? (a.lower[0]! + a.upper[0]!) / 2
+        : a.lower[0]!;
+    return {
+      [labelKey]: label,
+      horizonSec,
+      total: a.total,
+      priced: a.priced,
+      unpriced: a.total - a.priced,
+      winRatePercent: a.priced ? Number((a.wins / a.priced * 100).toFixed(1)) : null,
+      avgPct: a.priced ? Number((a.sumPct / a.priced).toFixed(2)) : null,
+      medianPct: median == null ? null : Number(median.toFixed(2)),
+    };
+  }).sort((a, b) => Number(a["horizonSec"]) - Number(b["horizonSec"]) || String(a[labelKey]).localeCompare(String(b[labelKey])));
+}
+
+let okxProcessesCache = { at: 0, lane: false, study: false, paper: false };
+function okxProcesses(): { lane: boolean; study: boolean; paper: boolean } {
+  if (Date.now() - okxProcessesCache.at < 5_000) {
+    return { lane: okxProcessesCache.lane, study: okxProcessesCache.study, paper: okxProcessesCache.paper };
+  }
+  const alive = (pattern: string): boolean => {
+    try { execSync(`pgrep -f '${pattern}'`, { stdio: ["ignore", "pipe", "ignore"] }); return true; }
+    catch { return false; }
+  };
+  okxProcessesCache = {
+    at: Date.now(),
+    lane: alive("[s]rc/okx-lane.ts"),
+    study: alive("[s]rc/okx-study.ts"),
+    paper: alive("[s]rc/okx-strict-paper.ts"),
+  };
+  return { lane: okxProcessesCache.lane, study: okxProcessesCache.study, paper: okxProcessesCache.paper };
+}
+
+let okxStrictPaperCache: { mtimeMs: number; snapshot: Record<string, unknown> } | null = null;
+function okxStrictPaperSnapshot(): Record<string, unknown> {
+  const path = join(config.logDir, "okx-strict-paper-v2.jsonl");
+  if (!existsSync(path)) return { available: false, ledgerIntegrity: "MISSING", error: null, exitSummary: [] };
+  try {
+    const stat = statSync(path);
+    if (okxStrictPaperCache?.mtimeMs === stat.mtimeMs) return okxStrictPaperCache.snapshot;
+    const verified = verifyStrictLedger(path);
+    const snapshot = verified.ok
+      ? { available: true, ledgerIntegrity: "OK", error: null, ...strictPaperReport(verified.records) }
+      : { available: true, ledgerIntegrity: "FAILED", error: verified.error, exitSummary: [] };
+    okxStrictPaperCache = { mtimeMs: stat.mtimeMs, snapshot };
+    return snapshot;
+  } catch (error) {
+    return { available: true, ledgerIntegrity: "FAILED", error: (error as Error).message, exitSummary: [] };
+  }
+}
+
+function okxStatusRow(row: Row | null, keys: string[]): Record<string, unknown> | null {
+  if (!row) return null;
+  return Object.fromEntries(["ts", ...keys].map((key) => [key, row[key] ?? null]));
+}
+
+function buildOkxOverview(): Record<string, unknown> {
+  refreshStore();
+  const O = STORE.events.okx;
+  const radar = okxRadarSnapshot();
+  const processes = okxProcesses();
+  return {
+    generatedAt: new Date().toISOString(),
+    status: buildOkxStatus(),
+    processes,
+    radar: {
+      ...radar,
+      lastSweep: okxStatusRow(O.radarSweep, ["cells", "rows", "wallets", "fresh"]),
+      lastSelection: okxStatusRow(O.radarSelection, ["radarCount", "manualCount", "trackedCount"]),
+    },
+    lane: {
+      mode: config.okx.copyShadow ? "shadow-copy" : "signals-only",
+      status: okxStatusRow(O.laneStatus, ["openObservations", "trackedWallets", "channelCounts", "restSignalEvents", "restCopyEvents", "candidates"]),
+      signals: { total: O.signalCount, recent: O.recentSignals.last(12).reverse().map(okxSourceEvent) },
+      copies: { total: O.copyCount, liveExecution: false, recent: O.recentCopies.last(12).reverse().map(okxSourceEvent) },
+      candidates: { total: O.candidateCount, liveExecution: false, recent: O.recentCandidates.last(12).reverse().map(okxSourceEvent) },
+      outcomes: okxAggregateRows(O.observationAgg, "kind"),
+      recentOutcomes: O.recentObservations.last(12).reverse().map(okxOutcomeEvent),
+    },
+    study: {
+      status: okxStatusRow(O.studyStatus, ["scanned", "registered", "settled", "open", "seen", "CLEAN", "TOXIC", "UNKNOWN", "cfg"]),
+      outcomes: okxAggregateRows(O.studyAgg, "verdict"),
+      recent: O.recentStudyOutcomes.last(12).reverse().map(okxOutcomeEvent),
+    },
+    paper: okxStrictPaperSnapshot(),
+    lastLocalEventAt: O.lastEventAt,
+    quotaCost: 0,
+  };
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 // Named so BOTH loopback listeners (IPv4 below, IPv6 at the bottom) share one implementation.
 const handler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -2319,6 +3032,91 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(buildStats()));
+    return;
+  }
+
+  // OKX capability/arming truth. This is intentionally configuration + registry state only: the
+  // dashboard must not spend paid API quota every time it polls. `npm run okx:probe` remains the
+  // explicit live-health test, while this endpoint makes missing/unprobed/armed states visible.
+  if (path === "/api/okx/status") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildOkxStatus()));
+    return;
+  }
+
+  // Full OKX Web3 product view. Unlike /api/okx/status this includes radar, signal/copy activity
+  // and measured outcomes, but it still reads LOCAL state only (quotaCost=0).
+  if (path === "/api/okx/overview") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildOkxOverview()));
+    return;
+  }
+
+  // Separate, read-only EVM intelligence lane. No wallet, signer, or execution path.
+  if (path === "/api/robinhood/search" || path === "/api/robinhood/token") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    try {
+      const data = path.endsWith("/search")
+        ? await searchRobinhoodTokens(url.searchParams.get("q") ?? "")
+        : await inspectRobinhoodToken(url.searchParams.get("address") ?? "", Number(url.searchParams.get("whaleUsd") ?? 10_000));
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(400, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
+
+  // Lane views untuk dashboard multi-lane (2026-10-07): state lokal saja, cache pendek.
+  if (path === "/api/robinhood/paper" || path === "/api/gmgn/overview" || path === "/api/dex/overview" || path === "/api/okx/paper") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    const lane = path === "/api/robinhood/paper" ? buildRobinhoodPaper()
+      : path === "/api/gmgn/overview" ? buildGmgnOverview()
+      : path === "/api/dex/overview" ? buildDexOverview()
+      : buildOkxPaper();
+    res.end(JSON.stringify(lane));
+    return;
+  }
+
+  // CHART per koin (2026-10-08): permintaan MANUAL dari dashboard (klik koin), bukan polling.
+  // Limit GeckoTerminal ketat dan IP ini dipakai bersama lane Robinhood → cache 60 detik per kunci
+  // + jarak minimum 3 detik antar-fetch berbeda. Kegagalan dilaporkan apa adanya (429/404/kosong).
+  if (path === "/api/chart") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    const chartChain = (url.searchParams.get("chain") ?? "solana").trim();
+    const chartToken = url.searchParams.get("token")?.trim() || undefined;
+    const chartPool = url.searchParams.get("pool")?.trim() || undefined;
+    const chartTf = (url.searchParams.get("tf") ?? "5m").trim();
+    const chartBars = Math.min(300, Math.max(10, Number(url.searchParams.get("bars") ?? 60) || 60));
+    if (!chartToken && !chartPool) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"token atau pool wajib diisi"}'); return; }
+    const key = `${chartChain}|${chartToken ?? chartPool}|${chartTf}|${chartBars}`;
+    const cached = chartCache.get(key);
+    if (cached && Date.now() - cached.at < 60_000) {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ...(cached.data as object), cached: true }));
+      return;
+    }
+    let pending = chartInflight.get(key);
+    if (!pending) {
+      const gap = chartLastFetchAt + 3_000 - Date.now();
+      if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+      chartLastFetchAt = Date.now();
+      pending = fetchCandles({ chain: chartChain, token: chartToken, pool: chartPool, tf: chartTf, bars: chartBars })
+        .then((out) => ({ chain: chartChain, token: chartToken ?? null, pool: out.pool, tf: chartTf, bars: chartBars, source: out.source, error: out.error, candles: out.candles }))
+        .finally(() => chartInflight.delete(key));
+      chartInflight.set(key, pending);
+    }
+    const data = await pending;
+    chartCache.set(key, { at: Date.now(), data });
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ ...(data as object), cached: false }));
     return;
   }
 

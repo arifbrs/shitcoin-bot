@@ -4,7 +4,9 @@ import { config } from "../config.js";
 import { logRecord, ui } from "../util/log.js";
 import { readControl } from "../control.js";
 import { solPriceUsd } from "./jupiter.js";
-import { gmgnBuyLive, gmgnSellLive, jupiterBuyLive, jupiterSellLive } from "./executor.js";
+import {
+  gmgnBuyLive, gmgnSellLive, jupiterBuyLive, jupiterSellLive, okxBuyLive, okxSellLive,
+} from "./executor.js";
 import { tokenBalanceOfOwner } from "../safety/onchain.js";
 import { botWallet } from "./wallet.js";
 import { withExecLock } from "../util/exec-lock.js";
@@ -14,8 +16,9 @@ import { withExecLock } from "../util/exec-lock.js";
  *
  * S2's paper brain (scout → papertrader, GMGN-quoted, read-only) picks tokens and sizes. When
  * the console switch is LIVE, this module executes the SAME decisions for real money via
- * Jupiter — the exact pattern the S1 live-bridge established: one brain, execution follows the
- * mode. Paper bookkeeping is untouched; this keeps its OWN lot ledger (logs/s2-live-lots.json).
+ * the configured Jupiter/OKX/GMGN route — the exact pattern the S1 live-bridge established: one
+ * brain, execution follows the mode. Paper bookkeeping is untouched; this keeps its OWN lot
+ * ledger (logs/s2-live-lots.json).
  *
  * Deliberate MVP simplifications, stated honestly:
  *   · The mirror sells the bag the CHAIN says it holds at paper-close time — paper scale-outs
@@ -115,18 +118,20 @@ async function doOpen(p: { mint: string; symbol: string | null; sizeUsd: number;
   save();
   inFlight++;
   try {
-    // ROUTE (owner, 2026-08-24): jupiter default (non-kustodial, tanpa platform fee) vs gmgn
-    // (±1%/sisi, server-side — wallet harus ter-import di akun GMGN owner). Route dipilih via
-    // S2_EXEC_ROUTE; fee & hasil tiap trade tercatat di event untuk perbandingan terukur.
-    const buyFn = config.s2ExecRoute === "gmgn" ? gmgnBuyLive : jupiterBuyLive;
-    const r = await withExecLock(() => buyFn(p.mint, sizeSol, deployedSol(), { maxPerTradeSol: config.s2MaxPerTradeSol, maxDeployedSol: config.s2MaxDeployedSol }));
+    const route = config.s2ExecRoute;
+    const caps = { maxPerTradeSol: config.s2MaxPerTradeSol, maxDeployedSol: config.s2MaxDeployedSol };
+    const r = await withExecLock(() => {
+      if (route === "gmgn") return gmgnBuyLive(p.mint, sizeSol, deployedSol(), caps);
+      if (route === "okx") return okxBuyLive(p.mint, sizeSol, deployedSol(), caps);
+      return jupiterBuyLive(p.mint, sizeSol, deployedSol(), caps);
+    });
     // SPEND EKSAK: input tx diketahui pasti (sizeSol) — delta saldo lintas-strategi tidak
     // dipakai lagi (lihat exec-lock: COTUS "+2709%" fantasi).
     lot.spentSol = r.ok ? sizeSol : (lot.spentSol ?? 0);
-        if (r.ok) {
+    if (r.ok) {
       // GMGN route reports the REAL received amount in its order report — prefer it; Jupiter
       // has no report, so the chain balance stays the source of truth there.
-      const reported = (buyFn === gmgnBuyLive ? (r as { tokensOut?: number }).tokensOut : undefined);
+      const reported = route === "gmgn" ? r.tokensOut : undefined;
       const tokens = reported ?? (await tokenBalanceOfOwner(botWallet().publicKey.toBase58(), p.mint));
       lot.tokens = tokens ?? 0;
       lot.decimals = p.decimals ?? 6;
@@ -138,9 +143,10 @@ async function doOpen(p: { mint: string; symbol: string | null; sizeUsd: number;
     }
     save();
     logRecord("live-exec", {
-      type: "s2-buy", strategyTag: "S2", route: config.s2ExecRoute, tradeKey: p.mint, mint: p.mint, symbol: p.symbol,
+      type: "s2-buy", strategyTag: "S2", route, tradeKey: p.mint, mint: p.mint, symbol: p.symbol,
       requestedUsd: p.sizeUsd, spentSol: Number((lot.spentSol ?? 0).toFixed(6)), tokens: lot.tokens ?? 0,
-      sig: r.signature, timedOut: r.timedOut === true, err: r.err ?? null, confirmVia: r.confirmVia ?? null, confirmMs: r.confirmMs ?? null,
+      sig: r.signature, timedOut: r.timedOut === true, err: r.err ?? null, confirmVia: r.confirmVia ?? null,
+      confirmMs: r.confirmMs ?? null, buildMs: r.buildMs ?? null, txFormat: r.txFormat ?? null,
     });
     ui[r.ok ? "pass" : "reject"](`[s2-live] BUY ${p.symbol ?? p.mint} ${sizeSol.toFixed(4)} SOL → ${lot.tokens ?? 0} tok ${r.ok ? "" : `— ${r.err}`}`);
   } finally {
@@ -173,9 +179,12 @@ async function sellBag(mint: string, symbol: string | null, bag: number, reason:
   try {
     const decimals = lot?.decimals ?? 6;
     // LOCK: sama seperti buy — delta proceeds tidak boleh disela tx strategi lain.
-    const route = config.s2ExecRoute === "gmgn" ? "gmgn" : "jupiter";
-    const sellFn = route === "gmgn" ? gmgnSellLive : jupiterSellLive;
-    const r = await withExecLock(() => sellFn(mint, bag, decimals));
+    const route = config.s2ExecRoute;
+    const r = await withExecLock(() => {
+      if (route === "gmgn") return gmgnSellLive(mint, bag, decimals);
+      if (route === "okx") return okxSellLive(mint, bag, decimals);
+      return jupiterSellLive(mint, bag);
+    });
     const reportedSol = (r as { solOut?: number }).solOut;
     const { poolBalanceSol } = await import("./rpc.js");
     const after = await poolBalanceSol(botWallet().publicKey.toBase58());
@@ -188,6 +197,7 @@ async function sellBag(mint: string, symbol: string | null, bag: number, reason:
       type: r.ok ? "s2-sell" : "s2-sell-failed", strategyTag: "S2", route, tradeKey: mint, mint, symbol, reason,
       tokens: bag, solReceived: got, sig: r.signature, timedOut: r.timedOut === true, err: r.err ?? null,
       confirmVia: r.confirmVia ?? null, confirmMs: r.confirmMs ?? null,
+      buildMs: r.buildMs ?? null, txFormat: r.txFormat ?? null,
     });
     ui[r.ok ? "pass" : "reject"](`[s2-live] SELL ${symbol ?? mint} ALL ${reason} → ${got != null ? `${got.toFixed(6)} SOL` : "?"}`);
     if (lot && r.ok && got != null) {

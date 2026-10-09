@@ -108,6 +108,11 @@ export async function fetchJson<T>(url: string, opts: FetchJsonOptions = {}): Pr
           throw new RateLimited(new URL(url).host, detail);
         }
         const retryAfter = Number(res.headers.get("retry-after")) || 2 ** attempt;
+        // BUG FIX (2026-10-07): cabang ini dulu `continue` TANPA menyimpan error, sehingga saat
+        // semua percobaan habis karena 429 berturut-turut, loop berakhir dengan `lastErr` masih
+        // undefined dan melempar Error("undefined") — pesan yang tidak bisa didiagnosa (terjadi
+        // live di lane Robinhood: GeckoTerminal membatasi per-IP dan error-nya jadi tak terbaca).
+        lastErr = new RateLimited(new URL(url).host, `HTTP 429 (retry-after ${retryAfter}s, attempt ${attempt + 1}/${retries + 1})`);
         await sleep(retryAfter * 1000);
         continue;
       }

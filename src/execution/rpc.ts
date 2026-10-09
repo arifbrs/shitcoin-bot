@@ -1,4 +1,4 @@
-import { Connection } from "@solana/web3.js";
+import { Connection, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { pooledRpc, healthyRpcUrls } from "../safety/onchain.js";
 
 /**
@@ -106,6 +106,95 @@ export async function poolLatestBlockhashFull(): Promise<{ blockhash: string; la
   try {
     const r = await pooledRpc<{ value: { blockhash: string; lastValidBlockHeight: number } }>("getLatestBlockhash", [{ commitment: COMMITMENT }]);
     return r?.value?.blockhash ? { blockhash: r.value.blockhash, lastValidBlockHeight: r.value.lastValidBlockHeight } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface PaperSimulation {
+  ok: boolean;
+  err: unknown;
+  logs: string[];
+  unitsConsumed: number | null;
+  feeLamports: number | null;
+  /** Fee-payer pre minus post. Includes input SOL, fee and ATA rent for a buy. */
+  payerCostLamports: number | null;
+}
+
+/**
+ * Simulate opaque transaction bytes without signing or broadcasting them.
+ *
+ * `sigVerify:false` is intentional: strict paper must execute the exact instructions OKX built
+ * against current mainnet state, but it must never load the wallet signer. The fee payer is the
+ * first account in every Solana transaction; its balance delta therefore gives a conservative
+ * entry cost including network fee and any ATA rent. Simulation state is discarded by Solana.
+ */
+export async function poolSimulateUnsigned(bytes: Uint8Array, feePayer: string): Promise<PaperSimulation | null> {
+  try {
+    const before = await pooledRpc<{ context?: { slot?: number }; value?: number }>("getBalance", [
+      feePayer,
+      { commitment: "processed" },
+    ]);
+    if (typeof before?.value !== "number") return null;
+    const r = await pooledRpc<{
+      context?: { slot?: number };
+      value?: {
+        err?: unknown;
+        logs?: string[] | null;
+        unitsConsumed?: number;
+        fee?: number | null;
+        accounts?: Array<{ lamports?: number } | null> | null;
+      };
+    }>("simulateTransaction", [
+      Buffer.from(bytes).toString("base64"),
+      {
+        encoding: "base64",
+        commitment: "processed",
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        accounts: { encoding: "base64", addresses: [feePayer] },
+      },
+    ]);
+    const v = r?.value;
+    if (!v) return null;
+    const post = v.accounts?.[0]?.lamports;
+    // A highly active third-party simulation address can change between these two RPC snapshots.
+    // Treat a large slot skew as unavailable rather than booking a fabricated balance delta.
+    const beforeSlot = before.context?.slot;
+    const afterSlot = r.context?.slot;
+    const slotsClose = typeof beforeSlot !== "number" || typeof afterSlot !== "number" || Math.abs(afterSlot - beforeSlot) <= 2;
+    return {
+      ok: v.err == null,
+      err: v.err ?? null,
+      logs: Array.isArray(v.logs) ? v.logs.slice(-40) : [],
+      unitsConsumed: typeof v.unitsConsumed === "number" ? v.unitsConsumed : null,
+      feeLamports: typeof v.fee === "number" ? v.fee : null,
+      payerCostLamports: slotsClose && typeof post === "number" ? before.value - post : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Exact base + priority fee encoded by a freshly built unsigned transaction message. Unlike a
+ * full simulation this does not require the virtual wallet to own the paper-traded token.
+ */
+export async function poolUnsignedTransactionFee(bytes: Uint8Array): Promise<number | null> {
+  let message: Uint8Array;
+  try {
+    message = VersionedTransaction.deserialize(bytes).message.serialize();
+  } catch {
+    try { message = Transaction.from(bytes).compileMessage().serialize(); }
+    catch { return null; }
+  }
+  try {
+    const result = await pooledRpc<{ value?: number | null }>("getFeeForMessage", [
+      Buffer.from(message).toString("base64"),
+      { commitment: "processed" },
+    ]);
+    return typeof result?.value === "number" && Number.isSafeInteger(result.value) && result.value >= 0
+      ? result.value
+      : null;
   } catch {
     return null;
   }

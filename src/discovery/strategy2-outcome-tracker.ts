@@ -130,6 +130,11 @@ async function poll(): Promise<void> {
         // falling back to whatever epoch happens to be live right now, which would misattribute it.
         mint: snap.mint, sym: snap.sym, source: snap.source, cfg: snap.cfg ?? null, strategy2Epoch: snap.epoch ?? "unknown", horizonHours,
         firstSeenAt: snap.firstSeenAt, checkedAt: now,
+        // Umur mark yang SEBENARNYA (review 2026-10-07): horizonHours hanya label nominal. Kalau
+        // proses sempat berhenti, satu snapshot ditulis untuk beberapa horizon sekaligus (84%
+        // baris historis 6/24/48h begini) — kolom ini membuat "mark tepat waktu" bisa
+        // diverifikasi dari data, bukan diasumsikan.
+        ageHours: Number(((now - snap.firstSeenAt) / 3_600_000).toFixed(2)),
         entryMcUsd: snap.entryMcUsd, entryHolders: snap.entryHolders,
         currentMcUsd: cur.mcUsd, currentHolders: cur.holders,
         mcChangePct, riskScoreNow: cur.riskScore, ruggedNow: cur.rugged,

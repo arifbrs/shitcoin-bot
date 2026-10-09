@@ -33,6 +33,7 @@ import { recordOutcome, assessActors } from "./memory/actor-memory.js";
 import { classifySetup } from "./discovery/setup-filter.js";
 import { gmgnEnabled, gmgnTokenInfo, gmgnTokenSecurity, gmgnCreatedTokens } from "./discovery/gmgn.js";
 import { dexTokenPairs } from "./discovery/dexscreener.js";
+import { okxEnabled, okxTokenShadowSnapshot } from "./discovery/okx.js";
 import { logRecord, ui, logIntegrity } from "./util/log.js";
 import { notify } from "./util/notify.js";
 import { ExposureReservationBook } from "./util/exposure-reservations.js";
@@ -1116,6 +1117,36 @@ export class PaperTrader {
                 gmgnTotalTokens: gmgnHist.tokens?.length ?? null, gmgnAthMc: gmgnHist.creator_ath_info?.ath_mc ?? null,
                 ourRiskProbability: Number(ours.riskProbability.toFixed(3)), ourConfidence: Number(ours.confidence.toFixed(3)),
                 ourSampleSize: ours.sampleSize, ourEvidence: ours.evidence, cfg: configHash,
+              });
+            }
+          }
+          // OKX ONCHAINOS CROSS-CHECK — explicit shadow mode only. This records a third-party
+          // view of market data, holder concentration, dev lineage and bundlers. It is POST-OPEN,
+          // never enters classifySetup(), and therefore cannot change a live decision until its
+          // incremental value has been measured against outcomes.
+          if (okxEnabled) {
+            const snap = await okxTokenShadowSnapshot(c.mint);
+            if (snap) {
+              logRecord("events", {
+                type: "okx-enrichment", sourceMode: "shadow", acted: false,
+                tradeId: this.positions.get(c.mint)?.tradeId, mint: c.mint, symbol: c.symbol,
+                priceUsd: snap.market?.price ?? null, marketCapUsd: snap.market?.marketCap ?? null,
+                liquidityUsd: snap.market?.liquidity ?? null, holders: snap.market?.holders ?? null,
+                priceChange5mPct: snap.market?.priceChange5M ?? null, volume5mUsd: snap.market?.volume5M ?? null,
+                riskControlLevel: snap.advanced?.riskControlLevel ?? null,
+                top10HoldPct: snap.advanced?.top10HoldPercent ?? null,
+                devHoldPct: snap.developer?.devHoldingInfo?.devHoldingPercent ?? snap.advanced?.devHoldingPercent ?? null,
+                sniperHoldPct: snap.advanced?.sniperHoldingPercent ?? null,
+                bundleHoldPct: snap.advanced?.bundleHoldingPercent ?? null,
+                suspiciousHoldPct: snap.advanced?.suspiciousHoldingPercent ?? null,
+                lpBurnedPct: snap.advanced?.lpBurnedPercent ?? null,
+                devTokens: snap.developer?.devLaunchedInfo?.totalToken ?? snap.advanced?.devCreateTokenCount ?? null,
+                devRugs: snap.developer?.devLaunchedInfo?.rugPullCount ?? snap.advanced?.devRugPullTokenCount ?? null,
+                devMigrated: snap.developer?.devLaunchedInfo?.migratedCount ?? snap.advanced?.devLaunchedTokenCount ?? null,
+                devFundingAddress: snap.developer?.devHoldingInfo?.fundingAddress ?? null,
+                totalBundlers: snap.bundle?.totalBundlers ?? null,
+                bundlerAthPct: snap.bundle?.bundlerAthPercent ?? null,
+                cfg: configHash,
               });
             }
           }

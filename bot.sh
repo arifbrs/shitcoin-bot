@@ -16,12 +16,18 @@ ok(){ printf "  ${G}✓${N} %s\n" "$1"; }
 bad(){ printf "  ${R}✗${N} %s\n" "$1"; }
 info(){ printf "  ${D}%s${N}\n" "$1"; }
 
-SUPERVISORS=(sniper research dashboard watchdog kol-copy kol-leaderboard entry-shadow)
-PROCS=("tsx src/index.ts:sniper S1" "strategy2-scout:scout S2" "strategy2-papertrader:paper S2" \
-       "strategy2-outcome:outcome S2" "tsx src/server.ts:dashboard" "watchdog.mjs:watchdog" \
-       "kol-copy-probe:probe salin KOL" \
-       "kol-leaderboard-refresh:penyegar leaderboard" \
-       "entry-shadow-probe:shadow entry")
+# MULTI-LANE (2026-10-07): dashboard + GMGN + Robinhood. Lane Solana dimatikan oleh owner.
+SUPERVISORS=(dashboard gmgn robinhood analisa dexscreener okx okx-paper)
+PROCS=("tsx src/server.ts:dashboard" \
+       "gmgn-proxy:proxy GMGN" \
+       "gmgn-full-watch:watch GMGN" \
+       "gmgn-report:report GMGN" \
+       "robinhood/paper:paper RH (34 varian — 10+10+8 kohort-3+6 kohort-4)" \
+       "robinhood/review:review RH jam-8" \
+       "src/analisa.ts:analisa (loop 12m)" \
+       "discovery/dex-full:dex-full (13 endpoint)" \
+       "src/okx-lane.ts:okx-lane (observasi)" \
+       "src/okx-strict-paper.ts:okx strict-paper (uang kertas)")
 
 running(){ pgrep -f "$1" >/dev/null 2>&1; }
 
@@ -45,33 +51,29 @@ status(){
   python3 - <<'PYCHK'
 import glob, os, time, subprocess
 now = time.time()
-# Umur proses sniper. Setelah bot baru dinyalakan, "terakhir menulis" masih membawa jejak
-# sebelum shutdown — menandainya DIAM adalah alarm palsu, dan alarm palsu yang berulang
-# melatih orang mengabaikan detektornya. Ambang tidak pernah lebih besar dari umur proses.
-def sniper_uptime_min():
+# Umur supervisor = masa tenggang: setelah baru dinyalakan, berkas terakhir masih membawa jejak
+# sebelum shutdown — menandainya DIAM adalah alarm palsu.
+def sup_uptime_min(pattern):
     try:
-        pid = subprocess.run(["pgrep","-f","tsx src/index.ts"], capture_output=True, text=True).stdout.split()[0]
+        pid = subprocess.run(["pgrep","-f",pattern], capture_output=True, text=True).stdout.split()[0]
         et = subprocess.run(["ps","-o","etime=","-p",pid], capture_output=True, text=True).stdout.strip()
         secs = 0
         for part in et.replace("-", ":").split(":"): secs = secs*60 + int(part)
         return secs/60
     except Exception:
         return 1e9
-UP = sniper_uptime_min()
-# (label, pola berkas, ambang menit) — ambang = beberapa kali irama normalnya
+# MULTI-LANE (2026-10-07): lane Solana dimatikan, detektor diarahkan ke lane yang BENAR-BENAR
+# berjalan (GMGN + Robinhood) supaya "DIAM" hanya menyala kalau ada yang sungguh rusak.
 checks = [
-    ("sniper: keputusan",   "logs/decisions-*.jsonl",       5),
-    # trade ditutup hanya kalau ada posisi; sepi bukan berarti rusak
-    ("sniper: trade",       "logs/paper-trades-*.jsonl",   180),
-    # S2 dimatikan 2026-08-18; event masih ditulis proses lain, jadi diganti label
-    ("S2: event",           "logs/events-*.jsonl",           5),
-    ("probe salin KOL",     "logs/kol-copy-probe.log",      15),
-    ("penyegar leaderboard","logs/kol-leaderboard-*.jsonl", 45),
-    # menulis hanya saat ada entry BARU dinilai; laju buy ~2/jam, jadi jeda panjang wajar
-    ("shadow entry",        "logs/entry-shadow.log",        90),
+    ("RH paper (siklus 3m)",   "logs/rh-events-*.jsonl",     "run-robinhood-supervised", 12),
+    ("RH review (harian 8)",   "logs/robinhood-review-*.md", "run-robinhood-supervised", 1560),
+    ("GMGN watch (siklus15m)", "logs/events-*.jsonl",        "run-gmgn-supervised",      25),
+    ("GMGN proxy/supervisor",  "logs/gmgn-supervisor.out",   "run-gmgn-supervised",      25),
+    ("GMGN report (harian)",   "logs/gmgn-report-*.md",      "run-gmgn-supervised",      1560),
 ]
-for label, pat, limit in checks:
+for label, pat, sup, limit in checks:
     fs = sorted(glob.glob(pat))
+    UP = sup_uptime_min(sup)
     if not fs:
         print(f"  \033[31m?\033[0m {label}: belum ada berkas")
         continue
@@ -89,34 +91,48 @@ PYCHK
   echo "── POSISI TERBUKA ──"
   python3 - <<'PY' 2>/dev/null || info "state belum bisa dibaca"
 import json,os
-for p,l in (('logs/positions.json','S1'),('logs/strategy2-paper-state.json','S2')):
-    if not os.path.exists(p): print(f"  {l}: state belum ada"); continue
-    d=json.load(open(p)); ps=d.get('positions')
-    n=len(ps) if isinstance(ps,(list,dict)) else 0
-    print(f"  {l}: {n} posisi terbuka")
+p='logs/rh-paper-state.json'
+if not os.path.exists(p):
+    print("  RH: state belum ada")
+else:
+    try:
+        d=json.load(open(p)); vs=d.get('variants',{})
+        tot=sum(len(v.get('positions',[])) for v in vs.values())
+        syms=[q.get('symbol') for v in vs.values() for q in v.get('positions',[])]
+        print(f"  RH: {tot} posisi terbuka" + (f" · {', '.join(str(s) for s in syms[:8])}" if syms else " (menunggu kandidat)"))
+    except Exception as e:
+        print(f"  RH: state RUSAK — {e}")
+print("  Solana S1/S2: dihentikan 2026-10-07 (lane mati, data lama tetap di logs/)")
 PY
   return $(( ${#PROCS[@]} - live ))
 }
 
 start(){
-  if running "tsx src/index.ts" || running "tsx src/server.ts"; then
+  if running "tsx src/server.ts"; then
     printf "${Y}Bot sudah jalan.${N} Pakai ./bot.sh status untuk melihat, atau ./bot.sh stop dulu.\n"
     status; return 1
   fi
   echo "Menyalakan bot…"
-  info "cohort: $(grep -E '^export ENTRY_MC_FLOOR_SOL' run-sniper-supervised.sh | cut -d= -f2)–$(grep -E '^export ENTRY_MC_CEIL_SOL' run-sniper-supervised.sh | cut -d= -f2) ◎ · ukuran $(grep -E '^export PAPER_TRADE_SIZE_SOL' run-sniper-supervised.sh | cut -d= -f2) SOL"
-  nohup ./run-sniper-supervised.sh    > logs/sniper-supervisor.out    2>&1 &
-  nohup ./run-research-supervised.sh  > logs/research-supervisor.out  2>&1 &
+  # MULTI-LANE (2026-10-07, keputusan owner): lane Solana (sniper S1 + Strategy-2) DIMATIKAN —
+  # tidak ada lagi proses yang memakan RPC/quota Solana. Yang jalan: dashboard + GMGN + Robinhood.
+  # Rollback mudah: script run-sniper/run-research/run-watchdog/run-kol-* masih ada, jalankan manual.
+  info "lane aktif : dashboard · GMGN (proxy+watch+report) · Robinhood (10 varian + review 08:00)"
+  info "lane mati  : sniper S1 · Strategy-2 · watchdog Solana · probe KOL"
   nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 &
-  info "menunggu mesin naik (30 detik)…"; sleep 30
-  # Watchdog TERAKHIR — lihat catatan di kepala berkas.
-  info "menyalakan watchdog…"
-  nohup ./run-watchdog-supervised.sh  > logs/watchdog-supervisor.out  2>&1 &
-  # Probe KOL: pengamat murni, nol modal, di luar codeFingerprint — ikut hidup/mati bersama bot.
-  nohup ./run-kol-copy-supervised.sh  > /dev/null                     2>&1 &
-  nohup ./run-kol-leaderboard-supervised.sh > /dev/null               2>&1 &
-  nohup ./run-entry-shadow-supervised.sh    > /dev/null               2>&1 &
-  sleep 12
+  nohup ./run-gmgn-supervised.sh      > logs/gmgn-supervisor.out 2>&1 &
+  nohup ./run-robinhood-supervised.sh > logs/robinhood-supervisor.out 2>&1 &
+  # LOOP ANALISA (2026-10-08): digest interpretasi tiap 12 menit — "jangan berhenti".
+  nohup ./run-analisa-supervised.sh   > logs/analisa-supervisor.out   2>&1 &
+  # DEXSCREENER FULL (2026-10-08): semua 13 endpoint, siklus 5 menit, tanpa key.
+  nohup ./run-dexscreener-supervised.sh > logs/dex-supervisor.out     2>&1 &
+  # OKX LANE (2026-10-08): blokir DNS ISP hilang — lane observasi read-only dinyalakan lagi.
+  nohup ./run-okx-supervised.sh       > logs/okx-supervisor.out       2>&1 &
+  # OKX STRICT-PAPER (2026-10-08): uang kertas. Tanpa signer/broadcast — hanya tx unsigned + simulasi.
+  nohup ./run-okx-paper-supervised.sh > logs/okx-paper-supervisor.out 2>&1 &
+  # PENJAGA LANE (2026-10-07): supervisor bisa mati diam sementara anaknya jadi orphan — tanpa ini
+  # lane berhenti tanpa suara. Guard memeriksa tiap 2 menit dan menghidupkan ulang yang hilang.
+  nohup ./tools/lane-guard.sh         > logs/lane-guard.out 2>&1 &
+  info "menunggu mesin naik (12 detik)…"; sleep 12
   echo; status; local rc=$?
   echo
   if [ $rc -eq 0 ]; then
@@ -135,10 +151,15 @@ stop(){
   pkill -f "run-kol-copy-supervised" 2>/dev/null; pkill -f "kol-copy-probe" 2>/dev/null
   pkill -f "run-kol-leaderboard-supervised" 2>/dev/null; pkill -f "kol-leaderboard-refresh" 2>/dev/null
   pkill -f "run-entry-shadow-supervised" 2>/dev/null; pkill -f "entry-shadow-probe" 2>/dev/null
-  for s in sniper research dashboard bxswaps; do pkill -f "run-$s-supervised" 2>/dev/null; done
+  for s in sniper research dashboard bxswaps robinhood gmgn; do pkill -f "run-$s-supervised" 2>/dev/null; done
   pkill -f "tsx src/index.ts" 2>/dev/null
   pkill -f "strategy2-scout" 2>/dev/null; pkill -f "strategy2-papertrader" 2>/dev/null
   pkill -f "strategy2-outcome" 2>/dev/null; pkill -f "gmgn" 2>/dev/null
+  pkill -f "robinhood/paper" 2>/dev/null; pkill -f "robinhood/review" 2>/dev/null
+  pkill -f "lane-guard" 2>/dev/null; pkill -f "run-analisa-supervised" 2>/dev/null; pkill -f "src/analisa.ts" 2>/dev/null
+  pkill -f "run-dexscreener-supervised" 2>/dev/null; pkill -f "discovery/dex-full" 2>/dev/null
+  pkill -f "run-okx-supervised" 2>/dev/null; pkill -f "src/okx-lane.ts" 2>/dev/null
+  pkill -f "run-okx-paper-supervised" 2>/dev/null; pkill -f "src/okx-strict-paper.ts" 2>/dev/null
   pkill -f "bx-swaps" 2>/dev/null; pkill -f "tsx src/server.ts" 2>/dev/null
   sleep 6
   local left; left=$(ps aux | grep -E "tsx src/|strategy2-|watchdog.mjs|kol-edge-probe|kol-copy-probe|kol-leaderboard-refresh|entry-shadow-probe|run-.*-supervised" | grep -v grep | wc -l | tr -d ' ')
@@ -148,7 +169,7 @@ stop(){
   python3 - <<'PY'
 import json,os,glob,datetime
 bad=0
-for p in ('logs/positions.json','logs/strategy2-paper-state.json'):
+for p in ('logs/positions.json','logs/strategy2-paper-state.json','logs/rh-paper-state.json'):
     if not os.path.exists(p): continue
     try:
         d=json.load(open(p)); ps=d.get('positions')

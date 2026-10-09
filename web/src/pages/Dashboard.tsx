@@ -18,6 +18,25 @@ import { PipelineFlow } from "@/components/panels/PipelineFlow";
 import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { RunLedger } from "@/components/panels/RunLedger";
 import { SniperRecap } from "@/components/panels/SniperRecap";
+import { OkxWeb3Panel } from "@/components/panels/OkxWeb3Panel";
+import { RobinhoodChainPanel } from "@/components/panels/RobinhoodChainPanel";
+import { LaneRobinhood } from "@/components/panels/LaneRobinhood";
+import { LaneGmgn } from "@/components/panels/LaneGmgn";
+import { LaneDex } from "@/components/panels/LaneDex";
+import { LaneOkxPaper } from "@/components/panels/LaneOkxPaper";
+
+/** Kartu ringkas status lane untuk landing multi-lane (2026-10-07). */
+function LaneTag({ name, status, tone, note }: { name: string; status: string; tone: "up" | "dim"; note: string }) {
+  return (
+    <div className={`rounded-xl border px-3.5 py-3 ${tone === "up" ? "border-up/40 bg-up/5" : "border-border bg-card opacity-70"}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{name}</p>
+        <span className={`font-mono text-[10px] ${tone === "up" ? "text-up" : "text-muted-foreground"}`}>{status}</span>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">{note}</p>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const { data, status } = useLiveStats();
@@ -51,7 +70,30 @@ export default function Dashboard() {
         ) : (
           <>
           <StaleBanner data={data} />
-          <div className="dash-grid mx-auto max-w-[1700px]">
+          {/* MULTI-LANE (2026-10-07, keputusan owner): landing menampilkan lane yang BENAR-BENAR
+              berjalan — Robinhood (10 varian) dan GMGN — sementara lane Solana (S1+S2) dihentikan
+              dan panel lamanya dipindah ke balik <details> supaya tidak lagi mendominasi layar. */}
+          <div className="mx-auto max-w-[1700px] space-y-4">
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+              <LaneTag name={`Robinhood · ${data.laneRobinhood?.variants.length ?? "?"} varian`} status="AKTIF" tone="up" note="Paper $5/trade di Ethereum L2 4663 · review harian 08:00 · nol eksekusi" />
+              <LaneTag name="GMGN" status="AKTIF" tone="up" note="Proxy + watch (pace 10s) + sinyal & kualitas wallet · laporan harian" />
+              <LaneTag name="DexScreener" status="AKTIF" tone="up" note="13 endpoint + 6 stream WS realtime (diukur gratis) · watchlist & promosi berbayar" />
+              <LaneTag name="OKX · strict-paper" status="AKTIF" tone="up" note="Uang kertas 0,1 SOL · tx unsigned + simulasi · ledger hash-chain · nol tanda tangan" />
+              <LaneTag name="Solana (S1 + S2)" status="DIMATIKAN" tone="dim" note="Dihentikan 2026-10-07 · data lama tetap tersimpan di logs/" />
+            </div>
+            <LaneRobinhood data={data.laneRobinhood} />
+            <LaneGmgn />
+            <LaneDex data={data.laneDex} />
+            <LaneOkxPaper data={data.laneOkxPaper} />
+            {/* OKX WEB3 PANEL — dipindah keluar dari lipatan "Lane Solana" pada 2026-10-08: lane OKX
+                kini HIDUP (radar/observatory/strict-paper jalan terus), jadi menyembunyikannya di
+                balik label "dihentikan" akan membuat panel yang benar terlihat seperti arsip. */}
+            <OkxWeb3Panel />
+            <details className="rounded-xl border border-border bg-card p-3">
+              <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                Lane Solana — dihentikan 2026-10-07 · tampilkan panel lama (S1 sniper · S2)
+              </summary>
+              <div className="dash-grid mt-3">
             {/* Paper recap is REPLACED, not hidden. Its cumulative +831.5% on a notional float is
                 meaningless next to a real wallet and actively misleading above one — but an empty
                 row would read as "nothing is happening" while real money is at work. */}
@@ -124,6 +166,9 @@ right={live ? "" : `${data.runs?.profitable ?? 0}/${data.runs?.completed ?? 0} u
             >
               <RunLedger data={view!} />
             </Tile>
+            </div>
+            </details>
+            <RobinhoodChainPanel />
           </div>
           </>
         )}

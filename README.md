@@ -36,6 +36,52 @@ Three pages, session-authenticated:
 Run pieces separately if you prefer: `npm run demo` (scanner only),
 `npm run web` (web only).
 
+### Optional OKX OnchainOS / Web3 lane
+
+The OKX integration covers the 74 DEX+Market endpoints in `okx_api_rate_limits.txt`: token and
+Trenches discovery, signals, smart-money leaderboard/radar, portfolio/copy observation, balances,
+quotes and transaction tools. `npm run okx:lane` keeps radar plus REST signal/copy fallbacks
+running when the account has no WebSocket entitlement; `npm run okx:report` summarizes the fixed-
+horizon study. Validate locally with `npm run okx:selftest`, broad live reads with
+`npm run okx:probe`, and unsigned transaction tools with `npm run okx:toolbox-probe`.
+The current registry records 69 endpoints as live-tested. Five remain intentionally unexecuted in
+automation: create/cancel intent mutations, cancel-sign data and status that require a real intent
+UID, and signed transaction broadcast.
+
+`npm run okx:paper` starts `OKX-STRICT-PAPER-V2`: scanner + signal + radar-selected wallet tracker
+feed an append-only hash-chained ledger, while entries use OKX's unsigned Quick Buy transaction and
+Solana mainnet simulation. It never imports the wallet/signer/broadcaster. Fixed-horizon exits use
+OKX minimum-receive quotes plus the exact RPC message fee; run `npm run okx:paper:report` to verify
+ledger integrity and print policy/source-by-horizon PnL. The prospective v6 scalp cohort samples
+the free/basic toplist every 5 seconds and rechecks temporarily filtered tokens every 5 seconds
+until their five-minute eligibility window closes; an early low-volume snapshot is no longer a
+permanent rejection. At most three candidates enter the execution preflight per cycle. It admits
+only fresh toplist microcaps (at most 5 minutes old and $250k market cap), requires at least 60%
+buy transactions, caps measured entry overhead at 7%, completes the full entry check within 15
+seconds, and requires two time-separated unsigned reverse-sell proofs with conservative round-trip
+floors of at least -12%. Trenches, signal, radar and wallet tracker remain recorded as shadow
+observations but cannot open a v6 position. The frozen scalp policy polls executable minimum-receive
+builds, triggers at +5% / -8% / 60 seconds, waits 1.5 seconds, and uses a second sell build as the
+paper fill; a lost route is a full loss. Longer fixed horizons remain diagnostics. It remains a
+paper hypothesis—not a profitability claim—and the report never pools it with earlier policies. HTTP 402 is recorded and backed off explicitly,
+so exhausted Market quota cannot masquerade as an empty market.
+The short pre-policy V1 pilot remains immutable and can be audited with
+`npm run okx:paper:report:v1`; it is never pooled into V2 results.
+
+The private `/app` dashboard includes an OKX Web3 section for capability/arming truth, persistent
+wallet radar, signal activity, shadow-copy activity and fixed-horizon outcomes. Its backing
+`/api/okx/overview` endpoint reads the local radar cache and JSONL logs only (`quotaCost: 0`), so
+dashboard refreshes do not consume OKX quota. Copy events are explicitly labelled **SHADOW** and
+never flow into execution. New signal/copy events are also deduplicated into
+`logs/okx-candidates.json`; every record is only `WATCH` or `REJECT` and carries
+`executionState: BLOCKED`, so this completes the auditable pre-execution workflow without silently
+turning social/wallet signals into real orders.
+
+Real Solana routing is separately opt-in: set `S2_EXEC_ROUTE=okx` and
+`OKX_EXECUTION_ENABLED=true`. OKX builds the transaction, but the bot signs locally and submits
+through its rotating RPC pool under the existing LIVE switch, guardian caps and kill switch.
+Neither selftest nor probe signs or broadcasts a transaction.
+
 > Original vision below (2026-06-21) — kept for context.
 
 > **Status: PLANNING / IDEA STAGE — nothing built yet (as of 2026-06-21).**

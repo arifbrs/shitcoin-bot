@@ -22,9 +22,19 @@ import { OpenApiClient } from "gmgn-cli/dist/client/OpenApiClient.js";
 import { TokenBucket } from "../util/http.js";
 import "dotenv/config";
 
+// Disable gmgn-cli's built-in "retry once on 429" (verified live 2026-10-07): retrying DURING a
+// rate-limit cooldown is exactly what escalates RATE_LIMIT_EXCEEDED into an extended
+// RATE_LIMIT_BANNED — GMGN's own error text: "repeated requests can extend the ban by 5s up to
+// 5 minutes". The proxy now handles cooldown itself (see cooldownUntil below), so the library
+// must stay out of it.
+process.env.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS ??= "0";
+
 const PORT = Number(process.env.GMGN_PROXY_PORT ?? 4319);
 const apiKey = process.env.GMGN_API_KEY?.trim();
-const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim();
+// .env menyimpan PEM sebagai SATU baris dengan `\n` literal (diverifikasi 2026-10-07: tanpa
+// normalisasi ini, crypto melempar "1E08010C:DECODER routines::unsupported" saat memuat key).
+// Ganti escape jadi baris baru asli; PEM dengan baris baru asli tidak terpengaruh (no-op).
+const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim().replace(/\\n/g, "\n");
 // Review item (2026-07-27): none of the read-only methods this proxy dispatches need signing
 // (all are exist-auth — see OpenApiClient.ts's own auth-mode comment), so the private key is
 // intentionally NOT loaded here. If a genuinely signed method is ever added, load it explicitly
@@ -35,8 +45,13 @@ const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim();
 // (Ed25519/RSA auth signature per GMGN's own protocol); it is NOT a wallet custody key and
 // never leaves this process. The swap itself executes against `from_address` = the bot wallet.
 const swapEnabled = process.env.S2_EXEC_ROUTE === "gmgn";
-const privateKeyPem = swapEnabled && privateKeyRaw ? privateKeyRaw : undefined;
+// Portfolio reads (wallet holdings / token balance) are GMGN "critical-auth" routes that need the
+// private key too. Owner approved loading it for these READS (2026-10-07) WITHOUT enabling swap:
+// GMGN_PORTFOLIO_AUTH=true loads the key, but the swap/order entries stay absent from DISPATCH.
+const portfolioAuth = process.env.GMGN_PORTFOLIO_AUTH === "true";
+const privateKeyPem = (swapEnabled || portfolioAuth) && privateKeyRaw ? privateKeyRaw : undefined;
 if (swapEnabled) console.warn("[gmgn-proxy] S2_EXEC_ROUTE=gmgn — metode swap/order AKTIF (signed auth dimuat).");
+else if (portfolioAuth && privateKeyPem) console.warn("[gmgn-proxy] GMGN_PORTFOLIO_AUTH=true — wallet holdings/token balance AKTIF (signed). Swap/order tetap TERTUTUP.");
 
 if (!apiKey) {
   console.error("[gmgn-proxy] GMGN_API_KEY not set — nothing to proxy. Exiting.");
@@ -72,6 +87,16 @@ const DISPATCH: Record<string, (args: unknown[]) => Promise<unknown>> = {
     getOrder: (a: unknown[]) => client.queryOrder(a[0] as string, a[1] as string),
   } : {}),
   getHotSearches: (a) => client.getHotSearches(a[0] as Parameters<typeof client.getHotSearches>[0]),
+  // Wallet portfolio/quality reads (added 2026-10-07 untuk studi kualitas wallet):
+  //  - stats/activity: exist-auth — terverifikasi live, tanpa key.
+  //  - holdings/token-balance: "critical-auth" — HANYA terdaftar saat key dimuat (portfolioAuth),
+  //    jadi proxy read-only default tidak bisa mencapainya sama sekali.
+  getWalletStats: (a) => client.getWalletStats(a[0] as string, a[1] as string[], a[2] as string | undefined),
+  getWalletActivity: (a) => client.getWalletActivity(a[0] as string, a[1] as string, a[2] as Record<string, string | number | string[]>),
+  ...(privateKeyPem ? {
+    getWalletHoldings: (a) => client.getWalletHoldings(a[0] as string, a[1] as string, a[2] as Record<string, string | number>),
+    getWalletTokenBalance: (a) => client.getWalletTokenBalance(a[0] as string, a[1] as string, a[2] as string),
+  } : {}),
   getKol: (a) => client.getKol(a[0] as string | undefined, a[1] as number | undefined),
   getSmartMoney: (a) => client.getSmartMoney(a[0] as string | undefined, a[1] as number | undefined),
   getCreatedTokens: (a) => client.getCreatedTokens(a[0] as string, a[1] as string, a[2] as Record<string, string | number>),
@@ -79,6 +104,12 @@ const DISPATCH: Record<string, (args: unknown[]) => Promise<unknown>> = {
 };
 
 let served = 0, errors = 0, abandonedSuccess = 0, abandonedError = 0;
+
+// Global ban-aware cooldown (added 2026-10-07, live-verified): a 429 from GMGN carries a reset
+// time, and EVERY request sent before it extends the ban (RATE_LIMIT_EXCEEDED → RATE_LIMIT_BANNED,
+// +5s each, up to 5min). Previously the proxy kept relaying callers straight into that window.
+// Now any 429 sets a cooldown; subsequent calls wait it out (+5s safety) before going upstream.
+let cooldownUntil = 0;
 
 // LIMITATION (found live 2026-07-27, follow-up audit): a caller aborting its local fetch to THIS
 // proxy does NOT cancel the upstream GMGN request `fn(args)` makes — gmgn-cli's OpenApiClient.
@@ -104,6 +135,8 @@ const server = createServer((req, res) => {
         const { method, args } = JSON.parse(body) as { method: string; args: unknown[] };
         const fn = DISPATCH[method];
         if (!fn) { if (!callerGone) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `unknown or non-read-only method: ${method}` })); } return; }
+        const wait = cooldownUntil - Date.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         const weight = WEIGHTS[method] ?? 1;
         for (let i = 0; i < weight; i++) await bucket.take();
         const data = await fn(args ?? []);
@@ -117,8 +150,14 @@ const server = createServer((req, res) => {
         // Forward the REAL error message/status distinctly (review: callers used to see every
         // failure — 429, bad contract, network — collapsed to the same `null`).
         const msg = (e as Error).message ?? String(e);
-        const status = /HTTP 429|RATE_LIMIT/i.test(msg) ? 429 : 502;
-        res.writeHead(status, { "content-type": "application/json" });
+        const rateLimited = /HTTP 429|RATE_LIMIT/i.test(msg);
+        if (rateLimited) {
+          // Error text carries "(~Ns remaining)"; without it, GMGN's regular window is ~30s.
+          const secs = Number(/~(\d+)s remaining/.exec(msg)?.[1] ?? 30);
+          cooldownUntil = Math.max(cooldownUntil, Date.now() + (secs + 5) * 1000);
+          console.warn(`[gmgn-proxy] 429 — holding all calls for ~${secs + 5}s (ban-aware cooldown)`);
+        }
+        res.writeHead(rateLimited ? 429 : 502, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: msg }));
       }
     })();

@@ -1,4 +1,9 @@
 #!/bin/bash
+# DIMATIKAN 2026-10-07 (keputusan owner: "rombak total multi-lane, matikan semua lane Solana").
+# Script ini TIDAK lagi dijalankan oleh bot.sh. Lane GMGN-nya dipindah ke run-gmgn-supervised.sh
+# (proxy + full-watch + report); proses Solana (scout/outcome/paper) sengaja tidak dijalankan.
+# File ini disimpan utuh untuk rollback — jalankan manual bila lane Solana ingin dihidupkan lagi.
+#
 # Supervises the Strategy-2/GMGN research processes (review fix, 2026-07-27: these were running
 # as orphans — nothing restarted them if one crashed or the machine rebooted). Zero capital, all
 # read-only/paper — completely separate from the sniper's own run-supervised.sh.
@@ -25,6 +30,12 @@ sleep 3  # let the proxy bind its port before anything tries to call it
 supervise "strategy2-scout" npm run strategy2:scout &
 supervise "strategy2-outcome" npm run strategy2:outcome &
 supervise "strategy2-paper" npm run strategy2:paper &
+# DITAMBAH 2026-10-07 (owner approved setelah studi GMGN): pantauan GMGN berprioritas —
+# posisi terbuka, kandidat GMGN baru, sinyal smart-money/KOL, dan kualitas wallet maker.
+# Satu call per ~10 detik (pace terbukti bebas ban), semua lewat gmgn-proxy. Read-only, zero capital.
+supervise "gmgn-full-watch" npm run gmgn:full-watch &
+# Laporan harian offline (nol kuota): kualitas wallet × outcome kandidat → console + logs/gmgn-report-<tgl>.md
+supervise "gmgn-report" npm run gmgn:report -- --daily &
 # DIMATIKAN 2026-08-15. Terbukti populasi SALAH: dari 25 nama teratas leaderboard pump.fun,
 # hanya 4 yang ada di 637 wallet semesta GMGN, dan dari 9.445 sampel probe tidak satu pun
 # berasal dari nama leaderboard. Ia memakan kuota RPC/GMGN untuk mengukur kerumunan yang bukan
