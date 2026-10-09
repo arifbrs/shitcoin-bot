@@ -212,6 +212,15 @@ const VARIANTS: Variant[] = [
   //   band + vol≥5k + liq 15k–100k       → n=59 · net −$76 → DITOLAK; memotong pool dalam justru merugikan
   { id: "v27-band-volpita", label: "S3 pita volume 20k–100k + rasio band", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 20_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, requireCleanGmgn: false, cohort3: true },
   { id: "v28-band-top10", label: "S3 presisi: rasio band + top10 30–60%", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, minTop10Pct: 0.30, maxTop10Pct: 0.60, requireCleanGmgn: false, cohort3: true },
+  // KOREKSI 2026-10-09 (terukur, bukan dugaan): v28 ternyata NYARIS MUSTAHIL di aliran nyata.
+  // Kandidat yang lolos gate band punya top10 16,9–22,6% (n=6 terakhir) — SEMUA di bawah 30% —
+  // jadi kombinasi "band + top10 30–60%" nyaris tak punya irisan (0 trade, dan itu BUKAN karena
+  // pengayaan macet: 11/11 kandidat band sudah diperkaya). Di seluruh 122 pengayaan, hanya 17%
+  // token berada di 30–60%. Maka hipotesis top10 diuji di populasi tempat nilainya MEMANG ada:
+  // gate masuk longgar (tanpa batas rasio) + top10 30–60%. v28 tetap dipertahankan sebagai uji
+  // kombinasi ketat — ia memang akan jarang trading, dan itu jujur, bukan bug.
+  { id: "v35-top10-presisi", label: "S3b presisi top10 30–60% (masuk longgar)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, minTop10Pct: 0.30, maxTop10Pct: 0.60, requireCleanGmgn: false, cohort3: true },
+  { id: "v36-top10-kontrol", label: "S3b kontrol: sama tanpa gate top10", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort3: true },
   // ── KOHORT-4 (2026-10-09): PERISAI LIKUIDITAS — menyerang EKOR KERUGIAN, bukan pemilihan masuk.
   //
   // Studinya (per alasan keluar, n=356): stop_loss n=182 win 0% net −$1.710 (kelebihan $845 karena
@@ -347,6 +356,9 @@ const buyRatio1h = (m: PoolMetrics): number | null => {
   return b / (b + s);
 };
 
+/** Alasan tunggal "menunggu data pengayaan" — dipakai rejects() DAN logika prioritas antrean. */
+const TOP10_MISSING_REASON = "top10 belum diperkaya (gate presisi menunggu data)";
+
 /** Apakah kandidat lolos filter entry varian? Mengembalikan null (lolos) atau alasan tolakan. */
 function rejects(v: Variant, m: PoolMetrics, now: number, sig?: RugSignals | null): string | null {
   const age = ageMinOf(m, now);
@@ -373,7 +385,7 @@ function rejects(v: Variant, m: PoolMetrics, now: number, sig?: RugSignals | nul
   // KOHORT-3 presisi: rentang konsentrasi top-10 (dari pengayaan GMGN). Fail-closed bila data kosong.
   if (v.minTop10Pct != null || v.maxTop10Pct != null) {
     const top10 = sig?.top10HolderPct ?? null;
-    if (top10 == null) return "top10 belum diperkaya (gate presisi menunggu data)";
+    if (top10 == null) return TOP10_MISSING_REASON;
     if (v.minTop10Pct != null && top10 < v.minTop10Pct) return `top10 ${(top10 * 100).toFixed(1)}% < ${(v.minTop10Pct * 100).toFixed(0)}%`;
     if (v.maxTop10Pct != null && top10 >= v.maxTop10Pct) return `top10 ${(top10 * 100).toFixed(1)}% ≥ ${(v.maxTop10Pct * 100).toFixed(0)}%`;
   }
@@ -663,6 +675,11 @@ async function cycle(): Promise<void> {
     const nowA = Date.now();
     const observed = discovered.filter((m) => (m.liqUsd ?? 0) >= 5_000).slice(0, 40);
     const enrichQueue: PoolMetrics[] = [];
+    // ANTREAN PRIORITAS (2026-10-09): varian presisi (v28, gate top10) FAIL-CLOSED menunggu data
+    // pengayaan — dan antrean lama hanya berisi kandidat yang lolos varian LAIN, sehingga v28
+    // menunggu data yang tak pernah datang (terukur: 0 trade). Kandidat yang SATU-SATUNYA
+    // penghalangnya adalah data itu sekarang masuk antrean terdepan, supaya hipotesisnya bisa diuji.
+    const enrichDecisive: PoolMetrics[] = [];
     for (const m of observed) {
       const accepted: string[] = [], rejected: Record<string, string> = {};
       for (const v of VARIANTS) {
@@ -670,6 +687,8 @@ async function cycle(): Promise<void> {
         if (r) rejected[v.id] = r; else accepted.push(v.id);
       }
       if (accepted.length) enrichQueue.push(m); // prioritas enrichment: kandidat yang lolos ≥1 filter
+      const decisive = VARIANTS.some((v) => (v.minTop10Pct != null || v.maxTop10Pct != null) && rejects(v, m, Date.now(), null) === TOP10_MISSING_REASON);
+      if (decisive) enrichDecisive.push(m);
       logRecord("rh-events", {
         type: "rh-candidate", token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress, dex: m.dex,
         priceUsd: m.priceUsd, liqUsd: m.liqUsd, mcUsd: m.mcUsd, ageMin: ageMinOf(m, nowA),
@@ -684,9 +703,11 @@ async function cycle(): Promise<void> {
     // DIPINDAH KE LUAR KUNCI (2026-10-09): dulu ia berjalan DI DALAM `busy`; pace GMGN 10 detik per
     // call × 2 call cukup untuk menahan tick mark sampai ~70 detik (terukur), dan itu justru bagian
     // yang paling butuh mark rapat. Sekarang mark hanya menunggu FASE C, yang tanpa jaringan.
-    const enrichTargets = enrichQueue
-      .sort((a, b) => (b.vol["h1"] ?? 0) - (a.vol["h1"] ?? 0))
+    const seenTargets = new Set<string>();
+    const enrichTargets = [...enrichDecisive, ...enrichQueue.sort((a, b) => (b.vol["h1"] ?? 0) - (a.vol["h1"] ?? 0))]
       .filter((m) => {
+        if (seenTargets.has(m.tokenAddress)) return false;
+        seenTargets.add(m.tokenAddress);
         const info = stRead.gmgnInfo[m.tokenAddress];
         if (info && Date.now() - info.at < ENRICH_TTL_MS) return false;
         const tried = stRead.gmgnTried[m.tokenAddress];
@@ -830,7 +851,7 @@ async function cycle(): Promise<void> {
       return `${v.id}: eq $${vs.equityUsd.toFixed(0)} pos ${vs.positions.length} trd ${vs.trades} W${vs.wins}/L${vs.losses}`;
     }).join(" | ");
     const openNow = Object.values(st.variants).reduce((a, vs) => a + vs.positions.length, 0);
-    logRecord("rh-events", { type: "rh-cycle", n: st.cycles, discovered: discovered.length, observed: observed.length, openTokens: openNow, opened, exits, honeypotBlocked: honeypotBlockedNow, cohort: st.cohort, ms: Date.now() - t0, cfg: configHash });
+    logRecord("rh-events", { type: "rh-cycle", n: st.cycles, discovered: discovered.length, observed: observed.length, openTokens: openNow, opened, exits, honeypotBlocked: honeypotBlockedNow, enrichDecisive: enrichDecisive.length, cohort: st.cohort, ms: Date.now() - t0, cfg: configHash });
     ui.info(`[rh-paper] siklus ${st.cycles}: ${discovered.length} pool, ${opened} entry baru, ${openNow} posisi terbuka, ${exits} exit (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     ui.info(`[rh-paper] ${summary}`);
   } catch (e) {
