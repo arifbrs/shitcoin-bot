@@ -26,11 +26,18 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
   const c = data.combined;
   const legacy = data.paper?.legacy;
   const paper = data.strategy2Primary?.paper;
-  if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
 
   // LIVE + on-chain read failed → UNKNOWN. The old fallback rendered $0.00 with an all-red
   // tape, which told the owner their funded wallet was empty. Say "unreadable" instead.
-  if (c.s1?.balanceSol == null || c.s1.floatSol == null) {
+  //
+  // URUTAN PENTING (2026-10-09): pemeriksaan ini HARUS lebih dulu dari penjaga `!paper` di bawah.
+  // Dulu ia berada setelahnya, sehingga begitu lane S2 dimatikan (2026-10-07) panel jatuh ke pesan
+  // "Strategy 2 belum jalan" dan pesan "saldo tidak terbaca" TIDAK PERNAH muncul — pemeriksa
+  // `live saldo null` karena itu mustahil hijau. Fakta terpenting (dompet tak terbaca) tidak boleh
+  // bisa disembunyikan oleh kondisi lane lain yang tak berhubungan.
+  const s1 = c?.s1;
+  const unreadable = c != null && (s1 == null || s1.balanceSol == null || s1.floatSol == null);
+  if (unreadable) {
     return (
       <div className="flex h-full flex-col justify-center gap-1.5">
         <p className="font-mono text-[13px] text-muted-foreground">saldo tidak terbaca</p>
@@ -42,6 +49,11 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
       </div>
     );
   }
+  if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
+  // Lokal SETELAH penjaga: penyempitan tipe tidak bertahan lewat akses properti berulang, dan angka
+  // saldo yang tak terbaca tidak boleh bocor diam-diam ke perhitungan (maka tetap diperiksa lagi).
+  const s1Sol = c.s1?.balanceSol ?? null;
+  const s1Float = c.s1?.floatSol ?? null;
 
   const rate = c.solUsd;
   const totalUsd = c.totalUsd ?? 0;
@@ -50,7 +62,7 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
   const gapPct = floatUsd > 0 ? (gap / floatUsd) * 100 : 0;
 
   // Native-denomination performance, per engine.
-  const s1Pct = c.s1.floatSol > 0 ? (c.s1.balanceSol / c.s1.floatSol - 1) * 100 : 0;
+  const s1Pct = s1Float != null && s1Float > 0 && s1Sol != null ? (s1Sol / s1Float - 1) * 100 : 0;
   const s2Pct = c.s2.floatUsd > 0 ? (c.s2.balanceUsd / c.s2.floatUsd - 1) * 100 : 0;
   const s1Share = totalUsd > 0 ? ((c.s1.balanceUsd ?? 0) / totalUsd) * 100 : 0;
 
@@ -147,9 +159,9 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
 
       <AssetRow
         sym="SOL" accent="var(--hud-gold)"
-        native={`${c.s1.balanceSol.toFixed(4)} ◎`}
-        quote={c.s1.balanceUsd != null ? `≈ ${money(c.s1.balanceUsd)}` : "—"}
-        dp={s1Pct} share={s1Share} wl={`${c.s1.wins}W/${c.s1.losses}L`}
+        native={s1Sol != null ? `${s1Sol.toFixed(4)} ◎` : "—"}
+        quote={c.s1?.balanceUsd != null ? `≈ ${money(c.s1.balanceUsd)}` : "—"}
+        dp={s1Pct} share={s1Share} wl={`${c.s1?.wins ?? 0}W/${c.s1?.losses ?? 0}L`}
       />
       <AssetRow
         sym="USD" accent="var(--hud-scout)"

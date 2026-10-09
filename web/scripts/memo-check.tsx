@@ -4,10 +4,21 @@
  * Dua kegagalan yang dicari, dan yang kedua jauh lebih berbahaya:
  *   1. terlalu longgar — panel ikut render padahal slice-nya tidak berubah (sia-sia)
  *   2. TERLALU KETAT — slice berubah tapi sidik jarinya sama, sehingga panel BEKU di layar
+ *
+ * Fixture /tmp/pushes.json = rekaman push NYATA (bukan karangan). Cara membuatnya (2026-10-09):
+ *   login → curl -b <cookie> http://127.0.0.1:4317/api/stream → simpan 3–5 frame `data: {...}`.
+ * Kalau berkasnya belum ada, skrip ini BERHENTI dengan instruksi — dulu ia crash ENOENT tanpa
+ * penjelasan, sehingga kegagalan harness tampak seperti kegagalan panel.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { StatsResponse } from "../src/types/stats";
 
+if (!existsSync("/tmp/pushes.json")) {
+  console.error("FIXTURE HILANG: /tmp/pushes.json belum ada.");
+  console.error("Rekam dari server yang hidup: login ke dashboard, lalu simpan 3–5 frame `data: {...}`");
+  console.error("dari http://127.0.0.1:4317/api/stream ke berkas itu (array JSON of StatsResponse).");
+  process.exit(1);
+}
 const pushes: StatsResponse[] = JSON.parse(readFileSync("/tmp/pushes.json", "utf8"));
 
 const FP: Record<string, [(d: StatsResponse) => unknown[], (d: StatsResponse) => string]> = {
