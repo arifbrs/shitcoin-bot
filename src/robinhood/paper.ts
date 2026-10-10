@@ -1042,6 +1042,17 @@ function reconcileLedgerOnStart(st: State): void {
 
 async function main(): Promise<void> {
   const lockFd = acquireInstanceLock(); // satu proses saja — lihat acquireInstanceLock()
+  // BOCOR KUNCI YANG DITUTUP (2026-10-10): jalur keluar LEBIH AWAL (ONCE / RECONCILE_ONLY) dulu
+  // `return` tanpa menghapus kunci, dan proses kedua yang mulai di jendela itu bisa lolos —
+  // penyebab ledakan 49 penutupan ganda @10:18 (baris identik, 20 detik terpisah). Sekarang kunci
+  // dilepas di SEMUA jalur keluar lewat process.on("exit"), bukan hanya di handler SIGINT/SIGTERM.
+  let lockReleased = false;
+  const releaseLock = (): void => {
+    if (lockReleased) return;
+    lockReleased = true;
+    try { closeSync(lockFd); unlinkSync(LOCK_PATH); } catch { /* best-effort */ }
+  };
+  process.on("exit", releaseLock);
   // Dex promoted tokens ikut dipanggil sekali di awal supaya kegagalan path-nya terlihat di log start.
   console.log(`[rh-paper] Robinhood Chain paper lane — 10 varian, risk $${RISK_USD}/trade, modal awal $${START_EQUITY_USD}/varian.`);
   console.log(`[rh-paper] kohort: ${COHORT} · mark+exit tiap ${MARK_MS / 1000}s · discovery+kandidat+entry tiap ${CYCLE_MS / 1000}s.`);
@@ -1051,14 +1062,14 @@ async function main(): Promise<void> {
   reconcileLedgerOnStart(loadState()); // bereskan selisih ledger↔state dari restart sebelumnya
   // Mode khusus: rekonsiliasi lalu BERHENTI (tanpa siklus). Dipakai untuk audit dalam keadaan
   // BETUL-BETUL diam — kalau siklus ikut jalan, posisi baru membuka dan kedua sisi bergerak lagi.
-  if (process.env.RH_PAPER_RECONCILE_ONLY === "true") { try { closeSync(lockFd); unlinkSync(LOCK_PATH); } catch { /* */ } return; }
+  if (process.env.RH_PAPER_RECONCILE_ONLY === "true") { releaseLock(); return; }
   await cycle();
   if (ONCE) return;
   const t1 = setInterval(() => void cycle(), CYCLE_MS);
   const t2 = setInterval(() => void markTick(), MARK_MS);
   const shutdown = () => {
     clearInterval(t1); clearInterval(t2);
-    try { closeSync(lockFd); unlinkSync(LOCK_PATH); } catch { /* best-effort */ }
+    releaseLock();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

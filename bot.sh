@@ -69,7 +69,7 @@ checks = [
     ("RH review (harian 8)",   "logs/robinhood-review-*.md", "run-robinhood-supervised", 1560),
     ("GMGN watch (siklus15m)", "logs/events-*.jsonl",        "run-gmgn-supervised",      25),
     ("GMGN proxy/supervisor",  "logs/gmgn-supervisor.out",   "run-gmgn-supervised",      25),
-    ("GMGN report (harian)",   "logs/gmgn-report-*.md",      "run-gmgn-supervised",      1560),
+    ("GMGN report (harian)",   "logs/gmgn-report-*.md",      "run-gmgn-supervised",      1800),  # 30 jam: laporan harian + kelonggaran (dulu 26 jam -> alarm palsu DIAM)
 ]
 for label, pat, sup, limit in checks:
     fs = sorted(glob.glob(pat))
