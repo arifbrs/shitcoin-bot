@@ -106,7 +106,7 @@ for (const f of files) {
 
 const num = (v: unknown): number => (typeof v === "number" ? v : NaN);
 const tsOf = (r: Row): number => Date.parse(String(r["ts"] ?? "")) || 0;
-let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0, legacyZeroExit = 0;
+let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0, legacyZeroExit = 0, legacyModel = 0, maxDiffLegacy = 0;
 const breaches: Array<{ v: string; sym: string; loss: number; intended: number; reason: string }> = [];
 const replayResult = new Map<string, { equity: number; life: number }>();
 
@@ -189,14 +189,32 @@ for (const [variant, rows] of byVariant) {
       // memakai toPrecision(12), jadi kelas ini berhenti di sini.
       if (exitPrice <= 1e-10 && num(c["pnlUsd"]) > -notional * 0.98) legacyZeroExit++;
       else {
-        const slipIn = slipPct(notional, liqIn);
-        const tokens = (notional - (notional * (DEX_FEE_PCT + slipIn) + GAS_USD)) / entryPrice;
-        const gross = tokens * exitPrice;
-        const slipOut = slipPct(gross, liqOut);
-        const pnl = gross * (1 - DEX_FEE_PCT - slipOut) - GAS_USD - notional;
-        const diff = Math.abs(pnl - num(c["pnlUsd"]));
-        maxDiff = Math.max(maxDiff, diff); compared++;
-        if (diff > 0.01) console.log(`  SELISIH: ${variant} ${String(c["symbol"])} hitung=$${pnl.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diff.toFixed(6)}`);
+        const entrySlipLogged = num(open["entrySlipPct"]);
+        const exitSlipLogged = num(c["exitSlipPct"]);
+        if (Number.isFinite(entrySlipLogged) && Number.isFinite(exitSlipLogged)) {
+          // JALUR EKSAK (2026-10-10): tarif slippage dicatat lane, jadi audit tidak perlu menebak
+          // model — dipakai apa adanya. Ini kelas baris baru; semua baris setelah perubahan ini
+          // masuk ke sini, sehingga perbedaan model tidak lagi menyamarkan kesalahan aritmetika.
+          const tokens = (notional - (notional * (DEX_FEE_PCT + entrySlipLogged) + GAS_USD)) / entryPrice;
+          const gross = tokens * exitPrice;
+          const pnl = gross * (1 - DEX_FEE_PCT - exitSlipLogged) - GAS_USD - notional;
+          const diff = Math.abs(pnl - num(c["pnlUsd"]));
+          maxDiff = Math.max(maxDiff, diff); compared++;
+          if (diff > 0.01) console.log(`  SELISIH (eksak): ${variant} ${String(c["symbol"])} hitung=$${pnl.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diff.toFixed(6)}`);
+        } else {
+          // BARIS WARISAN: tarif slippage belum dicatat → dihitung dengan MODEL, tetap diverifikasi
+          // dengan toleransi eksplisit (model bisa beda ≤$0,5 pada kasus likuiditas ≈ 0). Baris
+          // warisan yang melebihi toleransi TETAP dilaporkan sebagai selisih — bukan disembunyikan.
+          const slipInLegacy = slipPct(notional, liqIn);
+          const tokensLegacy = (notional - (notional * (DEX_FEE_PCT + slipInLegacy) + GAS_USD)) / entryPrice;
+          const grossLegacy = tokensLegacy * exitPrice;
+          const slipOutLegacy = slipPct(grossLegacy, liqOut);
+          const pnlLegacy = grossLegacy * (1 - DEX_FEE_PCT - slipOutLegacy) - GAS_USD - notional;
+          const diffLegacy = Math.abs(pnlLegacy - num(c["pnlUsd"]));
+          legacyModel++;
+          maxDiffLegacy = Math.max(maxDiffLegacy, diffLegacy);
+          if (diffLegacy > 0.5) console.log(`  SELISIH (warisan >$0,50): ${variant} ${String(c["symbol"])} hitung=$${pnlLegacy.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diffLegacy.toFixed(6)}`);
+        }
       }
     } else equitySkip++;
 
@@ -299,7 +317,7 @@ let extraHeld = 0;
 for (const [key, held] of stateHeld) extraHeld += Math.max(0, held - Math.max(0, keyResidual.get(key) ?? 0));
 const parityOk = unexplainedGap === 0 && extraHeld === 0;
 console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
-console.log(`\n1) ARITMETIKA   : ${compared} trade dihitung ulang (${equitySkip} dilewati: data harga tak lengkap${legacyZeroExit ? ` · ${legacyZeroExit} dilewati: harga keluar tercatat 0 karena presisi log lama, tak bisa diverifikasi ulang` : ""}) · selisih max $${maxDiff.toExponential(2)} ${maxDiff <= 0.01 ? "→ COCOK (selisih = pembulatan log)" : "→ TIDAK COCOK"}`);
+console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50) · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
 console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` (${sizingDerived} entry lama: equity direkonstruksi)` : ""}`);
 console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""} · (varian,token) tutup-dobel=${dupCount}`);

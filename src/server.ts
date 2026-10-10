@@ -2609,6 +2609,7 @@ function buildRobinhoodPaper(): Record<string, unknown> {
       variants?: Record<string, {
         equityUsd?: number; trades?: number; wins?: number; losses?: number; maxDdPct?: number;
         bankruptAt?: number; life?: number; lifeHistory?: Array<{ endEquityUsd: number }>;
+        cohort?: string;
         positions?: Array<{ symbol?: string; lastPrice?: number; lastMarkAt?: number; notionalUsd?: number }>;
       }>;
     }>(join(config.logDir, "rh-paper-state.json"));
@@ -2633,6 +2634,7 @@ function buildRobinhoodPaper(): Record<string, unknown> {
       const historyPnl = (v.lifeHistory ?? []).reduce((a, l) => a + (l.endEquityUsd - startEquity), 0);
       return {
         id, equityUsd: Number(equityUsd.toFixed(2)), pnlUsd: Number((equityUsd - startEquity).toFixed(2)),
+        cohort: v.cohort ?? null,
         life: v.life ?? 1, cumulativePnlUsd: Number((historyPnl + equityUsd - startEquity).toFixed(2)),
         bankrupt: v.bankruptAt != null,
         trades, wins: v.wins ?? 0, losses: v.losses ?? 0,

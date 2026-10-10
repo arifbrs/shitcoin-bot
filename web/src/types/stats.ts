@@ -974,6 +974,8 @@ export interface RobinhoodVariantView {
   winRate: number | null; maxDdPct: number; openPositions: number;
   life: number; cumulativePnlUsd: number; bankrupt: boolean;
   exposureUsd: number;
+  /** Penanda kohort (dari state, 2026-10-10) — panel mengelompokkan kartu berdasarkan ini. */
+  cohort: string | null;
   positions: Array<{ symbol: string; lastPrice: number; markAgeSec: number | null; notionalUsd: number }>;
   status: string;
 }

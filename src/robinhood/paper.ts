@@ -309,6 +309,11 @@ interface Position {
 interface LifeRecord { life: number; startedAt: number; endedAt: number; endEquityUsd: number; trades: number; wins: number; losses: number; reason: string }
 interface VariantState {
   equityUsd: number; peakEquityUsd: number; maxDdPct: number; realizedUsd: number;
+  /**
+   * Penanda kohort DISIMPAN di state (2026-10-10) supaya dashboard bisa mengelompokkan varian
+   * tanpa menyalin-tempel pemetaan id→kohort di server (dua tempat = pasti menyimpang).
+   */
+  cohort?: string;
   wins: number; losses: number; trades: number; positions: Position[]; cooldown: Record<string, number>;
   /** Kapan varian ini pertama kali jatuh di bawah ambang mampu-entry (lihat BANKRUPT_EQUITY). */
   bankruptAt?: number;
@@ -365,12 +370,12 @@ function loadState(): State {
         closedKeys: s.closedKeys ?? {},
         corrections: s.corrections ?? [],
       };
-      for (const v of VARIANTS) st.variants[v.id] = { ...blankVariant(), ...(s.variants?.[v.id] ?? {}) };
+      for (const v of VARIANTS) st.variants[v.id] = { ...blankVariant(), cohort: cohortTagOf(v, st), ...(s.variants?.[v.id] ?? {}) };
       return st;
     } catch { /* state rusak — mulai bersih */ }
   }
   const st: State = { startedAt: Date.now(), cycles: 0, cohort: COHORT, variants: {}, gmgnInfo: {}, gmgnTried: {}, honeypotBlocked: {}, gateBlocked: {}, closedKeys: {} };
-  for (const v of VARIANTS) st.variants[v.id] = blankVariant();
+  for (const v of VARIANTS) st.variants[v.id] = { ...blankVariant(), cohort: cohortTagOf(v, st) };
   return st;
 }
 function saveState(s: State): void {
@@ -533,6 +538,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
     // toPrecision(12) mempertahankan nilai sekecil apa pun.
     entryPriceUsd: pos.entryPrice, exitPriceUsd: Number(exitPrice.toPrecision(12)), peakPriceUsd: pos.peakPrice,
     notionalUsd: pos.notionalUsd, stopPct: pos.stopPct, proceedsUsd: Number(proceeds.toFixed(4)), pnlUsd: Number(pnl.toFixed(4)),
+    exitSlipPct: Number(slip.toFixed(6)),
     pnlPct: Number(((pnl / pos.notionalUsd) * 100).toFixed(2)), heldMin: Number(((now - pos.openedAt) / 60_000).toFixed(1)),
     // Likuiditas yang BENAR-BENAR dipakai untuk slippage keluar (fallback ke likuiditas masuk) —
     // dulu yang tercatat hanya `liqUsd` mentah, sehingga audit memakai default 5% dan angkanya beda.

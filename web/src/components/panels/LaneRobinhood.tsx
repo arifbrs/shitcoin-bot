@@ -34,33 +34,52 @@ export function LaneRobinhood({ data }: { data: RobinhoodPaperResponse | null | 
       </div>
       {!data ? <p className="mt-4 text-xs text-muted-foreground">Menunggu kiriman stream (server mengirim saat state ditulis)…</p> : (
         <>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            {data.variants.map((v) => (
-              <div key={v.id} className="rounded-lg border border-border bg-background/40 p-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate font-mono text-[10px] text-foreground" title={v.id}>{v.id}{v.life > 1 ? ` · life ${v.life}` : ""}</p>
-                  <span className={`font-mono text-[9px] ${v.status === "bankrut" ? "text-down" : v.status === "siap direview" ? "text-up" : "text-muted-foreground"}`}>
-                    {v.status === "bankrut" ? "BANKRUT" : v.status === "siap direview" ? "SIAP" : "jalan"}
-                  </span>
-                </div>
-                <p className={`mt-1 font-mono text-sm ${v.pnlUsd >= 0 ? "text-up" : "text-down"}`}>
-                  {fmtPnl(v.pnlUsd)} <span className="text-[9px] text-muted-foreground">eq ${v.equityUsd.toFixed(2)}</span>
-                </p>
-                {v.life > 1 && (
-                  <p className={`font-mono text-[9px] ${v.cumulativePnlUsd >= 0 ? "text-up" : "text-down"}`}>kumulatif {fmtPnl(v.cumulativePnlUsd)} (semua life)</p>
-                )}
-                <p className="mt-0.5 font-mono text-[9px] text-muted-foreground">{v.trades} trade · W{v.wins}/L{v.losses} · win {v.winRate ?? "—"}% · dd {v.maxDdPct}%</p>
-                {v.exposureUsd > 0 && (
-                  <p className={`font-mono text-[9px] ${v.exposureUsd > Math.max(v.equityUsd, 0.01) ? "text-down" : "text-muted-foreground"}`}>
-                    exposure ${v.exposureUsd.toFixed(2)}{v.exposureUsd > Math.max(v.equityUsd, 0.01) ? " (MELEBIHI equity!)" : ""}
-                  </p>
-                )}
-                <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground" title={v.positions.map((p) => p.symbol).join(", ")}>
-                  {v.openPositions} posisi{v.positions.length ? `: ${v.positions.slice(0, 4).map((p) => p.symbol).join(", ")}` : ""}
+          {/* DIKELOMPOKKAN PER KOHORT (2026-10-10): dengan 43 varian, daftar rata membuat kohort-1
+              (mark30s) tak bisa dibedakan dari kohort-5 (stop/likuiditas). Urutan mengikuti urutan
+              varian dari server (id), jadi kohort muncul berurutan tanpa pemetaan nama di UI. */}
+          {Object.entries(
+            data.variants.reduce<Record<string, typeof data.variants>>((acc, v) => {
+              const k = v.cohort ?? "(tanpa kohort)";
+              (acc[k] ??= []).push(v);
+              return acc;
+            }, {}),
+          ).map(([cohort, list]) => (
+            <div key={cohort} className="mt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-scout">{cohort}</p>
+                <p className="font-mono text-[9px] text-muted-foreground">
+                  {list.length} varian · net life-berjalan {fmtPnl(list.reduce((a, v) => a + v.pnlUsd, 0))}
                 </p>
               </div>
-            ))}
-          </div>
+              <div className="mt-1.5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                {list.map((v) => (
+                  <div key={v.id} className="rounded-lg border border-border bg-background/40 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate font-mono text-[10px] text-foreground" title={v.id}>{v.id}{v.life > 1 ? ` · life ${v.life}` : ""}</p>
+                      <span className={`font-mono text-[9px] ${v.status === "bankrut" ? "text-down" : v.status === "siap direview" ? "text-up" : "text-muted-foreground"}`}>
+                        {v.status === "bankrut" ? "BANKRUT" : v.status === "siap direview" ? "SIAP" : "jalan"}
+                      </span>
+                    </div>
+                    <p className={`mt-1 font-mono text-sm ${v.pnlUsd >= 0 ? "text-up" : "text-down"}`}>
+                      {fmtPnl(v.pnlUsd)} <span className="text-[9px] text-muted-foreground">eq ${v.equityUsd.toFixed(2)}</span>
+                    </p>
+                    {v.life > 1 && (
+                      <p className={`font-mono text-[9px] ${v.cumulativePnlUsd >= 0 ? "text-up" : "text-down"}`}>kumulatif {fmtPnl(v.cumulativePnlUsd)} (semua life)</p>
+                    )}
+                    <p className="mt-0.5 font-mono text-[9px] text-muted-foreground">{v.trades} trade · W{v.wins}/L{v.losses} · win {v.winRate ?? "—"}% · dd {v.maxDdPct}%</p>
+                    {v.exposureUsd > 0 && (
+                      <p className={`font-mono text-[9px] ${v.exposureUsd > Math.max(v.equityUsd, 0.01) ? "text-down" : "text-muted-foreground"}`}>
+                        exposure ${v.exposureUsd.toFixed(2)}{v.exposureUsd > Math.max(v.equityUsd, 0.01) ? " (MELEBIHI equity!)" : ""}
+                      </p>
+                    )}
+                    <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground" title={v.positions.map((p) => p.symbol).join(", ")}>
+                      {v.openPositions} posisi{v.positions.length ? `: ${v.positions.slice(0, 4).map((p) => p.symbol).join(", ")}` : ""}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             <div className="rounded-lg border border-border bg-background/30 p-3">
               <h4 className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground">Trade terakhir</h4>
