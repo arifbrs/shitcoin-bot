@@ -335,6 +335,8 @@ interface State {
   gateBlocked: Record<string, number>;
   /** Waktu penutupan terakhir per (varian|token|life) — penjaga idempotensi (2026-10-09). */
   closedKeys?: Record<string, number>;
+  /** Nomor tulisan state yang naik monoton — bukti apakah state pernah mundur (2026-10-10). */
+  stateWrites?: number;
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -367,7 +369,7 @@ function loadState(): State {
       const st: State = {
         startedAt: s.startedAt ?? Date.now(), cycles: s.cycles ?? 0, cohort: COHORT,
         variants: {}, gmgnInfo: s.gmgnInfo ?? {}, gmgnTried: s.gmgnTried ?? {}, honeypotBlocked: s.honeypotBlocked ?? {}, gateBlocked: s.gateBlocked ?? {},
-        closedKeys: s.closedKeys ?? {},
+        closedKeys: s.closedKeys ?? {}, stateWrites: s.stateWrites ?? 0,
         corrections: s.corrections ?? [],
       };
       for (const v of VARIANTS) st.variants[v.id] = { ...blankVariant(), cohort: cohortTagOf(v, st), ...(s.variants?.[v.id] ?? {}) };
@@ -504,6 +506,12 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   // basi itu tetap dikeluarkan dari daftar supaya tidak menggantung tanpa membukukan apa pun.
   const closeKey = `${v.id}|${pos.token}|${vs.life ?? 1}`;
   const lastClose = st.closedKeys?.[closeKey];
+  // INSTRUMENTASI (2026-10-10): ada satu kelas yang MASIH terbuka — satu posisi bisa ditutup dua kali
+  // (1 OPEN + 2 CLOSE identik, 37 detik terpisah, penjaga 0 kali menyala, satu proses). Untuk
+  // kejadian berikutnya, baris CLOSE kini membawa bukti keadaan penjaga + nomor tulisan state:
+  // jika `stateWrites` pada baris kedua LEBIH KECIL dari yang pertama, berarti state pernah mundur
+  // (tulisan basi menimpa yang baru) — dan itu menjelaskan semuanya tanpa perlu menebak.
+  st.stateWrites = (st.stateWrites ?? 0) + 1;
   if (lastClose && now - lastClose < CLOSE_DEDUP_MS) {
     vs.positions = vs.positions.filter((p) => p.token !== pos.token);
     logRecord("rh-events", {
@@ -542,7 +550,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
     // toPrecision(12) mempertahankan nilai sekecil apa pun.
     entryPriceUsd: pos.entryPrice, exitPriceUsd: Number(exitPrice.toPrecision(12)), peakPriceUsd: pos.peakPrice,
     notionalUsd: pos.notionalUsd, stopPct: pos.stopPct, proceedsUsd: Number(proceeds.toFixed(4)), pnlUsd: Number(pnl.toFixed(4)),
-    exitSlipPct: Number(slip.toFixed(6)),
+    exitSlipPct: Number(slip.toFixed(6)), guardHadKey: Boolean(lastClose), guardAgeMs: lastClose ? now - lastClose : null, stateWrites: st.stateWrites ?? 0,
     pnlPct: Number(((pnl / pos.notionalUsd) * 100).toFixed(2)), heldMin: Number(((now - pos.openedAt) / 60_000).toFixed(1)),
     // Likuiditas yang BENAR-BENAR dipakai untuk slippage keluar (fallback ke likuiditas masuk) —
     // dulu yang tercatat hanya `liqUsd` mentah, sehingga audit memakai default 5% dan angkanya beda.
