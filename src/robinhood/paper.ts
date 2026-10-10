@@ -478,6 +478,10 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   logRecord("rh-paper", {
     action: "RH_OPEN", variant: v.id, variantLabel: v.label, token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress,
     entryPriceUsd: m.priceUsd, notionalUsd: pos.notionalUsd, riskUsd: Number((pos.notionalUsd * stopRisk).toFixed(2)),
+    // Tarif slippage masuk DICATAT (2026-10-10): audit memverifikasi eksak hanya bila KEDUA sisi
+    // tercatat (masuk + keluar). Edisi pertama field ini tidak pernah mendarat — akibatnya jalur
+    // eksak tak pernah aktif dan semua baris jatuh ke jalur model (terukur: 0 baris eksak).
+    entrySlipPct: Number(slipPct(notional, m.liqUsd).toFixed(6)),
     stopPct: v.stopPct, tpPct: v.tpPct, maxHoldMin: v.maxHoldMin, liqUsd: m.liqUsd, ageMin: ageMinOf(m, now),
     vol1hUsd: m.vol["h1"] ?? null, vol24Usd: m.vol["h24"] ?? null, buys1h: m.buys["h1"] ?? null, buyRatio1h: buyRatio1h(m),
     gmgnFlags: gi ? rugFlags(gi) : null, gmgnTop10: gi?.top10HolderPct ?? null, gmgnBurn: gi?.burnStatus ?? null,
