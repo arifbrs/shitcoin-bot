@@ -85,6 +85,19 @@ const COHORT = (process.env.RH_COHORT ?? "mark10s-2026-10-09").trim();
 const COHORT2 = (process.env.RH_COHORT2 ?? "rug-gate-2026-10-08").trim();
 const COHORT3 = (process.env.RH_COHORT3 ?? "band-rasio-2026-10-09").trim();
 const COHORT4 = (process.env.RH_COHORT4 ?? "shield-2026-10-09").trim();
+const COHORT5 = (process.env.RH_COHORT5 ?? "stop-likuiditas-2026-10-10").trim();
+/**
+ * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
+ * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
+ * satu-satunya tempat yang tahu urutan prioritasnya.
+ */
+function cohortTagOf(v: { cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort5) return COHORT5;
+  if (v.cohort4) return COHORT4;
+  if (v.cohort3) return COHORT3;
+  if (v.cohort2) return COHORT2;
+  return st.cohort;
+}
 // RUG-SIGNAL ENRICHMENT (2026-10-07): kandidat terpilih diperkaya sinyal anti-rug GMGN
 // (honeypot/top10/burn/bundler/dev). OBSERVASI dulu — belum memfilter apa pun; kohort-2 akan
 // memakai filter hanya setelah korelasi sinyal→rug terbukti dari data (review harian).
@@ -152,6 +165,19 @@ interface Variant {
   exitLiqDropPct?: number;
   /** KOHORT-4: baris ber-cohort "shield-2026-10-09". */
   cohort4?: boolean;
+  /**
+   * KOHORT-5 (2026-10-10, dari analisis rh:deep): dua uji yang paling didukung angka —
+   *   (a) STOP lebih ketat: 706 stop_loss menghasilkan −$6.539, dan $3.336 di antaranya adalah
+   *       "kelebihan di luar niat" (harga melewati stop). Dari 297 jejak rug nyata, SEMUA (297)
+   *       sempat turun >20% sebelum mati → stop −20/−30% punya data untuk bertindak.
+   *   (b) PITA LIKUIDITAS: bucket masuk 25–50k adalah satu-satunya yang positif (+$3,16/trade),
+   *       sedangkan ≥100k adalah lubang terbesar (−$7,40/trade dari 496 trade).
+   * CATATAN ETIS: kontrafaktual di atas SATU SISI (tak menghitung kemenangan yang ikut terpotong
+   * stop lebih ketat) — karena itu keduanya diuji sebagai arm dengan KONTROL, bukan diterapkan.
+   */
+  cohort5?: boolean;
+  /** Batas ATAS likuiditas masuk — pasangan dari minLiqUsd untuk menguji pita likuiditas. */
+  maxLiqUsd?: number;
 }
 const VARIANTS: Variant[] = [
   { id: "v01-konservatif", label: "Konservatif 24j", stopPct: 18, tpPct: 35, trailFromPct: 18, trailPct: 12, maxHoldMin: 1440, minAgeMin: 1440, maxAgeMin: null, minLiqUsd: 150_000, minVol24Usd: 150_000, minVol1hUsd: 0, minBuys1h: 0, minBuyRatio1h: 0.45, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: -50 },
@@ -242,6 +268,23 @@ const VARIANTS: Variant[] = [
   // v34 = PROBE sensitivitas (−5%) dengan gate masuk LONGGAR: membuktikan perisai menyala dalam
   // hitungan menit (bukan mencari profit) — gate band terlalu jarang untuk verifikasi cepat.
   { id: "v34-shield-probe5", label: "S4 probe −5% (masuk longgar — bukti mekanisme)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, exitLiqDropPct: 0.05, requireCleanGmgn: false, cohort4: true },
+  // ── KOHORT-5 (2026-10-10, dari `npm run rh:deep`) ──────────────────────────────────────────────
+  // Dua hipotesis yang paling didukung angka, diuji dengan KONTROL (bukan diterapkan langsung):
+  //   A. STOP: −$6.539 dari 706 stop_loss, dan $3.336 di antaranya kelebihan di luar niat; 297/297
+  //      jejak rug sempat turun >20% sebelum mati → uji stop −20/−25/−30% vs kontrol −40%, gate
+  //      masuk IDENTIK (band 0.70–0.85 + vol1j ≥$5k + liq ≥$15k) supaya hanya stop yang berbeda.
+  //      Jujur: kontrafaktual lama satu sisi — kalau stop ketat memotong calon menang, biayanya
+  //      akan terlihat di arm ini (itu gunanya kontrol).
+  //   B. PITA LIKUIDITAS: bucket masuk 25–50k satu-satunya yang positif (+$3,16/trade), sedangkan
+  //      ≥100k lubang terbesar (−$7,40/trade, 496 trade). Uji 25–100k dan 25–50k vs kontrol tanpa
+  //      batas atas, gate lain sama (longgar, vol1j ≥$5k, liq ≥$15k).
+  { id: "v37-stop20-band", label: "S5 stop −20% + band", stopPct: 20, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, requireCleanGmgn: false, cohort5: true },
+  { id: "v38-stop25-band", label: "S5 stop −25% + band", stopPct: 25, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, requireCleanGmgn: false, cohort5: true },
+  { id: "v39-stop30-band", label: "S5 stop −30% + band", stopPct: 30, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, requireCleanGmgn: false, cohort5: true },
+  { id: "v40-stop40-kontrol", label: "S5 KONTROL stop −40% + band", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: 0.70, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, maxBuyRatio1h: 0.85, requireCleanGmgn: false, cohort5: true },
+  { id: "v41-liq25-100", label: "S5 pita liq $25–100k", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 100_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
+  { id: "v42-liq25-50", label: "S5 pita liq $25–50k (bucket terbaik)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
+  { id: "v43-liq-kontrol", label: "S5 KONTROL liq ≥$15k tanpa batas atas", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
 ];
 
 interface Position {
@@ -374,6 +417,9 @@ function rejects(v: Variant, m: PoolMetrics, now: number, sig?: RugSignals | nul
   }
   if (m.liqUsd == null) return "likuiditas tidak tersedia";
   if (m.liqUsd < v.minLiqUsd) return `liq $${Math.round(m.liqUsd)} < $${v.minLiqUsd}`;
+  // KOHORT-5: batas ATAS likuiditas (pita). Fail-open bila angka tak tersedia? TIDAK — gate yang
+  // butuh data tidak boleh lolos karena datanya kosong; liqUsd null sudah ditolak di atas.
+  if (v.maxLiqUsd != null && m.liqUsd > v.maxLiqUsd) return `liq $${Math.round(m.liqUsd)} > $${v.maxLiqUsd} (di luar pita)`;
   if ((m.vol["h24"] ?? 0) < v.minVol24Usd) return `vol24 < $${v.minVol24Usd}`;
   if ((m.vol["h1"] ?? 0) < v.minVol1hUsd) return `vol1h < $${v.minVol1hUsd}`;
   if ((m.buys["h1"] ?? 0) < v.minBuys1h) return `buys1h < ${v.minBuys1h}`;
@@ -435,7 +481,7 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
     // cap 50% dihitung dari equity penuh, jadi 2 desimal menghasilkan selisih ~$0,002 yang
     // terbaca sebagai "sizing menyimpang" padahal hanya pembulatan log.
     equityAtEntryUsd: Number(vs.equityUsd.toFixed(4)),
-    life: vs.life, cohort: v.cohort4 ? COHORT4 : v.cohort3 ? COHORT3 : v.cohort2 ? COHORT2 : st.cohort, sources: m.sources.join("+"), strategy2Epoch: config.strategy2Epoch, cfg: configHash,
+    life: vs.life, cohort: cohortTagOf(v, st), sources: m.sources.join("+"), strategy2Epoch: config.strategy2Epoch, cfg: configHash,
   });
   return true;
 }
@@ -453,7 +499,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
     vs.positions = vs.positions.filter((p) => p.token !== pos.token);
     logRecord("rh-events", {
       type: "rh-close-dedup-block", token: pos.token, symbol: pos.symbol, variant: v.id, life: vs.life,
-      rejectedReason: reason, firstClosedAgoMs: now - lastClose, cohort: v.cohort4 ? COHORT4 : v.cohort3 ? COHORT3 : v.cohort2 ? COHORT2 : st.cohort, cfg: configHash,
+      rejectedReason: reason, firstClosedAgoMs: now - lastClose, cohort: cohortTagOf(v, st), cfg: configHash,
     });
     ui.warn(`[rh-paper] TOLAK tutup duplikat ${v.id} ${pos.symbol} (${reason}) — sudah ditutup ${((now - lastClose) / 60_000).toFixed(1)} menit lalu`);
     return;
@@ -484,7 +530,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
     entryPriceUsd: pos.entryPrice, exitPriceUsd: Number(exitPrice.toFixed(10)), peakPriceUsd: pos.peakPrice,
     notionalUsd: pos.notionalUsd, stopPct: pos.stopPct, proceedsUsd: Number(proceeds.toFixed(4)), pnlUsd: Number(pnl.toFixed(4)),
     pnlPct: Number(((pnl / pos.notionalUsd) * 100).toFixed(2)), heldMin: Number(((now - pos.openedAt) / 60_000).toFixed(1)),
-    liqUsd: liqUsd, equityUsd: Number(vs.equityUsd.toFixed(2)), life: vs.life, cohort: v.cohort4 ? COHORT4 : v.cohort3 ? COHORT3 : v.cohort2 ? COHORT2 : st.cohort, strategy2Epoch: config.strategy2Epoch, cfg: configHash,
+    liqUsd: liqUsd, equityUsd: Number(vs.equityUsd.toFixed(2)), life: vs.life, cohort: cohortTagOf(v, st), strategy2Epoch: config.strategy2Epoch, cfg: configHash,
   });
   // JEJAK RUG (2026-10-09): 10 penutupan pertama kohort-3/4 semuanya −100% (8–13 menit), dan perisai
   // likuiditas TIDAK menyala untuk CREDITS/boar — pertanyaannya "apakah likuiditas sempat turun
@@ -494,7 +540,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
     logRecord("rh-events", {
       type: "rh-rug-trace", token: pos.token, symbol: pos.symbol, variant: v.id, reason,
       entryPriceUsd: pos.entryPrice, exitPriceUsd: exitPrice, pnlPct: Number(((pnl / pos.notionalUsd) * 100).toFixed(2)),
-      entryLiqUsd: pos.entryLiqUsd, shieldsEnabled: v.exitLiqDropPct ?? null, marks: pos.recentMarks ?? [], cohort: v.cohort4 ? COHORT4 : v.cohort3 ? COHORT3 : st.cohort, cfg: configHash,
+      entryLiqUsd: pos.entryLiqUsd, shieldsEnabled: v.exitLiqDropPct ?? null, marks: pos.recentMarks ?? [], cohort: cohortTagOf(v, st), cfg: configHash,
     });
   }
 }

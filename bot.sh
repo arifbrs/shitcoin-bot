@@ -22,7 +22,7 @@ PROCS=("tsx src/server.ts:dashboard" \
        "gmgn-proxy:proxy GMGN" \
        "gmgn-full-watch:watch GMGN" \
        "gmgn-report:report GMGN" \
-       "robinhood/paper:paper RH (34 varian — 10+10+8 kohort-3+6 kohort-4)" \
+       "robinhood/paper:paper RH (43 varian — 10+10+8+6+9 kohort-5)" \
        "robinhood/review:review RH jam-8" \
        "src/analisa.ts:analisa (loop 12m)" \
        "discovery/dex-full:dex-full (13 endpoint)" \

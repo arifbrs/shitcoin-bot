@@ -33,6 +33,7 @@
     "rh:backtest": "tsx src/robinhood/backtest.ts",
     "rh:study": "tsx src/robinhood/study.ts",
     "rh:verdict": "tsx src/robinhood/verdict.ts",
+    "rh:deep": "tsx src/robinhood/deep.ts",
     "rh:review": "tsx src/robinhood/review.ts",
     "wallet": "tsx src/wallet-cli.ts",
     "reset": "rm -f logs/*.jsonl logs/positions.json logs/deployer-reputation.json && echo 'measurement data cleared — fresh start'",
