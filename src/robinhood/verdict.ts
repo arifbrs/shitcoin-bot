@@ -50,6 +50,25 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
     gate: "loose",
     arms: { "tanpa perisai (v23,v26,v33)": "v23-band-lebar|v26-band-kontrol|v33-shield-kontrol-longgar", "perisai −30% (v31)": "v31-shield30-longgar" },
   },
+  {
+    name: "KOHORT-5A: STOP lebih ketat (gate masuk band IDENTIK)",
+    gate: "band",
+    arms: {
+      "stop −40% KONTROL (v40)": "v40-stop40-kontrol",
+      "stop −30% (v39)": "v39-stop30-band",
+      "stop −25% (v38)": "v38-stop25-band",
+      "stop −20% (v37)": "v37-stop20-band",
+    },
+  },
+  {
+    name: "KOHORT-5B: PITA LIKUIDITAS (gate lain identik)",
+    gate: "loose",
+    arms: {
+      "kontrol ≥$15k tanpa batas (v43)": "v43-liq-kontrol",
+      "pita $25–100k (v41)": "v41-liq25-100",
+      "pita $25–50k (v42)": "v42-liq25-50",
+    },
+  },
 ];
 
 const lines: string[] = [];

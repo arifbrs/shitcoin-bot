@@ -106,7 +106,7 @@ for (const f of files) {
 
 const num = (v: unknown): number => (typeof v === "number" ? v : NaN);
 const tsOf = (r: Row): number => Date.parse(String(r["ts"] ?? "")) || 0;
-let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0;
+let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0, legacyZeroExit = 0;
 const breaches: Array<{ v: string; sym: string; loss: number; intended: number; reason: string }> = [];
 const replayResult = new Map<string, { equity: number; life: number }>();
 
@@ -182,14 +182,22 @@ for (const [variant, rows] of byVariant) {
 
     // 1) aritmetika penuh
     if (notional > 0 && entryPrice > 0) {
-      const slipIn = slipPct(notional, liqIn);
-      const tokens = (notional - (notional * (DEX_FEE_PCT + slipIn) + GAS_USD)) / entryPrice;
-      const gross = tokens * exitPrice;
-      const slipOut = slipPct(gross, liqOut);
-      const pnl = gross * (1 - DEX_FEE_PCT - slipOut) - GAS_USD - notional;
-      const diff = Math.abs(pnl - num(c["pnlUsd"]));
-      maxDiff = Math.max(maxDiff, diff); compared++;
-      if (diff > 0.01) console.log(`  SELISIH: ${variant} ${String(c["symbol"])} hitung=$${pnl.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diff.toFixed(6)}`);
+      // BARIS WARISAN (sebelum 2026-10-10): `exitPrice.toFixed(10)` membulatkan harga rug sekecil
+      // 2,16e-12 menjadi 0 — harga tercatat tak lagi menjelaskan PnL yang dihitung dari harga asli.
+      // Baris seperti ini TIDAK bisa diverifikasi ulang dari ledger, jadi dihitung terpisah dan
+      // dilewati secara terbuka (bukan dipaksa cocok, bukan disembunyikan). Penulisan ke depan
+      // memakai toPrecision(12), jadi kelas ini berhenti di sini.
+      if (exitPrice <= 1e-10 && num(c["pnlUsd"]) > -notional * 0.98) legacyZeroExit++;
+      else {
+        const slipIn = slipPct(notional, liqIn);
+        const tokens = (notional - (notional * (DEX_FEE_PCT + slipIn) + GAS_USD)) / entryPrice;
+        const gross = tokens * exitPrice;
+        const slipOut = slipPct(gross, liqOut);
+        const pnl = gross * (1 - DEX_FEE_PCT - slipOut) - GAS_USD - notional;
+        const diff = Math.abs(pnl - num(c["pnlUsd"]));
+        maxDiff = Math.max(maxDiff, diff); compared++;
+        if (diff > 0.01) console.log(`  SELISIH: ${variant} ${String(c["symbol"])} hitung=$${pnl.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diff.toFixed(6)}`);
+      }
     } else equitySkip++;
 
     // 2) SIZING: notional == min(risk/stop, 25, equity_SAAT-ENTRY×50%, 2% liq).
@@ -291,7 +299,7 @@ let extraHeld = 0;
 for (const [key, held] of stateHeld) extraHeld += Math.max(0, held - Math.max(0, keyResidual.get(key) ?? 0));
 const parityOk = unexplainedGap === 0 && extraHeld === 0;
 console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
-console.log(`\n1) ARITMETIKA   : ${compared} trade dihitung ulang (${equitySkip} dilewati: data harga tak lengkap) · selisih max $${maxDiff.toExponential(2)} ${maxDiff <= 0.01 ? "→ COCOK (selisih = pembulatan log)" : "→ TIDAK COCOK"}`);
+console.log(`\n1) ARITMETIKA   : ${compared} trade dihitung ulang (${equitySkip} dilewati: data harga tak lengkap${legacyZeroExit ? ` · ${legacyZeroExit} dilewati: harga keluar tercatat 0 karena presisi log lama, tak bisa diverifikasi ulang` : ""}) · selisih max $${maxDiff.toExponential(2)} ${maxDiff <= 0.01 ? "→ COCOK (selisih = pembulatan log)" : "→ TIDAK COCOK"}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
 console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` (${sizingDerived} entry lama: equity direkonstruksi)` : ""}`);
 console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""} · (varian,token) tutup-dobel=${dupCount}`);

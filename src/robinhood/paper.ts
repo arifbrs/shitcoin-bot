@@ -527,10 +527,16 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   saveState(st);
   logRecord("rh-paper", {
     action: "RH_CLOSE", variant: v.id, variantLabel: v.label, token: pos.token, symbol: pos.symbol, reason,
-    entryPriceUsd: pos.entryPrice, exitPriceUsd: Number(exitPrice.toFixed(10)), peakPriceUsd: pos.peakPrice,
+    // PRESISI (2026-10-10): dulu `exitPrice.toFixed(10)` — harga rug 2,16e-12 DIBULATKAN jadi 0,
+    // sehingga harga tercatat tidak lagi menjelaskan PnL yang dihitung dari harga asli, dan audit
+    // yang menghitung ulang dari baris itu menemukan selisih sampai $8,55 (375 baris terpengaruh).
+    // toPrecision(12) mempertahankan nilai sekecil apa pun.
+    entryPriceUsd: pos.entryPrice, exitPriceUsd: Number(exitPrice.toPrecision(12)), peakPriceUsd: pos.peakPrice,
     notionalUsd: pos.notionalUsd, stopPct: pos.stopPct, proceedsUsd: Number(proceeds.toFixed(4)), pnlUsd: Number(pnl.toFixed(4)),
     pnlPct: Number(((pnl / pos.notionalUsd) * 100).toFixed(2)), heldMin: Number(((now - pos.openedAt) / 60_000).toFixed(1)),
-    liqUsd: liqUsd, equityUsd: Number(vs.equityUsd.toFixed(2)), life: vs.life, cohort: cohortTagOf(v, st), strategy2Epoch: config.strategy2Epoch, cfg: configHash,
+    // Likuiditas yang BENAR-BENAR dipakai untuk slippage keluar (fallback ke likuiditas masuk) —
+    // dulu yang tercatat hanya `liqUsd` mentah, sehingga audit memakai default 5% dan angkanya beda.
+    liqUsd: liqUsd ?? pos.entryLiqUsd ?? null, equityUsd: Number(vs.equityUsd.toFixed(2)), life: vs.life, cohort: cohortTagOf(v, st), strategy2Epoch: config.strategy2Epoch, cfg: configHash,
   });
   // JEJAK RUG (2026-10-09): 10 penutupan pertama kohort-3/4 semuanya −100% (8–13 menit), dan perisai
   // likuiditas TIDAK menyala untuk CREDITS/boar — pertanyaannya "apakah likuiditas sempat turun
