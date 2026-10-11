@@ -333,9 +333,14 @@ const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Arr
 // v06-sniper|0xb274d6… — baris ada, state memegang 1, life sama → selisih sebenarnya NOL).
 // Kunci terlalu-baru sekarang dikecualikan di sisi SELISIH (lihat bawah), bukan di sisi dipegang.
 let terlaluBaru = 0;
+/** Kunci posisi yang baru lahir (<60 detik) — dipakai DUA sisi paritas, supaya adil dua arah. */
+const freshHeldKeys = new Set<string>();
 for (const [id, vs] of Object.entries(stateVariants)) {
   for (const p of vs.positions ?? []) {
-    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) terlaluBaru++;
+    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) {
+      terlaluBaru++;
+      freshHeldKeys.add(`${id}|${p.token}|${vs.life ?? 1}`);
+    }
     heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
   }
 }
@@ -357,6 +362,7 @@ const stateHeld = parity.held;
 let unexplainedGap = 0, freshGap = 0;
 const unexplainedList: string[] = [];
 let extraHeld = 0;
+const extraHeldKeys: string[] = [];
 for (const [key, gapRaw] of parityGaps(parity)) {
   const heldHere = stateHeld.get(key) ?? 0;
   const r = keyResidual.get(key) ?? 0;
@@ -374,6 +380,10 @@ for (const [key, gapRaw] of parityGaps(parity)) {
     // Sisi sebaliknya: state memegang lebih banyak daripada yang dicatat ledger. Residual NEGATIF
     // tanpa posisi dipegang BUKAN anomali — itu wajar bagi kunci yang OPEN-nya di-void sementara
     // CLOSE-nya tetap ada. Yang dihitung hanya kelebihan yang BENAR-BENAR dipegang state.
+    // KELONGGARAN SIMETRIS (2026-10-11): posisi yang baru lahir <60 detik boleh belum punya
+    // barisnya (lane menyimpan state dulu, mencatat kemudian) — sisi atas pun sudah begitu.
+    if (freshHeldKeys.has(key)) { freshGap += -gapRaw; continue; }
+    extraHeldKeys.push(key);
     extraHeld += Math.max(0, heldHere - Math.max(0, r));
   }
 }
@@ -382,7 +392,7 @@ console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · 
 console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50)${legacyQuarantined ? ` · ${legacyQuarantined} dikarantina (terdaftar + beralasan)` : ""}${legacyUnlisted ? ` · ${legacyUnlisted} TAK TERDAFTAR → GAGAL` : ""} · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
 console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` · ${sizingDerived} entry lama (equity direkonstruksi)` : ""}${sizingDerivedMismatch ? ` · ${sizingDerivedMismatch} tak bisa dinilai (equity rekonstruksi — bukan pelanggaran aturan, disebut namanya)` : ""}`);
-console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s)` : ""}${freshGap ? ` · ${freshGap} selisih ditunda (baris <60s — dinilai run berikutnya)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
+console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger: ${extraHeldKeys.slice(0, 3).join(", ")}` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s)` : ""}${freshGap ? ` · ${freshGap} selisih ditunda (baris <60s — dinilai run berikutnya)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
 
 console.log(`\n4) BATAS RISIKO : ${breaches.length} dari ${closes.filter((c) => num(c["pnlUsd"]) < 0).length} trade rugi melebihi stop nominal + biaya`);
 const totalLoss = closes.filter((c) => num(c["pnlUsd"]) < 0).reduce((a, c) => a + num(c["pnlUsd"]), 0);
