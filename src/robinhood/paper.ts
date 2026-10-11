@@ -381,6 +381,22 @@ function loadState(): State {
   return st;
 }
 function saveState(s: State): void {
+  // PENJAGA TULISAN BASI (2026-10-10) — kelas penutupan ganda yang akhirnya TERBUKTI mekanismenya
+  // lewat instrumentasi: salinan state LAMA ditulis menimpa yang baru, sehingga `closedKeys` dan
+  // penghapusan posisi ikut ter-undo di berkas → tick berikutnya menutup posisi yang sama lagi.
+  // Bukti terukur: stateWrites mundur 732→714, 734→715, 739→718, 740→719, 761→721, 776→722
+  // (6 varian, @08:25:06) bertepatan dengan 14 pasangan penutupan ≤5 detik.
+  // Nomor tulisan naik monoton; tulisan yang nomornya tidak lebih baru dari yang ada di berkas DITOLAK.
+  const nextWrites = (s.stateWrites ?? 0) + 1;
+  try {
+    const disk = JSON.parse(readFileSync(STATE_PATH, "utf8")) as { stateWrites?: number };
+    if ((disk.stateWrites ?? 0) >= nextWrites) {
+      logRecord("rh-events", { type: "rh-stale-save-blocked", mine: nextWrites, disk: disk.stateWrites ?? 0, cfg: configHash });
+      ui.warn(`[rh-paper] TOLAK tulis state basi (punyaku #${nextWrites}, berkas #${disk.stateWrites}) — mencegah timpa-meniimpa`);
+      return;
+    }
+  } catch { /* state belum ada — lanjut menulis */ }
+  s.stateWrites = nextWrites;
   // Prune sinyal rug: simpan 48 jam (cukup utk analisa hasil), sama seperti cooldown entry.
   const cutoff = Date.now() - 48 * 3_600_000;
   for (const [mint, sig] of Object.entries(s.gmgnInfo)) if (sig.at < cutoff) delete s.gmgnInfo[mint];
@@ -511,7 +527,8 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   // kejadian berikutnya, baris CLOSE kini membawa bukti keadaan penjaga + nomor tulisan state:
   // jika `stateWrites` pada baris kedua LEBIH KECIL dari yang pertama, berarti state pernah mundur
   // (tulisan basi menimpa yang baru) — dan itu menjelaskan semuanya tanpa perlu menebak.
-  st.stateWrites = (st.stateWrites ?? 0) + 1;
+  // (nomor tulisan state diurus saveState — monotonik — sehingga baris CLOSE di bawah memuat
+  //  nomor yang BENAR-BENAR tertulis, bukan hasil hitungan lokal.)
   if (lastClose && now - lastClose < CLOSE_DEDUP_MS) {
     vs.positions = vs.positions.filter((p) => p.token !== pos.token);
     logRecord("rh-events", {
