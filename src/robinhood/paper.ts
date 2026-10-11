@@ -28,7 +28,9 @@ import { config, configHash } from "../config.js";
 import { logRecord, ui } from "../util/log.js";
 import { discoverPools, markTokens, gtTokenMarks, gtPoolMark, dexPromotedTokens, type PoolMetrics } from "./market.js";
 import { fetchRugSignals, rugFlags, type RugSignals } from "./rug-signals.js";
-import { readParityRows, computeParity, parityGaps } from "./ledger-parity.js";
+import { readParityRows, computeParity, parityGaps, compensatingOpenCount, needsReconciledClose } from "./ledger-parity.js";
+import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
+import { commitState, shouldBlockClose } from "./state-store.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
 
@@ -64,7 +66,7 @@ function acquireInstanceLock(): number {
 }
 // Jendela penjaga penutupan duplikat. 10 menit AMAN karena cooldown re-entry satu token = 6 jam:
 // dalam 10 menit, penutupan kedua untuk (varian|token|life) yang sama tidak mungkin sah.
-const CLOSE_DEDUP_MS = 10 * 60_000;
+/** Jendela penjaga idempotensi penutupan kini di state-store.ts (CLOSE_DEDUP_MS) dan diuji. */
 // 30 menit (bukan 20): GT/Dex bisa hiccup satu-dua siklus; satu outage singkat tidak boleh
 // membukukan kerugian -50% palsu. mark_basi tetap ada utk pool yang benar-benar tak terjawab.
 const STALE_MARK_MS = 30 * 60_000;
@@ -122,13 +124,9 @@ function intEnv(v: string | undefined, def: number, min: number): number {
   return Math.round(numEnv(v, def, min));
 }
 
-// ── Model biaya (eksplisit; semua asumsi di sini terlihat, bukan tersembunyi) ─────────────
-const DEX_FEE_PCT = 0.003; // Uniswap standar 0.30% per sisi
-const GAS_USD = 0.01;      // L2 murah; terukur di RH chain ~$0.001-0.01 per swap
-function slipPct(notionalUsd: number, liqUsd: number | null): number {
-  const impact = liqUsd && liqUsd > 0 ? Math.min(0.06, (notionalUsd / liqUsd) * 0.5) : 0.06;
-  return Math.min(0.08, 0.01 + impact);
-}
+// ── Model biaya: PINDAH ke costs.ts (2026-10-11) ───────────────────────────────────────────
+// Dulu rumus yang sama hidup di sini, di audit, dan di backtest — angka dari tiap alat bisa tidak
+// sebanding tanpa ada yang tahu. Sekarang satu sumber, diuji oleh src/robinhood/costs.test.ts.
 
 // ── 10 VARIAN: profil risiko dari paling konservatif ke paling degen ─────────────────────
 interface Variant {
@@ -404,16 +402,14 @@ function saveState(s: State): void {
   for (const [mint, at] of Object.entries(s.gmgnTried)) if (at < cutoff) delete s.gmgnTried[mint];
   for (const [mint, at] of Object.entries(s.honeypotBlocked ?? {})) if (at < cutoff) delete s.honeypotBlocked[mint];
   for (const [key, at] of Object.entries(s.gateBlocked ?? {})) if (at < cutoff) delete s.gateBlocked[key];
-  // ATOMIC WRITE (2026-10-07 malam): crash tepat saat writeFileSync bisa meninggalkan JSON
-  // terpotong → loadState jatuh ke "state rusak, mulai bersih" = SELURUH riwayat kohort hilang.
-  // Tulis ke file sementara lalu rename (rename atomik di POSIX). Terbukti perlu: proses ini
-  // sempat crash-loop beberapa detik saat perbaikan import, dan state hidup hanya karena
-  // kebetulan tidak menulis di momen itu.
-  try {
-    const tmp = `${STATE_PATH}.tmp`;
-    writeFileSync(tmp, JSON.stringify(s));
-    renameSync(tmp, STATE_PATH);
-  } catch { /* best-effort */ }
+  // ATOMIC WRITE + PENJAGA MONOTONIK: keduanya pindah ke state-store.ts (2026-10-11) supaya
+  // perilakunya bisa diuji tanpa menjalankan lane. Penolakan tulisan basi TIDAK boleh senyap:
+  // ia dicatat sebagai peristiwa dan ditampilkan.
+  const res = commitState(STATE_PATH, s);
+  if (!res.written) {
+    logRecord("rh-events", { type: "rh-stale-save-blocked", mine: (s.stateWrites ?? 0) + 1, disk: res.diskWrites, cfg: configHash });
+    ui.warn(`[rh-paper] TOLAK tulis state basi (punyaku #${(s.stateWrites ?? 0) + 1}, berkas #${res.diskWrites}) — mencegah timpa-meniimpa`);
+  }
 }
 
 const ageMinOf = (m: PoolMetrics, now: number): number | null => (m.createdAt ? (now - m.createdAt) / 60_000 : null);
@@ -530,7 +526,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   // (tulisan basi menimpa yang baru) — dan itu menjelaskan semuanya tanpa perlu menebak.
   // (nomor tulisan state diurus saveState — monotonik — sehingga baris CLOSE di bawah memuat
   //  nomor yang BENAR-BENAR tertulis, bukan hasil hitungan lokal.)
-  if (lastClose && now - lastClose < CLOSE_DEDUP_MS) {
+  if (lastClose !== undefined && shouldBlockClose(lastClose, now)) {
     vs.positions = vs.positions.filter((p) => p.token !== pos.token);
     logRecord("rh-events", {
       type: "rh-close-dedup-block", token: pos.token, symbol: pos.symbol, variant: v.id, life: vs.life,
@@ -1024,12 +1020,12 @@ function reconcileLedgerOnStart(st: State): void {
       const [id, token] = key.split("|") as [string, string];
       const life = Number(key.split("|")[2] ?? 1);
       const heldHere = heldRaw.get(`${id}|${token}`) ?? 0;
-      if (gap < 0 && heldHere > 0) {
-        // state memegang posisi yang catatannya hilang → tulis OPEN penyeimbang sejumlah kekurangan
-        // itu saja. KUNCI KUNCI: jangan menulis untuk kekurangan yang bukan milik posisi dipegang —
-        // residual negatif pada life lama (sisa OPEN yang di-void) itu wajar dan tak perlu ditambal;
-        // menambalnya membuat penulisan berputar tanpa pernah menyelesaikan apa pun.
-        const kurang = Math.min(-gap, heldHere);
+      // Aturan tulis dipindah ke ledger-parity.ts sebagai fungsi murni supaya bisa diuji:
+      // compensatingOpenCount() menolak menambal residual negatif milik kunci yang tidak dipegang
+      // (kelas yang dulu membuat rekonsiliasi berputar tanpa henti), dan needsReconciledClose()
+      // membatasi penjelas sisi-lebih menjadi SATU per kunci.
+      const kurang = compensatingOpenCount(gap, heldHere);
+      if (kurang > 0) {
         const p = (st.variants[id]?.positions ?? []).find((x) => x.token === token);
         for (let i = 0; i < kurang; i++) {
           logRecord("rh-paper", {
@@ -1039,7 +1035,7 @@ function reconcileLedgerOnStart(st: State): void {
           });
           addedOpen++;
         }
-      } else if (gap > 0 && !parity.reconciledCloseKeys.has(key)) {
+      } else if (needsReconciledClose(gap, parity.reconciledCloseKeys.has(key))) {
         // ledger mencatat buka yang tidak dipegang state → SATU baris penjelas per kunci sudah cukup
         // (baris rekonsiliasi TIDAK mengurangi residual — ia menjelaskan; menulis berkali-kali hanya
         //  membuat log membengkak tanpa menambah kebenaran).

@@ -52,12 +52,10 @@ for (const o of opens) {
 }
 for (const l of openByKey.values()) l.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
 
-const DEX_FEE_PCT = 0.003, GAS_USD = 0.01, SLIP_BASE = 0.01;
-const slipOf = (notional: number, liq: number | null): number => {
-  if (!liq || liq <= 0) return 0.05;
-  const impact = Math.min(0.05, notional / liq);
-  return SLIP_BASE + impact;
-};
+// Model biaya dari SATU sumber (costs.ts). Model lama di sini TIDAK sama dengan yang dipakai bot
+// (tanpa cap 8%, basis 5% saat likuiditas tak diketahui) — artinya angka `rh:deep` dulu tidak
+// sebanding dengan angka lane. Kini sama persis.
+import { DEX_FEE_PCT, GAS_USD, slipPct as slipOf } from "./costs.js";
 
 const net = closes.reduce((a, c) => a + (c.pnlUsd ?? 0), 0);
 say(`═══ RH DEEP — ANALISIS MENYELURUH (sebelum mengubah aturan) ═══`);

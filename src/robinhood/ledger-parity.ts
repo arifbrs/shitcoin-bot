@@ -117,3 +117,24 @@ export function parityGaps(p: Parity): Map<string, number> {
   for (const [k, h] of p.held) if (!gaps.has(k)) gaps.set(k, -h);
   return gaps;
 }
+
+/**
+ * Berapa OPEN penyeimbang yang boleh ditulis untuk sebuah kunci.
+ *
+ * ATURAN YANG DIPELAJARI DENGAN MAHAL (2026-10-10): jangan menambal kekurangan yang bukan milik
+ * posisi yang BENAR-BENAR dipegang. Residual negatif pada kunci life lama itu wajar — sisa OPEN
+ * yang di-void sementara CLOSE-nya tetap ada. Dulu rekonsiliasi menambalnya tanpa syarat, sehingga
+ * setiap putaran menulis baris baru yang lagi-lagi tidak memuaskan audit: berputar tanpa henti.
+ */
+export function compensatingOpenCount(gap: number, heldHere: number): number {
+  if (gap >= 0 || heldHere <= 0) return 0;
+  return Math.min(-gap, heldHere);
+}
+
+/**
+ * Perlu menulis SATU baris CLOSE rekonsiliasi (penjelas) untuk kunci ini?
+ * Satu baris per kunci sudah cukup: baris rekonsiliasi tidak mengurangi residual — ia menjelaskan.
+ */
+export function needsReconciledClose(gap: number, alreadyExplained: boolean): boolean {
+  return gap > 0 && !alreadyExplained;
+}

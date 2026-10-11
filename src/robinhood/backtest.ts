@@ -24,12 +24,13 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { ui } from "../util/log.js";
 import { gtTopPools, gtNewPools, gtTrendingPools, gtOhlcv, isMajorSymbol, type Candle, type PoolMetrics } from "./market.js";
+// Model biaya dari SATU sumber (costs.ts) — dulu rumus ini hidup terpisah di sini, di paper, dan di audit.
+import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 
 const POOL_CAP = intEnv(process.env.RH_BT_POOLS, 24, 4);
 const MIN_LIQ = numEnv(process.env.RH_BT_MIN_LIQ, 20_000, 1_000);
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const MAX_NOTIONAL_USD = numEnv(process.env.RH_MAX_NOTIONAL_USD, 25, 1);
-const DEX_FEE_PCT = 0.003, GAS_USD = 0.01;
 const COOLDOWN_MS = 6 * 3_600_000;
 
 function numEnv(v: string | undefined, def: number, min: number): number {
@@ -37,11 +38,6 @@ function numEnv(v: string | undefined, def: number, min: number): number {
   return Number.isFinite(n) && n >= min ? n : def;
 }
 function intEnv(v: string | undefined, def: number, min: number): number { return Math.round(numEnv(v, def, min)); }
-
-function slipPct(notionalUsd: number, liqUsd: number | null): number {
-  const impact = liqUsd && liqUsd > 0 ? Math.min(0.06, (notionalUsd / liqUsd) * 0.5) : 0.06;
-  return Math.min(0.08, 0.01 + impact);
-}
 
 interface BtVariant {
   id: string; stopPct: number; tpPct: number | null; trailFromPct: number | null; trailPct: number | null; maxHoldMin: number;

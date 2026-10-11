@@ -90,7 +90,11 @@
     "entry-latency:report": "tsx src/entry-latency-report.ts",
     "verdict": "tsx src/verdict.ts",
     "verdict:selftest": "tsx src/verdict-selftest.ts",
-    "style:report": "tsx src/style-report.ts"
+    "style:report": "tsx src/style-report.ts",
+    "test": "tsx tests/run.ts",
+    "gate": "npm run typecheck && npm run test && npm run correctness:selftest",
+    "rh:realism": "tsx src/robinhood/realism.ts",
+    "rh:stop": "tsx src/robinhood/stop-quality.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

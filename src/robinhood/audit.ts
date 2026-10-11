@@ -32,9 +32,10 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { readParityRows, computeParity, parityGaps } from "./ledger-parity.js";
 
-const DEX_FEE_PCT = 0.003, GAS_USD = 0.01, RISK_USD = 5, MAX_NOTIONAL = 25, START_EQUITY = 100;
-const slipPct = (notional: number, liq: number | null): number =>
-  Math.min(0.08, 0.01 + (liq && liq > 0 ? Math.min(0.06, (notional / liq) * 0.5) : 0.06));
+// Model biaya dari SATU sumber (costs.ts) — dulu rumus ini hidup di sini, di paper, dan di
+// backtest; angka tiap alat bisa tidak sebanding tanpa ada yang tahu.
+import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
+const RISK_USD = 5, MAX_NOTIONAL = 25, START_EQUITY = 100;
 
 /** STOP% tiap varian — HARUS dicocokkan manual dengan paper.ts bila varian berubah. */
 const STOP: Record<string, number> = {
