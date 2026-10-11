@@ -82,6 +82,15 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
       "likuiditas −35% (v46)": "v46-liqdrop35",
     },
   },
+  {
+    name: "KOHORT-7: TP HARUS BERTAHAN vs kontrol (gate pita $25–50k identik)",
+    gate: "loose",
+    arms: {
+      "KONTROL jual pada sentuhan (v47)": "v47-tp-kontrol",
+      "TP tahan 3 tick (v48)": "v48-tp-tahan3",
+      "TP tahan 6 tick (v49)": "v49-tp-tahan6",
+    },
+  },
 ];
 
 const lines: string[] = [];

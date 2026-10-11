@@ -32,6 +32,7 @@ import { readParityRows, computeParity, parityGaps, compensatingOpenCount, needs
 import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { commitState, shouldBlockClose } from "./state-store.js";
 import { MARK_TRACE_MAX, shouldCaptureNow, traceFinished } from "./mark-trace.js";
+import { tpHoldSatisfied, nextTpHoldStreak } from "./tp-hold.js";
 import { loadLimits, checkEntryAllowed } from "../risk/limits.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
@@ -96,12 +97,17 @@ const COHORT5 = (process.env.RH_COHORT5 ?? "stop-likuiditas-2026-10-10").trim();
 // likuiditas (liq_shield) hanya melewati 3,2 poin. Perlakukan sebagai hipotesis yang diuji, bukan
 // kebenaran: gate masuk HARUS identik dengan kontrolnya, dan hanya aturan likuiditas yang berbeda.
 const COHORT6 = (process.env.RH_COHORT6 ?? "liq-exit-2026-10-11").trim();
+// KOHORT-7 (2026-10-11): uji "TP harus BERTAHAN". Dasar: 89% kemenangan TP harganya lenyap <1 menit
+// sesudah keluar (retensi p50 0% dari 3.000+ jejak) → mungkin TP hanya tersentuh satu tick lonjakan
+// yang tidak bisa dijual. Arm: tahan 3 / 6 tick vs kontrol (langsung, perilaku lama).
+const COHORT7 = (process.env.RH_COHORT7 ?? "tp-hold-2026-10-11").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort7) return COHORT7;
   if (v.cohort6) return COHORT6;
   if (v.cohort5) return COHORT5;
   if (v.cohort4) return COHORT4;
@@ -185,6 +191,10 @@ interface Variant {
   cohort5?: boolean;
   /** KOHORT-6: uji keluar-karena-likuiditas (gate masuk WAJIB sama dengan kontrolnya). */
   cohort6?: boolean;
+  /** KOHORT-7: uji TP harus BERTAHAN (gate masuk wajib sama dengan kontrolnya). */
+  cohort7?: boolean;
+  /** Berapa tick beruntun harga harus ≥ ambang TP sebelum dijual. 0/undefined = perilaku lama. */
+  tpHoldTicks?: number;
   /** Batas ATAS likuiditas masuk — pasangan dari minLiqUsd untuk menguji pita likuiditas. */
   maxLiqUsd?: number;
 }
@@ -302,12 +312,21 @@ const VARIANTS: Variant[] = [
   { id: "v44-liqexit-kontrol", label: "S6 KONTROL pita 25–50k, keluar harga saja", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true },
   { id: "v45-liqdrop50", label: "S6 keluar bila likuiditas −50% dari acuan", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true, exitLiqDropPct: 0.50 },
   { id: "v46-liqdrop35", label: "S6 keluar bila likuiditas −35% dari acuan", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true, exitLiqDropPct: 0.35 },
+  // ── KOHORT-7 (2026-10-11): TP HARUS BERTAHAN ────────────────────────────────────────────────
+  // Gate masuk IDENTIK dengan v42/v44 (pita $25–50k); hanya ATURAN TP yang berbeda. Kalau hipotesis
+  // "lonjakan satu tick tidak bisa dijual" benar, arm tahan mengalahkan kontrol; kalau salah, tahan
+  // justru kehilangan puncak dan kontrol menang — keduanya jawaban yang berguna.
+  { id: "v47-tp-kontrol", label: "S7 KONTROL jual pada sentuhan TP", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true },
+  { id: "v48-tp-tahan3", label: "S7 TP harus bertahan 3 tick (≈30s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 3 },
+  { id: "v49-tp-tahan6", label: "S7 TP harus bertahan 6 tick (≈60s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 6 },
 ];
 
 interface Position {
   token: string; symbol: string; pool: string; openedAt: number; entryPrice: number; tokensRaw: number;
   notionalUsd: number; peakPrice: number; lastPrice: number; lastMarkAt: number;
   entryLiqUsd: number | null; stopPct: number; tpPct: number | null; trailFromPct: number | null; trailPct: number | null; maxHoldMin: number;
+  /** KOHORT-7: berapa tick beruntun harga sudah bertahan ≥ ambang TP (direset saat turun). */
+  tpHoldCount?: number;
   /**
    * Likuiditas PER-POOL terakhir yang benar-benar terukur (Dex pair atau GT per-pool) + waktunya.
    * BUG YANG DITUTUP (2026-10-07 malam): mark GT multi-token mengembalikan reserve TOTAL semua
@@ -772,7 +791,17 @@ async function markAndExit(st: State, now: number): Promise<number> {
         }
       }
       if (price <= stopPrice) { closePosition(st, v, vs, pos, price, perPoolLiq, "stop_loss", now); exits++; continue; }
-      if (pos.tpPct != null && price >= pos.entryPrice * (1 + pos.tpPct / 100)) { closePosition(st, v, vs, pos, price, perPoolLiq, "take_profit", now); exits++; continue; }
+      // KOHORT-7 (2026-10-11): TP boleh DITAHAN beberapa tick sebelum dijual. Kontrol (tpHoldTicks
+      // 0) berperilaku PERSIS seperti sebelumnya; arm tahan baru menjual setelah harga bertahan di
+      // atas ambang — memisahkan "menjual di puncak" dari "menjual pada lonjakan yang tak bisa dijual".
+      if (pos.tpPct != null && price >= pos.entryPrice * (1 + pos.tpPct / 100)) {
+        pos.tpHoldCount = nextTpHoldStreak(pos.tpHoldCount ?? 0, true);
+        if (tpHoldSatisfied(pos.tpHoldCount, v.tpHoldTicks ?? 0)) {
+          closePosition(st, v, vs, pos, price, perPoolLiq, "take_profit", now); exits++; continue;
+        }
+      } else if (pos.tpHoldCount) {
+        pos.tpHoldCount = nextTpHoldStreak(pos.tpHoldCount, false);
+      }
       if (pos.trailFromPct != null && pos.trailPct != null && pos.peakPrice >= pos.entryPrice * (1 + pos.trailFromPct / 100)) {
         const trailStop = pos.peakPrice * (1 - pos.trailPct / 100);
         if (price <= trailStop) { closePosition(st, v, vs, pos, price, perPoolLiq, "trailing", now); exits++; continue; }
