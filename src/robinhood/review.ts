@@ -355,6 +355,17 @@ async function runReview(): Promise<void> {
   } catch (e) {
     say(`  (jejak pasca-keluar gagal dibaca: ${(e as Error).message.slice(0, 80)})`);
   }
+  // SEGARKAN LAPORAN SEBELUM DIBACA (2026-10-11): berkas laporan alat hanya baru kalau ada orang
+  // yang ingat menjalankannya — review bisa membaca angka kemarin tanpa tahu. Kini review
+  // menjalankannya sendiri (pola sama dengan studi entry di bagian H): timeout 90s per alat, dan
+  // kegagalannya DILAPORKAN di laporan, bukan disembunyikan.
+  for (const cmd of ["rh:stop", "rh:realism", "okx:verdict"]) {
+    try {
+      execSync(`npm run ${cmd}`, { encoding: "utf8", timeout: 90_000, cwd: process.cwd(), stdio: "pipe" });
+    } catch (e) {
+      say(`  (${cmd} gagal disegarkan: ${(e as Error).message.slice(0, 80)})`);
+    }
+  }
   // Ringkasan alat lain dibaca dari berkas laporannya (tidak menjalankan ulang alat di sini).
   for (const [label, pat] of [
     ["KUALITAS STOP", /^rh-stop-quality-\d{4}-\d{2}-\d{2}\.md$/],
