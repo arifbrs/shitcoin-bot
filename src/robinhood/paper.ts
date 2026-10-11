@@ -1249,7 +1249,13 @@ async function main(): Promise<void> {
   const releaseLock = (): void => {
     if (lockReleased) return;
     lockReleased = true;
-    try { closeSync(lockFd); unlinkSync(LOCK_PATH); } catch { /* best-effort */ }
+    // JANGAN HAPUS BERKAS KUNCI (2026-10-11) — ini menutup kelas dua-penulis yang TERBUKTI hari ini.
+    // Bukti: 4 pasangan penutupan ganda, SEMUANYA pada dua detik yang sama (16:29:42 & 16:30:24,
+    // jeda 42 detik) — momen ketika lane di-restart. Penyebabnya: proses lama MENGHAPUS berkas kunci
+    // saat keluar sementara timer/jalurnya masih berjalan, sehingga proses baru mengambil kunci dan
+    // keduanya menulis. Kunci basi SUDAH ditangani dengan benar oleh jalur takeover (PID diperiksa:
+    // PID mati → kunci diambil alih), jadi menghapusnya tidak diperlukan sama sekali.
+    try { closeSync(lockFd); } catch { /* best-effort */ }
   };
   process.on("exit", releaseLock);
   // Dex promoted tokens ikut dipanggil sekali di awal supaya kegagalan path-nya terlihat di log start.
