@@ -82,7 +82,7 @@ export type StrictScalpExit = Omit<StrictExit, "horizonSec"> & {
 };
 
 export interface StrictAdaptiveScalp {
-  strategy: "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60";
+  strategy: "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60" | "V7_FAST_STOP_SL6_T45";
   status: "MONITORING" | "EXITED";
   takeProfitPct: number;
   hardStopPct: number;
@@ -98,6 +98,9 @@ export interface StrictAdaptiveScalp {
 }
 
 export interface StrictPosition {
+  /** Arm/kohort (item 6, 2026-10-11) — baris lama tidak punya label ini dan dibaca sebagai arm dasar. */
+  variant?: string;
+  cohort?: string;
   /** Entry policy cohort. Never aggregate materially different rules into one result. */
   policyVersion: number;
   paperId: string;

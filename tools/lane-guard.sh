@@ -21,6 +21,9 @@ guard() {
   local name="$1" script="$2" logs="$3" children="$4"
   if pgrep -f "$script" >/dev/null 2>&1; then return; fi
   echo "[$(date -Iseconds)] $name SUPERVISOR HILANG — bersihkan orphan lane ini, lalu hidupkan ulang" >> logs/lane-guard.log
+  # ALARM (item 5, 2026-10-11): supervisor yang mati harus memberi tahu, bukan hanya dicatat.
+  # node tools/notify.mjs senyap & keluar 0 bila alarm belum dipasang — jadi aman dipanggil selalu.
+  ( node "$(dirname "$0")/../tools/notify.mjs" "$name SUPERVISOR HILANG — dihidupkan ulang oleh lane-guard" >/dev/null 2>&1 & )
   # PENTING: bunuh anak lane yang mungkin masih hidup sebagai orphan SEBELUM supervisor baru
   # dijalankan. Dua proses menulis state yang sama = duplikat/korupsi (persis bug 2026-10-07).
   if [ -n "$children" ]; then pkill -f "$children" 2>/dev/null; sleep 1; fi

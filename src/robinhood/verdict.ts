@@ -17,6 +17,10 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+// `mean` diimpor sebagai meanOf: di dalam loop berpasangan ada variabel lokal bernama `mean`
+// (rata-rata selisih pasangan) yang dulu menutupi fungsi impor — persis jenis kesalahan yang
+// sekarang ditangkap typecheck, bukan dibiarkan jadi angka salah.
+import { signTest, bootstrapCI, bootstrapDiffCI, mean as meanOf, sd as sdOf, requiredNPerArm, concentration } from "./stats.js";
 
 interface CloseRow { ts: string; variant: string; token: string; symbol?: string; life?: number; pnlUsd?: number; reason: string; cohort?: string }
 
@@ -75,28 +79,7 @@ const lines: string[] = [];
 const say = (s = ""): void => { lines.push(s); };
 const money = (v: number): string => `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`;
 
-/** Uji tanda dua-sisi (exact binomial) — berapa peluang melihat pemisahan sebesar ini karena kebetulan. */
-function signTest(wins: number, n: number): number {
-  if (n === 0) return 1;
-  const choose = (a: number, b: number): number => { let r = 1; for (let i = 0; i < b; i++) r = (r * (a - i)) / (i + 1); return r; };
-  const pmf = (k: number): number => choose(n, k) * 0.5 ** n;
-  const tail = Math.min(wins, n - wins);
-  let p = 0;
-  for (let k = 0; k <= tail; k++) p += pmf(k);
-  return Math.min(1, 2 * p);
-}
-
-function bootstrapCI(diffs: number[], iters = 4000): [number, number] {
-  if (diffs.length < 3) return [NaN, NaN];
-  const means: number[] = [];
-  for (let i = 0; i < iters; i++) {
-    let s = 0;
-    for (let j = 0; j < diffs.length; j++) s += diffs[(Math.random() * diffs.length) | 0]!;
-    means.push(s / diffs.length);
-  }
-  means.sort((a, b) => a - b);
-  return [means[Math.floor(iters * 0.025)]!, means[Math.floor(iters * 0.975)]!];
-}
+// Uji tanda + bootstrap kini dari stats.ts (satu sumber, diuji oleh stats.test.ts).
 
 say("═══ VERDICT KOHORT (dari ledger, void dikecualikan) ═══");
 say(`penutupan sah: ${closes.length}`);
@@ -117,6 +100,17 @@ for (const grp of GROUPS) {
     const pnl = [...byToken.values()].flat().reduce((a, c) => a + (c.pnlUsd ?? 0), 0);
     say(`   ${label.padEnd(28)} n=${String(n).padStart(3)} · net ${money(pnl).padStart(9)}${n ? ` · rata-rata ${money(pnl / n)}/trade` : ""}`);
   }
+  // GERBANG SAMPEL & KONSENTRASI (2026-10-11) — dua hal yang membuat hasil positif bisa menipu:
+  // (a) net yang bergantung pada satu mint, (b) sampel yang jauh dari cukup. Keduanya dicetak
+  // dengan angka, supaya "belum terbukti" punya alasan yang bisa diperiksa.
+  for (const [label, byToken] of armRows) {
+    const pnls = [...byToken.values()].flat().map((c) => c.pnlUsd ?? 0);
+    if (pnls.length < 5) continue;
+    const conc = concentration(pnls);
+    const need = requiredNPerArm(meanOf(pnls), sdOf(pnls));
+    const rapuh = conc.topSharePct > 0.5 && conc.netExclTop1 <= 0;
+    say(`      ${label}: top-1 ${(conc.topSharePct * 100).toFixed(0)}% dari net · tanpa top-1 ${money(conc.netExclTop1)}${rapuh ? " · RAPUH (net bergantung satu mint)" : ""} · perlu ≈${Number.isFinite(need) ? need : "∞"} trade/arm untuk membuktikan efek sebesar ini`);
+  }
   const labels = Object.keys(grp.arms);
   for (let i = 1; i < labels.length; i++) {
     const a = armRows.get(labels[0]!)!, b = armRows.get(labels[i]!)!;
@@ -136,6 +130,19 @@ for (const grp of GROUPS) {
     const verdict = diffs.length - ties < 6 ? "BELUM CUKUP (pasangan <6)" : p <= 0.01 ? "KUAT (p≤0,01)" : p <= 0.05 ? "INDIKASI (p≤0,05)" : "BELUM TERBUKTI";
     say(`   ${labels[i]} vs ${labels[0]}: ${diffs.length} pasangan token (${ties} seri) · menang ${wins} · rata-rata selisih ${money(mean)} · p=${p.toFixed(3)} → ${verdict}`);
     if (Number.isFinite(lo)) say(`      bootstrap 95% selisih: ${money(lo)} … ${money(hi)}`);
+    // TAK BERPASANGAN (2026-10-11): untuk arm pita likuiditas, tumpang tindih token memang kecil
+    // (arm hanya menerima band-nya sendiri), sehingga uji berpasangan tak bisa menjawab. Di sini
+    // dijawab dengan bootstrap dua-grup + perkiraan n yang dibutuhkan.
+    if (diffs.length - ties < 6) {
+      const pa = [...a.values()].flat().map((c) => c.pnlUsd ?? 0);
+      const pb = [...b.values()].flat().map((c) => c.pnlUsd ?? 0);
+      const [lo2, hi2] = bootstrapDiffCI(pb, pa);
+      const selisih = meanOf(pb) - meanOf(pa);
+      const need = requiredNPerArm(selisih, Math.sqrt((sdOf(pb) ** 2 + sdOf(pa) ** 2) / 2));
+      if (Number.isFinite(lo2)) {
+        say(`      TAK BERPASANGAN (pasangan terlalu sedikit): selisih rata-rata ${money(selisih)}/trade · bootstrap 95% ${money(lo2)} … ${money(hi2)}${lo2 > 0 ? " → arah positif konsisten" : hi2 < 0 ? " → arah negatif konsisten" : " → masih melewati nol: belum konklusif"} · perlu ≈${Number.isFinite(need) ? need : "∞"} trade/arm`);
+      }
+    }
   }
 }
 

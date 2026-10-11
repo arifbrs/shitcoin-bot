@@ -2,6 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, u
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { config, configHash } from "./config.js";
+import { variantFor } from "./discovery/okx-variants.js";
 import {
   okxCall, okxChainIndex, okxCredentialWarnings, okxEnabled,
   type OkxCallResult, type OkxMemeToken, type OkxRankedToken, type OkxSignal, type OkxWalletDexHistory,
@@ -506,8 +507,16 @@ async function processCandidate(candidate: StrictCandidate): Promise<void> {
     return terminal(candidate, "REJECTED_POLICY", { reason: "DETECT_TO_BUILD_LATENCY", detectToBuildMs,
       maxDetectToBuildMs: MAX_DETECT_TO_BUILD_MS });
   }
+  // ARM/KOHORT (item 6, 2026-10-11): penugasan ditentukan hash id posisi → deterministik, merata,
+  // dan TIDAK bisa dipilih setelah hasilnya terlihat. Arm dasar (v6) memakai nilai env yang sama
+  // persis, jadi perilaku lama tidak berubah diam-diam; arm v7 hanya lebih ketat.
+  const variant = variantFor(candidate.paperId, {
+    takeProfitPct: SCALP_TAKE_PROFIT_PCT, hardStopPct: SCALP_HARD_STOP_PCT, maxHoldMs: SCALP_MAX_HOLD_MS,
+    pollMs: SCALP_POLL_MS, executionDelayMs: SCALP_EXECUTION_DELAY_MS, maxNoRoute: SCALP_MAX_NO_ROUTE,
+  });
   const position: StrictPosition = {
     policyVersion: candidate.policyVersion,
+    variant: variant.id, cohort: variant.cohort,
     paperId: candidate.paperId, source: candidate.source, sourceKey: candidate.sourceKey,
     mint: candidate.mint, symbol: candidate.symbol, wallet: candidate.wallet, walletType: candidate.walletType,
     sourceTs: candidate.sourceTs, detectedAt: candidate.detectedAt,
@@ -525,9 +534,9 @@ async function processCandidate(candidate: StrictCandidate): Promise<void> {
         confirmedAt, separationMs: confirmedAt - firstProofAt, minReceiveDropPct } },
     },
     adaptive: {
-      strategy: "V6_FAST_RECHECK_TP5_SL8_T60", status: "MONITORING",
-      takeProfitPct: SCALP_TAKE_PROFIT_PCT, hardStopPct: SCALP_HARD_STOP_PCT,
-      maxHoldMs: SCALP_MAX_HOLD_MS, pollMs: SCALP_POLL_MS,
+      strategy: variant.strategy, status: "MONITORING",
+      takeProfitPct: variant.takeProfitPct, hardStopPct: variant.hardStopPct,
+      maxHoldMs: variant.maxHoldMs, pollMs: SCALP_POLL_MS,
       executionDelayMs: SCALP_EXECUTION_DELAY_MS, maxConsecutiveNoRoute: SCALP_MAX_NO_ROUTE,
       nextCheckAt: builtAt + SCALP_POLL_MS, checks: 0, consecutiveNoRoute: 0,
       peakPnlPct: null, exit: null,

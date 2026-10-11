@@ -31,6 +31,7 @@ import { fetchRugSignals, rugFlags, type RugSignals } from "./rug-signals.js";
 import { readParityRows, computeParity, parityGaps, compensatingOpenCount, needsReconciledClose } from "./ledger-parity.js";
 import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { commitState, shouldBlockClose } from "./state-store.js";
+import { loadLimits, checkEntryAllowed } from "../risk/limits.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
 
@@ -336,6 +337,8 @@ interface State {
   closedKeys?: Record<string, number>;
   /** Nomor tulisan state yang naik monoton — bukti apakah state pernah mundur (2026-10-10). */
   stateWrites?: number;
+  /** Snapshot equity awal hari untuk batas rugi harian (item 7, 2026-10-11). */
+  riskDay?: { date: string; equityUsd: number };
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -413,6 +416,21 @@ function saveState(s: State): void {
 }
 
 const ageMinOf = (m: PoolMetrics, now: number): number | null => (m.createdAt ? (now - m.createdAt) / 60_000 : null);
+
+/**
+ * PnL hari berjalan (USD) lintas varian — dasar batas rugi harian.
+ * Snapshot equity diambil sekali per hari (saat pertama dipanggil), lalu dibandingkan; tidak perlu
+ * perubahan di siklus, dan nilai lama tidak bisa "lupa" karena tanggalnya ikut disimpan.
+ */
+function dayPnlUsd(st: State): number {
+  const today = new Date().toISOString().slice(0, 10);
+  const total = Object.values(st.variants).reduce((a, v) => a + (v.equityUsd ?? 0), 0);
+  if (st.riskDay?.date !== today) {
+    st.riskDay = { date: today, equityUsd: total };
+    return 0;
+  }
+  return total - st.riskDay.equityUsd;
+}
 const buyRatio1h = (m: PoolMetrics): number | null => {
   const b = m.buys["h1"], s = m.sells["h1"];
   if (b == null || s == null || b + s === 0) return null;
@@ -474,6 +492,22 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   let notional = Math.min(RISK_USD / stopRisk, MAX_NOTIONAL_USD, vs.equityUsd * 0.5);
   if (m.liqUsd != null && m.liqUsd > 0) notional = Math.min(notional, m.liqUsd * 0.02);
   if (notional < 2) return false;
+  // PENJAGA RISIKO (item 7, 2026-10-11): kill switch / batas rugi harian / batas modal / batas
+  // posisi. Semua batas DEFAULT 0 = tidak dibatasi, jadi memasang penjaga ini TIDAK mengubah
+  // perilaku lane sampai angkanya diisi di .env — perubahan perilaku tidak boleh senyap.
+  const risk = checkEntryAllowed(
+    {
+      notionalUsd: notional,
+      openNotionalUsd: Object.values(st.variants).reduce((a, v) => a + (v.positions ?? []).reduce((b, p) => b + (p.notionalUsd ?? 0), 0), 0),
+      openPositions: Object.values(st.variants).reduce((a, v) => a + (v.positions ?? []).length, 0),
+      dayPnlUsd: dayPnlUsd(st),
+    },
+    loadLimits(),
+  );
+  if (!risk.allowed) {
+    logRecord("rh-events", { type: "rh-risk-block", variant: v.id, token: m.tokenAddress, symbol: m.symbol, reason: risk.reason, cohort: st.cohort, cfg: configHash });
+    return false;
+  }
   const slip = slipPct(notional, m.liqUsd);
   const cost = notional * (DEX_FEE_PCT + slip) + GAS_USD;
   const tokensRaw = (notional - cost) / m.priceUsd;

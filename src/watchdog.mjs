@@ -28,6 +28,9 @@
 import { readFileSync, existsSync, appendFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+// Alarm operasional (item 5, 2026-10-11): satu implementasi di tools/notify.mjs; senyap bila
+// TELEGRAM_BOT_TOKEN/CHAT_ID belum diisi, dan kegagalan kirim tidak pernah mengganggu watchdog.
+import { notify } from "../tools/notify.mjs";
 
 const LOG_DIR = process.env.LOG_DIR ?? "logs";
 const CHECK_MS = Number(process.env.WATCHDOG_CHECK_MS ?? 60_000);
@@ -174,9 +177,13 @@ function tick() {
   }
   strikes++;
   say(`strike ${strikes}/${STRIKES_TO_KILL} — ${reasons.join(" · ")}`);
+  // ALARM (item 5, 2026-10-11): strike dan pembunuhan harus memberi tahu, bukan hanya menulis log.
+  // notify() senyap bila alarm belum dipasang, dan kegagalan kirim tidak pernah mengganggu watchdog.
+  void notify(`sniper strike ${strikes}/${STRIKES_TO_KILL}: ${reasons.join(" · ")}`);
   if (strikes < STRIKES_TO_KILL) return;
 
   say(`MEMBUNUH sniper (${PATTERN}) — supervisor akan menghidupkan ulang`);
+  void notify(`sniper DIBUNUH oleh watchdog (${PATTERN}) — supervisor akan menghidupkan ulang`);
   try {
     execSync(`pkill -f ${JSON.stringify(PATTERN)}`);
     say("sinyal terkirim");

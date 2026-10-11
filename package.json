@@ -94,7 +94,9 @@
     "test": "tsx tests/run.ts",
     "gate": "npm run typecheck && npm run test && npm run correctness:selftest",
     "rh:realism": "tsx src/robinhood/realism.ts",
-    "rh:stop": "tsx src/robinhood/stop-quality.ts"
+    "rh:stop": "tsx src/robinhood/stop-quality.ts",
+    "okx:verdict": "tsx src/okx-verdict.ts",
+    "alert": "node tools/notify.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
