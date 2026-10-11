@@ -327,22 +327,26 @@ for (const list of dupeTimes.values()) {
 // menulis penyeimbang, audit tetap merah.
 const heldRaw = new Map<string, number>();
 const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Array<{ token: string; openedAt?: number }>; life?: number }>;
-// POSISI BARU <60 DETIK DIABAIKAN (2026-10-11): lane menyimpan state DULU lalu mencatat baris
-// (durabilitas dulu, catat kemudian) — selalu ada jendela beberapa milidetik di mana posisi ada di
-// state tanpa barisnya. Audit yang berjalan tepat di jendela itu melaporkan "posisi tanpa catatan"
-// yang bukan kesalahan siapa pun. 60 detik jauh lebih besar dari jeda tulis sebenarnya, dan
-// jumlahnya DILAPORKAN — bukan dihilangkan diam-diam.
+// SISI DIPEGANG DIKEMBALIKAN UTUH (2026-10-11). Percobaan pertama mengabaikan posisi <60 detik di
+// sini — dan itu menciptakan selisih SEPIHAK: baris OPEN-nya sudah tertulis (residual +1) sementara
+// posisinya diabaikan (held 0) → audit merah palsu di kunci yang sebenarnya sehat (terbukti:
+// v06-sniper|0xb274d6… — baris ada, state memegang 1, life sama → selisih sebenarnya NOL).
+// Kunci terlalu-baru sekarang dikecualikan di sisi SELISIH (lihat bawah), bukan di sisi dipegang.
 let terlaluBaru = 0;
 for (const [id, vs] of Object.entries(stateVariants)) {
   for (const p of vs.positions ?? []) {
-    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) {
-      terlaluBaru++;
-      continue;
-    }
+    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) terlaluBaru++;
     heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
   }
 }
-const parity = computeParity(readParityRows(config.logDir, VOID_KEYS), heldRaw, (v) => stateVariants[v]?.life ?? 1);
+const parityRows = readParityRows(config.logDir, VOID_KEYS);
+/** Waktu baris terbaru per kunci — dipakai membedakan "baru lahir" dari "benar-benar bolong". */
+const newestRowTs = new Map<string, number>();
+for (const r of parityRows) {
+  const k = `${r.variant}|${r.token}|${r.life ?? 1}`;
+  newestRowTs.set(k, Math.max(newestRowTs.get(k) ?? 0, Date.parse(String(r.ts ?? "")) || 0));
+}
+const parity = computeParity(parityRows, heldRaw, (v) => stateVariants[v]?.life ?? 1);
 const keyResidual = parity.residual;
 let expectedOpen = 0, explainedKeys = 0;
 // (perhitungan per-kunci ditangani blok di bawah)
@@ -350,7 +354,7 @@ const stateHeld = parity.held;
 // KOREKSI 2026-10-09: sisa positif per kunci BUKAN otomatis anomali — ia cocok dengan posisi yang
 // memang dipegang state (re-entry dalam life yang sama: buka → tutup → buka lagi). Yang benar-benar
 // salah adalah SELISIH antara sisa itu dan jumlah yang dipegang, per kunci.
-let unexplainedGap = 0;
+let unexplainedGap = 0, freshGap = 0;
 const unexplainedList: string[] = [];
 let extraHeld = 0;
 for (const [key, gapRaw] of parityGaps(parity)) {
@@ -361,6 +365,9 @@ for (const [key, gapRaw] of parityGaps(parity)) {
     // Selisih yang punya penjelasan tercatat (baris rekonsiliasi) dihitung terpisah — tidak
     // disembunyikan, tapi juga tidak membuat seluruh pemeriksaan merah tanpa alasan jelas.
     if (parity.reconciledCloseKeys.has(key)) { explainedKeys += gapRaw; continue; }
+    // KUNCI TERLALU BARU (2026-10-11): barisnya baru muncul <60 detik lalu — bisa jadi pasangan
+    // buka/tutupnya belum lengkap. Dinilai run berikutnya, dan jumlahnya DILAPORKAN.
+    if (Date.now() - (newestRowTs.get(key) ?? 0) < 60_000) { freshGap += gapRaw; continue; }
     unexplainedGap += gapRaw;
     unexplainedList.push(`${key} (+${gapRaw} vs state ${heldHere})`);
   } else if (gapRaw < 0) {
@@ -375,7 +382,7 @@ console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · 
 console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50)${legacyQuarantined ? ` · ${legacyQuarantined} dikarantina (terdaftar + beralasan)` : ""}${legacyUnlisted ? ` · ${legacyUnlisted} TAK TERDAFTAR → GAGAL` : ""} · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
 console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` · ${sizingDerived} entry lama (equity direkonstruksi)` : ""}${sizingDerivedMismatch ? ` · ${sizingDerivedMismatch} tak bisa dinilai (equity rekonstruksi — bukan pelanggaran aturan, disebut namanya)` : ""}`);
-console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s) diabaikan (barisnya menyusul)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
+console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s)` : ""}${freshGap ? ` · ${freshGap} selisih ditunda (baris <60s — dinilai run berikutnya)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
 
 console.log(`\n4) BATAS RISIKO : ${breaches.length} dari ${closes.filter((c) => num(c["pnlUsd"]) < 0).length} trade rugi melebihi stop nominal + biaya`);
 const totalLoss = closes.filter((c) => num(c["pnlUsd"]) < 0).reduce((a, c) => a + num(c["pnlUsd"]), 0);

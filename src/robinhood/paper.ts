@@ -407,7 +407,23 @@ function loadState(): State {
   for (const v of VARIANTS) st.variants[v.id] = { ...blankVariant(), cohort: cohortTagOf(v, st) };
   return st;
 }
-function saveState(s: State): void {
+function saveState(s: State, by = "?"): void {
+  // JEJAK TIDAK BOLEH HILANG (2026-10-11): pernah terjadi markTrace ADA di berkas lalu hilang tanpa
+  // satu pun event `rh-mark-after` — kelas yang sama dengan tulisan basi (salinan lama menimpa yang
+  // baru). Dua tindakan sekaligus: (1) sebelum menulis, jejak yang ada di BERKAS tapi tidak ada di
+  // salinan ini DIPERTAHANKAN (digabung), jadi kehilangan jejak mustahil; (2) kejadiannya dicatat
+  // bersama `by` = penulisnya, sehingga kalau nanti muncul lagi, pelakunya terbaca — bukan ditebak.
+  try {
+    const disk = JSON.parse(readFileSync(STATE_PATH, "utf8")) as { markTrace?: MarkTrace[] };
+    const mine = s.markTrace ?? [];
+    const keyOf = (t: MarkTrace): string => `${t.variant}|${t.token}|${t.closedAt}`;
+    const have = new Set(mine.map(keyOf));
+    const missing = (disk.markTrace ?? []).filter((t) => !have.has(keyOf(t)));
+    if (missing.length) {
+      logRecord("rh-events", { type: "rh-marktrace-preserved", by, missing: missing.length, mine: mine.length, disk: (disk.markTrace ?? []).length, cfg: configHash });
+      s.markTrace = [...mine, ...missing].slice(-MARK_TRACE_MAX);
+    }
+  } catch { /* state belum ada — lanjut */ }
   // PENJAGA TULISAN BASI (2026-10-10) — kelas penutupan ganda yang akhirnya TERBUKTI mekanismenya
   // lewat instrumentasi: salinan state LAMA ditulis menimpa yang baru, sehingga `closedKeys` dan
   // penghapusan posisi ikut ter-undo di berkas → tick berikutnya menutup posisi yang sama lagi.
@@ -547,7 +563,7 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   // yang terjadi saat restart beruntun — ledger punya posisi yang STATE TIDAK PERNAH PUNYA
   // (terukur: 9 "posisi hantu" INFLUENCERS @17:45 di 9 varian). Sekarang posisi disimpan lebih
   // dulu; jika proses mati setelah simpan, yang hilang hanyalah baris catatan, bukan uang semu.
-  saveState(st);
+  saveState(st, "close");
   const gi = st.gmgnInfo[m.tokenAddress]; // sinyal rug (kalau sudah diperkaya) — ikut ke baris OPEN
   logRecord("rh-paper", {
     action: "RH_OPEN", variant: v.id, variantLabel: v.label, token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress,
@@ -621,7 +637,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   }].slice(-MARK_TRACE_MAX);
   // Durabilitas dulu, catat kemudian — alasan yang sama dengan openPosition (baris ledger tidak
   // boleh ada tanpa jejak di state).
-  saveState(st);
+  saveState(st, "close");
   logRecord("rh-paper", {
     action: "RH_CLOSE", variant: v.id, variantLabel: v.label, token: pos.token, symbol: pos.symbol, reason,
     // PRESISI (2026-10-10): dulu `exitPrice.toFixed(10)` — harga rug 2,16e-12 DIBULATKAN jadi 0,
@@ -807,7 +823,7 @@ async function capturePostExit(st: State, now: number): Promise<void> {
   }
   if (changed) {
     st.markTrace = keep.slice(-MARK_TRACE_MAX);
-    saveState(st);
+    saveState(st, "open");
   }
 }
 
@@ -836,7 +852,7 @@ async function markTick(): Promise<void> {
     const now = Date.now();
     const exits = await markAndExit(st, now);
     exitsSinceCycle += exits;
-    saveState(st); // lastMarkAt/peak ikut tersimpan supaya staleness & audit akurat
+    saveState(st, "mark"); // lastMarkAt/peak ikut tersimpan supaya staleness & audit akurat
     // JEJAK PASCA-KELUAR: dijalankan SETELAH state tersimpan, dengan anggaran jaringan kecil
     // (hanya token yang slot waktunya jatuh tempo) supaya kadens mark tidak terganggu.
     await capturePostExit(st, now);
@@ -1051,7 +1067,7 @@ async function cycle(): Promise<void> {
     }
 
     st.cycles += 1;
-    saveState(st);
+    saveState(st, "once");
     const summary = VARIANTS.map((v) => {
       const vs = st.variants[v.id] as VariantState;
       return `${v.id}: eq $${vs.equityUsd.toFixed(0)} pos ${vs.positions.length} trd ${vs.trades} W${vs.wins}/L${vs.losses}`;
@@ -1125,7 +1141,15 @@ function reconcileLedgerOnStart(st: State): void {
       st.corrections = [...(st.corrections ?? []), { at: new Date().toISOString(), type: "life-bump-from-ledger", variant: id, to: ml, pnl }];
       lifeFixed++;
     }
-    if (lifeFixed) saveState(st);
+    if (lifeFixed) saveState(st, "reconcile");
+    // AKAR SISA PARITAS (2026-10-11): penyelarasan life MENGOSONGKAN posisi life lama
+    // (`vs.positions = []`). Dulu `heldRaw` dibangun SEBELUM penyelarasan, sehingga pasangan
+    // "residual ledger +1 / state pegang 1" dinilai dengan state yang sudah basi — kuncinya tak
+    // pernah dijelaskan dan audit tetap merah sampai run berikutnya. Dibangun ULANG di sini.
+    heldRaw.clear();
+    for (const [id, vs] of Object.entries(st.variants)) {
+      for (const p of vs.positions ?? []) heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
+    }
     const parity = computeParity(parityRows, heldRaw, (v) => st.variants[v]?.life ?? 1);
     const gaps = parityGaps(parity);
     let addedOpen = 0, addedClose = 0;
