@@ -9,7 +9,7 @@
  * jumlah trade yang dibutuhkan supaya "belum terbukti" punya angka, bukan kesan.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { concentration, bootstrapDiffCI, mean, sd as sdOf, requiredNPerArm } from "./robinhood/stats.js";
@@ -29,6 +29,9 @@ interface Row {
 }
 
 const LEDGER = join(config.logDir, "okx-strict-paper-v2.jsonl");
+/** Baris laporan disimpan juga sebagai berkas — review harian & kartu dashboard membacanya. */
+const OUT_LINES: string[] = [];
+const note = (s: string): void => { OUT_LINES.push(s); console.log(s); };
 
 function loadRows(): Row[] {
   let text = "";
@@ -58,11 +61,11 @@ function pnlPctOf(r: Row): number | null {
 }
 
 const rows = loadRows();
-console.log("═══ VERDICT ARM OKX (ledger ber-hash-chain) ═══");
-console.log(`baris ledger: ${rows.length} · berkas: ${LEDGER}`);
+note("═══ VERDICT ARM OKX (ledger ber-hash-chain) ═══");
+note(`baris ledger: ${rows.length} · berkas: ${LEDGER}`);
 
 if (!rows.length) {
-  console.log("belum ada baris ledger — belum bisa dinilai apa pun.");
+  note("belum ada baris ledger — belum bisa dinilai apa pun.");
   process.exit(0);
 }
 
@@ -79,26 +82,31 @@ for (const r of rows) {
   byArm.get(arm)!.push(pnl);
 }
 
-console.log(`penutupan terbaca: ${[...byArm.values()].reduce((a, l) => a + l.length, 0)} · tanpa angka PnL: ${tanpaAngka}`);
-if (tanpaLabel) console.log(`catatan: ${tanpaLabel} baris lama tanpa label arm dihitung sebagai arm dasar (jujur, bukan dibuang)`);
-console.log("");
+note(`penutupan terbaca: ${[...byArm.values()].reduce((a, l) => a + l.length, 0)} · tanpa angka PnL: ${tanpaAngka}`);
+if (tanpaLabel) note(`catatan: ${tanpaLabel} baris lama tanpa label arm dihitung sebagai arm dasar (jujur, bukan dibuang)`);
+note("");
 
 const money = (v: number): string => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}%`;
 const arms = [...byArm.entries()].sort((a, b) => b[1].length - a[1].length);
 for (const [arm, list] of arms) {
   const conc = concentration(list);
   const need = requiredNPerArm(mean(list), sdOf(list));
-  console.log(`   ${arm.padEnd(28)} n=${String(list.length).padStart(3)} · rata-rata ${money(mean(list)).padStart(8)}/trade · top-1 ${(conc.topSharePct * 100).toFixed(0)}%${conc.topSharePct > 0.5 && conc.netExclTop1 <= 0 ? " · RAPUH (bergantung satu mint)" : ""} · perlu ≈${Number.isFinite(need) ? need : "∞"} trade/arm`);
+  note(`   ${arm.padEnd(28)} n=${String(list.length).padStart(3)} · rata-rata ${money(mean(list)).padStart(8)}/trade · top-1 ${(conc.topSharePct * 100).toFixed(0)}%${conc.topSharePct > 0.5 && conc.netExclTop1 <= 0 ? " · RAPUH (bergantung satu mint)" : ""} · perlu ≈${Number.isFinite(need) ? need : "∞"} trade/arm`);
 }
 
 if (arms.length >= 2) {
   const base = arms[0]!;
-  console.log("");
+  note("");
   for (const [arm, list] of arms.slice(1)) {
     const [lo, hi] = bootstrapDiffCI(list, base[1]);
     const selisih = mean(list) - mean(base[1]);
-    console.log(`   ${arm} vs ${base[0]}: selisih ${money(selisih)}/trade · bootstrap 95% ${money(lo)} … ${money(hi)}${lo > 0 ? " → lebih baik konsisten" : hi < 0 ? " → lebih buruk konsisten" : " → masih melewati nol: belum konklusif"}`);
+    note(`   ${arm} vs ${base[0]}: selisih ${money(selisih)}/trade · bootstrap 95% ${money(lo)} … ${money(hi)}${lo > 0 ? " → lebih baik konsisten" : hi < 0 ? " → lebih buruk konsisten" : " → masih melewati nol: belum konklusif"}`);
   }
 } else {
-  console.log("\n   (baru satu arm punya angka — arm kedua mulai terisi setelah lane berjalan dengan kode baru)");
+  note("\n   (baru satu arm punya angka — arm kedua mulai terisi setelah lane berjalan dengan kode baru)");
 }
+
+// Simpan laporan untuk pembaca lain (review harian / kartu dashboard).
+try {
+  writeFileSync(join(config.logDir, `okx-verdict-${new Date().toISOString().slice(0, 10)}.md`), OUT_LINES.join("\n") + "\n");
+} catch { /* best-effort */ }

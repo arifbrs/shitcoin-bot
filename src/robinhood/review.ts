@@ -24,6 +24,7 @@
  * Run: npm run rh:review   (RH_REVIEW_ONCE=true = sekali lalu keluar)
  */
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, existsSync } from "node:fs";
+import { summarizeTraces } from "./mark-trace.js";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { config } from "../config.js";
@@ -333,6 +334,39 @@ async function runReview(): Promise<void> {
     for (const line of out.split("\n").slice(0, 90)) say(`  ${line}`);
   } catch (e) {
     say(`  (studi gagal dijalankan: ${(e as Error).message.slice(0, 120)})`);
+  }
+
+  section("I. KUALITAS EKSEKUSI & ARM (otomatis: harga pasca-keluar, kualitas stop, arm OKX)");
+  // Bagian ini menjawab pertanyaan yang tidak bisa dijawab model biaya: apakah harga saat kita keluar
+  // BENAR-BENAR bisa dijual? Jejak 1/3/5 menit pasca-keluar sudah terkumpul otomatis tiap penutupan.
+  try {
+    const evDay = join(config.logDir, `rh-events-${day}.jsonl`);
+    const rows = existsSync(evDay)
+      ? readFileSync(evDay, "utf8").split("\n").filter((l) => l.includes("rh-mark-after"))
+          .map((l) => { try { return JSON.parse(l) as { reason: string; exitPriceUsd: number; marks: Array<{ p: number | null }> }; } catch { return null; } })
+          .filter((r): r is { reason: string; exitPriceUsd: number; marks: Array<{ p: number | null }> } => r != null)
+      : [];
+    const stats = summarizeTraces(rows);
+    if (!stats.length) say("  Jejak pasca-keluar: belum ada hari ini (terkumpul 1–5 menit setelah tiap penutupan).");
+    for (const s of stats) {
+      say(`  pasca-keluar ${s.reason.padEnd(13)} n=${String(s.n).padStart(4)} · retensi p50 ${(s.p50 * 100).toFixed(0)}% · p10 ${(s.p10 * 100).toFixed(0)}% · harga lenyap <50%: ${s.vanished} (${((100 * s.vanished) / s.n).toFixed(0)}%)`);
+    }
+    if (stats.length) say("  BACA: retensi rendah pada take_profit = harga itu TIDAK bertahan sesudah kita jual → untungnya hanya di atas kertas.");
+  } catch (e) {
+    say(`  (jejak pasca-keluar gagal dibaca: ${(e as Error).message.slice(0, 80)})`);
+  }
+  // Ringkasan alat lain dibaca dari berkas laporannya (tidak menjalankan ulang alat di sini).
+  for (const [label, pat] of [
+    ["KUALITAS STOP", /^rh-stop-quality-\d{4}-\d{2}-\d{2}\.md$/],
+    ["REALISME KELUAR", /^rh-realism-\d{4}-\d{2}-\d{2}\.md$/],
+    ["ARM OKX (pasca setel-ulang jatah)", /^okx-verdict-\d{4}-\d{2}-\d{2}\.md$/],
+  ] as Array<[string, RegExp]>) {
+    const file = readdirSync(config.logDir).filter((f) => pat.test(f)).sort().pop();
+    if (!file) { say(`  ${label}: belum ada berkas laporan — jalankan alatnya (\`npm run rh:stop\` / \`rh:realism\` / \`okx:verdict\`).`); continue; }
+    const body = readFileSync(join(config.logDir, file), "utf8").split("\n");
+    const pick = body.filter((l) => /stop_loss|RINGKASAN|vs v[0-9]|^   v[0-9]|lenyap|tutup ≤|rata-rata/.test(l)).slice(0, 6);
+    say(`  ${label} (${file}):`);
+    for (const l of pick) say(`    ${l.trim().slice(0, 150)}`);
   }
 
   say(`\nFile review: ${join(config.logDir, `robinhood-review-${day}.md`)}`);

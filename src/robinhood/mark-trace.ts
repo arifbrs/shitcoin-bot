@@ -40,3 +40,45 @@ export function priceRetention(exitPriceUsd: number, lastMarkPriceUsd: number | 
   if (lastMarkPriceUsd == null || !(exitPriceUsd > 0) || !Number.isFinite(lastMarkPriceUsd)) return null;
   return lastMarkPriceUsd / exitPriceUsd;
 }
+
+export interface TraceLike {
+  reason: string;
+  exitPriceUsd: number;
+  marks: Array<{ p: number | null }>;
+}
+
+export interface RetentionStat {
+  reason: string;
+  n: number;
+  p50: number;
+  p10: number;
+  /** Berapa yang harganya lenyap (retensi <50%) — inilah "menang di atas kertas". */
+  vanished: number;
+}
+
+/** Retensi terakhir sebuah jejak (mark terakhir yang ada ÷ harga keluar). */
+export function retentionOf(t: TraceLike): number | null {
+  const last = [...t.marks].reverse().find((m) => m.p != null)?.p ?? null;
+  return priceRetention(t.exitPriceUsd, last);
+}
+
+/**
+ * Ringkas retensi per alasan keluar. Satu implementasi, dipakai realism DAN review harian —
+ * sebelumnya tiap alat menghitungnya sendiri dan bisa berbeda tanpa ada yang tahu.
+ */
+export function summarizeTraces(rows: TraceLike[]): RetentionStat[] {
+  const byReason = new Map<string, number[]>();
+  for (const t of rows) {
+    const r = retentionOf(t);
+    if (r == null) continue;
+    if (!byReason.has(t.reason)) byReason.set(t.reason, []);
+    byReason.get(t.reason)!.push(r);
+  }
+  const out: RetentionStat[] = [];
+  for (const [reason, list] of byReason) {
+    const s = [...list].sort((a, b) => a - b);
+    const at = (q: number): number => s[Math.min(s.length - 1, Math.floor(s.length * q))]!;
+    out.push({ reason, n: list.length, p50: at(0.5), p10: at(0.1), vanished: list.filter((r) => r < 0.5).length });
+  }
+  return out.sort((a, b) => b.n - a.n);
+}
