@@ -91,6 +91,15 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
       "TP tahan 6 tick (v49)": "v49-tp-tahan6",
     },
   },
+  {
+    name: "KOHORT-7b: TP BERTAHAN tanpa trailing (uji bersih — trailing dimatikan)",
+    gate: "loose",
+    arms: {
+      "KONTROL sentuhan TP (v50)": "v50-tp-kontrol-b",
+      "TP tahan 3 tick (v51)": "v51-tp-tahan3-b",
+      "TP tahan 6 tick (v52)": "v52-tp-tahan6-b",
+    },
+  },
 ];
 
 const lines: string[] = [];
