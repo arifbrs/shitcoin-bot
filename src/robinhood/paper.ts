@@ -791,7 +791,19 @@ async function markAndExit(st: State, now: number): Promise<number> {
  * mengarang angka, dan jejak yang tak lengkap tetap dilaporkan dengan penanda `complete: false`.
  */
 async function capturePostExit(st: State, now: number): Promise<void> {
-  const traces = st.markTrace ?? [];
+  // JEJAK DIAMBIL DARI BERKAS (2026-10-11): instrumentasi menunjukkan penulis `mark` 17 kali
+  // mencoba menulis salinan yang TIDAK memuat jejak (punyaku=0, berkas=1) — salinan memori di awal
+  // tick kadang belum memuatnya, sehingga slot mark tak pernah maju. Berkas adalah sumbernya; baru
+  // sesudah itu keputusan slot dijalankan.
+  let traces = st.markTrace ?? [];
+  let adopted = false;
+  try {
+    const disk = JSON.parse(readFileSync(STATE_PATH, "utf8")) as { markTrace?: MarkTrace[] };
+    if ((disk.markTrace?.length ?? 0) > traces.length) {
+      traces = disk.markTrace!;
+      adopted = true;
+    }
+  } catch { /* state belum ada */ }
   if (!traces.length) return;
   const dueTokens = new Set<string>();
   for (const t of traces) if (shouldCaptureNow(t.marks.length, now - t.closedAt)) dueTokens.add(t.token);
