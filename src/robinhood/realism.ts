@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { exitProceedsUsd, DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { concentration, mean, bootstrapDiffCI } from "./stats.js";
-import { priceRetention } from "./mark-trace.js";
+import { priceRetention, retentionOf as retentionOfShared, summarizeTraces } from "./mark-trace.js";
 
 interface CloseRow {
   variant: string;
@@ -210,23 +210,12 @@ say(`\n── HARGA PASCA-KELUAR (${traces.length} jejak terekam)`);
 if (!traces.length) {
   say("   belum ada jejak: perekaman baru aktif setelah lane berjalan dengan kode ini (1/3/5 menit pasca-jual).");
 } else {
-  const retentionOf = (t: TraceRow): number | null => {
-    const last = [...t.marks].reverse().find((m) => m.p != null)?.p ?? null;
-    return priceRetention(t.exitPriceUsd, last);
-  };
-  const byReason = new Map<string, number[]>();
-  for (const t of traces) {
-    const r = retentionOf(t);
-    if (r == null) continue;
-    if (!byReason.has(t.reason)) byReason.set(t.reason, []);
-    byReason.get(t.reason)!.push(r);
-  }
-  for (const [reason, list] of [...byReason.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    const sorted = [...list].sort((a, b) => a - b);
-    const p50 = sorted[Math.floor(sorted.length * 0.5)]!;
-    const p10 = sorted[Math.floor(sorted.length * 0.1)]!;
-    const hilang = list.filter((r) => r < 0.5).length;
-    say(`   ${reason.padEnd(14)} n=${String(list.length).padStart(3)} · retensi p50 ${(p50 * 100).toFixed(0)}% · p10 ${(p10 * 100).toFixed(0)}% · harga lenyap (<50%): ${hilang} (${((100 * hilang) / list.length).toFixed(0)}%)`);
+  // SATU RUMUS (2026-10-11): peringkasan retensi memakai fungsi bersama `summarizeTraces` — sama
+  // persis dengan yang dipakai review 08:00 dan kartu dashboard. Sebelumnya berkas ini punya salinan
+  // inline-nya sendiri, dan dua salinan matematika yang sama adalah cara paling mudah membuat tiga
+  // angka berbeda untuk satu kenyataan.
+  for (const s of summarizeTraces(traces)) {
+    say(`   ${s.reason.padEnd(14)} n=${String(s.n).padStart(3)} · retensi p50 ${(s.p50 * 100).toFixed(0)}% · p10 ${(s.p10 * 100).toFixed(0)}% · harga lenyap (<50%): ${s.vanished} (${((100 * s.vanished) / s.n).toFixed(0)}%)`);
   }
   // Dampak "harga jujur": nilai ulang SETIAP penutupan berjejak memakai mark pasca-keluar.
   const key = (r: { variant: string; token: string }): string => `${r.variant}|${r.token}`;
@@ -249,7 +238,7 @@ if (!traces.length) {
       return Math.abs(Date.parse(best.closedAt) - Date.parse(c.ts)) <= d ? best : t;
     }, null);
     if (!closer) continue;
-    const r = retentionOf(closer);
+    const r = retentionOfShared(closer);
     if (r == null) continue;
     matched++;
     const proceeds = (c as CloseRow & { proceedsUsd?: number }).proceedsUsd ?? Math.max(0, c.pnlUsd + c.notionalUsd);
