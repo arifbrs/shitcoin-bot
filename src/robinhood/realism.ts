@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { exitProceedsUsd, DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { concentration, mean, bootstrapDiffCI } from "./stats.js";
+import { priceRetention } from "./mark-trace.js";
 
 interface CloseRow {
   variant: string;
@@ -185,7 +186,90 @@ if (tpWins.length) {
   say(`   Untuk itu dibutuhkan mark SETELAH keluar (harga 1–5 menit pasca-jual) — belum terekam untuk semua penutupan.`);
 }
 
-// Ringkasan lintas-arm untuk arm besar
+// ── HARGA PASCA-KELUAR (2026-10-11) ─────────────────────────────────────────────────────────
+// Bagian ini menjawab pertanyaan yang tidak bisa dijawab model biaya: apakah harga saat keluar
+// BENAR-BENAR bisa dijual? Caranya: bandingkan harga keluar dengan mark 1/3/5 menit sesudahnya.
+// Kalau harga lenyap (retensi rendah), "keuntungan" itu tidak pernah bisa diuangkan.
+interface TraceRow {
+  token: string; symbol?: string; variant: string; reason: string; exitPriceUsd: number;
+  closedAt: string; marks: Array<{ t: number; p: number | null; liq: number | null }>; complete?: boolean;
+}
+function loadTraces(): TraceRow[] {
+  const out: TraceRow[] = [];
+  for (const f of readdirSync(config.logDir).filter((x) => x.startsWith("rh-events-") && x.endsWith(".jsonl")).sort()) {
+    for (const line of readFileSync(join(config.logDir, f), "utf8").split("\n")) {
+      if (!line.includes('"rh-mark-after"')) continue;
+      try { out.push(JSON.parse(line) as TraceRow); } catch { /* baris rusak */ }
+    }
+  }
+  return out;
+}
+
+const traces = loadTraces();
+say(`\n── HARGA PASCA-KELUAR (${traces.length} jejak terekam)`);
+if (!traces.length) {
+  say("   belum ada jejak: perekaman baru aktif setelah lane berjalan dengan kode ini (1/3/5 menit pasca-jual).");
+} else {
+  const retentionOf = (t: TraceRow): number | null => {
+    const last = [...t.marks].reverse().find((m) => m.p != null)?.p ?? null;
+    return priceRetention(t.exitPriceUsd, last);
+  };
+  const byReason = new Map<string, number[]>();
+  for (const t of traces) {
+    const r = retentionOf(t);
+    if (r == null) continue;
+    if (!byReason.has(t.reason)) byReason.set(t.reason, []);
+    byReason.get(t.reason)!.push(r);
+  }
+  for (const [reason, list] of [...byReason.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    const sorted = [...list].sort((a, b) => a - b);
+    const p50 = sorted[Math.floor(sorted.length * 0.5)]!;
+    const p10 = sorted[Math.floor(sorted.length * 0.1)]!;
+    const hilang = list.filter((r) => r < 0.5).length;
+    say(`   ${reason.padEnd(14)} n=${String(list.length).padStart(3)} · retensi p50 ${(p50 * 100).toFixed(0)}% · p10 ${(p10 * 100).toFixed(0)}% · harga lenyap (<50%): ${hilang} (${((100 * hilang) / list.length).toFixed(0)}%)`);
+  }
+  // Dampak "harga jujur": nilai ulang SETIAP penutupan berjejak memakai mark pasca-keluar.
+  const key = (r: { variant: string; token: string }): string => `${r.variant}|${r.token}`;
+  const traceByKey = new Map<string, TraceRow[]>();
+  for (const t of traces) {
+    const k = key(t);
+    if (!traceByKey.has(k)) traceByKey.set(k, []);
+    traceByKey.get(k)!.push(t);
+  }
+  let deltaAll = 0;
+  let matched = 0;
+  const deltaByCohort = new Map<string, number>();
+  for (const c of closes) {
+    const list = traceByKey.get(key(c));
+    if (!list) continue;
+    const closer = list.reduce<TraceRow | null>((best, t) => {
+      const d = Math.abs(Date.parse(t.closedAt) - Date.parse(c.ts));
+      if (d > 5_000) return best;
+      if (!best) return t;
+      return Math.abs(Date.parse(best.closedAt) - Date.parse(c.ts)) <= d ? best : t;
+    }, null);
+    if (!closer) continue;
+    const r = retentionOf(closer);
+    if (r == null) continue;
+    matched++;
+    const proceeds = (c as CloseRow & { proceedsUsd?: number }).proceedsUsd ?? Math.max(0, c.pnlUsd + c.notionalUsd);
+    const delta = proceeds * (r - 1);
+    deltaAll += delta;
+    const coh = c.cohort ?? "(tanpa kohort)";
+    deltaByCohort.set(coh, (deltaByCohort.get(coh) ?? 0) + delta);
+  }
+  if (matched) {
+    say(`   penilaian ulang di mark pasca-keluar (${matched} penutupan berjejak): selisih ${"$"}${deltaAll.toFixed(2)} dari net tercatat`);
+    for (const [coh, d] of [...deltaByCohort.entries()].sort((a, b) => a[1] - b[1])) {
+      const list = closes.filter((c) => (c.cohort ?? "(tanpa kohort)") === coh);
+      const net = list.reduce((a, c) => a + c.pnlUsd, 0);
+      say(`      ${coh.padEnd(26)} net tercatat ${money(net).padStart(9)} → di mark pasca-keluar ${money(net + d).padStart(9)} (selisih ${money(d)})`);
+    }
+    say(`   BACA: bila angka "di mark pasca-keluar" jauh lebih buruk, sebagian keuntungan hanya ada di atas kertas.`);
+  }
+}
+
+
 const large = results.filter((r) => r.n >= 20);
 if (large.length >= 2) {
   const best = [...large].sort((a, b) => b.net2 - a.net2)[0]!;

@@ -31,6 +31,7 @@ import { fetchRugSignals, rugFlags, type RugSignals } from "./rug-signals.js";
 import { readParityRows, computeParity, parityGaps, compensatingOpenCount, needsReconciledClose } from "./ledger-parity.js";
 import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { commitState, shouldBlockClose } from "./state-store.js";
+import { MARK_TRACE_MAX, shouldCaptureNow, traceFinished } from "./mark-trace.js";
 import { loadLimits, checkEntryAllowed } from "../risk/limits.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
@@ -307,6 +308,12 @@ interface Position {
   recentMarks?: Array<{ t: number; p: number; liq: number | null; src: string | null }>;
 }
 interface LifeRecord { life: number; startedAt: number; endedAt: number; endEquityUsd: number; trades: number; wins: number; losses: number; reason: string }
+
+/** Jejak harga pasca-keluar — dipakai realism untuk membuktikan harga keluar bisa dijual atau tidak. */
+interface MarkTrace {
+  token: string; symbol: string; pool?: string; variant: string; life: number; reason: string;
+  closedAt: number; exitPriceUsd: number; marks: Array<{ t: number; p: number | null; liq: number | null }>;
+}
 interface VariantState {
   equityUsd: number; peakEquityUsd: number; maxDdPct: number; realizedUsd: number;
   /**
@@ -339,6 +346,8 @@ interface State {
   stateWrites?: number;
   /** Snapshot equity awal hari untuk batas rugi harian (item 7, 2026-10-11). */
   riskDay?: { date: string; equityUsd: number };
+  /** Jejak harga pasca-keluar (2026-10-11): 3 mark setelah penutupan, untuk membuktikan mark bisa dijual. */
+  markTrace?: MarkTrace[];
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -587,6 +596,13 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   vs.maxDdPct = Math.max(vs.maxDdPct, Number(dd.toFixed(2)));
   vs.cooldown[pos.token] = now;
   vs.positions = vs.positions.filter((p) => p.token !== pos.token);
+  // JEJAK PASCA-KELUAR (2026-10-11): harga 1/3/5 menit SETELAH keluar. Tanpa ini, klaim
+  // "TP +185%" tidak bisa dipisahkan dari "mark yang lenyap begitu kita jual" — dan itu pertanyaan
+  // terbesar yang tersisa dari kohort-5. Aturan slotnya di mark-trace.ts (diuji).
+  st.markTrace = [...(st.markTrace ?? []), {
+    token: pos.token, symbol: pos.symbol, pool: pos.pool, variant: v.id, life: vs.life,
+    reason, closedAt: now, exitPriceUsd: exitPrice, marks: [],
+  }].slice(-MARK_TRACE_MAX);
   // Durabilitas dulu, catat kemudian — alasan yang sama dengan openPosition (baris ledger tidak
   // boleh ada tanpa jejak di state).
   saveState(st);
@@ -736,6 +752,50 @@ async function markAndExit(st: State, now: number): Promise<number> {
 }
 
 /**
+ * Ambil mark pasca-keluar untuk jejak yang slot waktunya sudah jatuh tempo (1/3/5 menit).
+ *
+ * Anggaran jaringan sengaja kecil: SATU panggilan batch per tick untuk semua token yang jatuh tempo
+ * (biasanya 1–3). Kalau jaringan gagal, slot itu dicoba lagi tick berikutnya — tidak pernah
+ * mengarang angka, dan jejak yang tak lengkap tetap dilaporkan dengan penanda `complete: false`.
+ */
+async function capturePostExit(st: State, now: number): Promise<void> {
+  const traces = st.markTrace ?? [];
+  if (!traces.length) return;
+  const dueTokens = new Set<string>();
+  for (const t of traces) if (shouldCaptureNow(t.marks.length, now - t.closedAt)) dueTokens.add(t.token);
+  let marks = new Map<string, { priceUsd: number | null; liqUsd: number | null }>();
+  if (dueTokens.size) {
+    try {
+      marks = (await markTokens([...dueTokens])) as Map<string, { priceUsd: number | null; liqUsd: number | null }>;
+    } catch { /* jaringan — slot ini dicoba lagi tick berikutnya */ }
+  }
+  let changed = false;
+  const keep: MarkTrace[] = [];
+  for (const t of traces) {
+    const elapsed = now - t.closedAt;
+    if (shouldCaptureNow(t.marks.length, elapsed)) {
+      const m = marks.get(t.token);
+      if (m) {
+        t.marks.push({ t: now, p: m.priceUsd, liq: m.liqUsd });
+        changed = true;
+      }
+    }
+    if (traceFinished(t.marks.length, elapsed)) {
+      logRecord("rh-events", {
+        type: "rh-mark-after", token: t.token, symbol: t.symbol, variant: t.variant, life: t.life, reason: t.reason,
+        closedAt: new Date(t.closedAt).toISOString(), exitPriceUsd: t.exitPriceUsd, marks: t.marks,
+        complete: t.marks.length >= 3, cohort: st.cohort, cfg: configHash,
+      });
+      changed = true;
+    } else keep.push(t);
+  }
+  if (changed) {
+    st.markTrace = keep.slice(-MARK_TRACE_MAX);
+    saveState(st);
+  }
+}
+
+/**
  * Mark + exit saja, tanpa discovery/entry. Kalau siklus penuh sedang berjalan, tick ini MENUNGGU
  * (maks 20 detik) alih-alih dilewatkan begitu saja.
  *
@@ -761,6 +821,9 @@ async function markTick(): Promise<void> {
     const exits = await markAndExit(st, now);
     exitsSinceCycle += exits;
     saveState(st); // lastMarkAt/peak ikut tersimpan supaya staleness & audit akurat
+    // JEJAK PASCA-KELUAR: dijalankan SETELAH state tersimpan, dengan anggaran jaringan kecil
+    // (hanya token yang slot waktunya jatuh tempo) supaya kadens mark tidak terganggu.
+    await capturePostExit(st, now);
     if (exits) logRecord("rh-events", { type: "rh-mark", exits, cohort: st.cohort, cfg: configHash });
     // Penantian >5 detik berarti mark tertahan fase lain — catat supaya kadens nyatanya terbaca.
     if (heldMs > 5_000) logRecord("rh-events", { type: "rh-mark-delayed", waitedMs: heldMs, cohort: st.cohort, cfg: configHash });

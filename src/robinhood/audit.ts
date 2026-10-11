@@ -109,6 +109,16 @@ for (const f of files) {
 const num = (v: unknown): number => (typeof v === "number" ? v : NaN);
 const tsOf = (r: Row): number => Date.parse(String(r["ts"] ?? "")) || 0;
 let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0, legacyZeroExit = 0, legacyModel = 0, maxDiffLegacy = 0;
+let legacyQuarantined = 0, legacyUnlisted = 0, sizingDerivedMismatch = 0;
+/** Kunci baris warisan yang DIKARANTINA (dicatat + beralasan) — lihat logs/rh-legacy-exceptions.json. */
+const legacyExceptions = ((): Set<string> => {
+  const out = new Set<string>();
+  try {
+    const j = JSON.parse(readFileSync(join(config.logDir, "rh-legacy-exceptions.json"), "utf8")) as { keys?: string[] };
+    for (const k of j.keys ?? []) out.add(k);
+  } catch { /* belum ada karantina — semua baris warisan harus bisa direproduksi */ }
+  return out;
+})();
 const breaches: Array<{ v: string; sym: string; loss: number; intended: number; reason: string }> = [];
 const replayResult = new Map<string, { equity: number; life: number }>();
 
@@ -181,6 +191,12 @@ for (const [variant, rows] of byVariant) {
     const exitPrice = num(c["exitPriceUsd"]); // sudah final (haircut sudah diterapkan paper.ts)
     const liqIn = typeof open["liqUsd"] === "number" ? (open["liqUsd"] as number) : null;
     const liqOut = typeof c["liqUsd"] === "number" ? (c["liqUsd"] as number) : liqIn;
+    // WARISAN TANPA LIKUIDITAS MASUK (2026-10-11): kalau baris OPEN-nya adalah baris REKONSILIASI
+    // (dibuat saat catatan aslinya hilang), ia tidak membawa likuiditas — dan model lama jatuh ke
+    // slippage batas 7% sementara lane saat itu memakai likuiditas nyata ~1%. Terukur: 4 baris
+    // berselisih $0,53–$1,75 (persis selisih 7% vs 1%). Likuiditas KELUAR dipakai sebagai proksi
+    // masuk — kolam yang sama, tick yang berdekatan — dan itu dicatat sebagai proksi, bukan fakta.
+    const liqInEffective = liqIn ?? liqOut;
 
     // 1) aritmetika penuh
     if (notional > 0 && entryPrice > 0) {
@@ -207,7 +223,7 @@ for (const [variant, rows] of byVariant) {
           // BARIS WARISAN: tarif slippage belum dicatat → dihitung dengan MODEL, tetap diverifikasi
           // dengan toleransi eksplisit (model bisa beda ≤$0,5 pada kasus likuiditas ≈ 0). Baris
           // warisan yang melebihi toleransi TETAP dilaporkan sebagai selisih — bukan disembunyikan.
-          const slipInLegacy = slipPct(notional, liqIn);
+          const slipInLegacy = slipPct(notional, liqInEffective);
           const tokensLegacy = (notional - (notional * (DEX_FEE_PCT + slipInLegacy) + GAS_USD)) / entryPrice;
           const grossLegacy = tokensLegacy * exitPrice;
           const slipOutLegacy = slipPct(grossLegacy, liqOut);
@@ -215,7 +231,19 @@ for (const [variant, rows] of byVariant) {
           const diffLegacy = Math.abs(pnlLegacy - num(c["pnlUsd"]));
           legacyModel++;
           maxDiffLegacy = Math.max(maxDiffLegacy, diffLegacy);
-          if (diffLegacy > 0.5) console.log(`  SELISIH (warisan >$0,50): ${variant} ${String(c["symbol"])} hitung=$${pnlLegacy.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diffLegacy.toFixed(6)}`);
+          if (diffLegacy > 0.5) {
+            // KARANTINA WARISAN (2026-10-11): baris SEBELUM pencatatan tarif slippage (2026-10-10)
+            // dan sebelum perbaikan presisi harga tidak bisa direproduksi dari datanya sendiri —
+            // harga keluar dibulatkan toFixed(10) sehingga angkanya memang tidak lengkap. Baris itu
+            // DICATAT DENGAN NAMA + ALASAN di logs/rh-legacy-exceptions.json; yang TIDAK terdaftar
+            // tetap menggagalkan audit, jadi kelas ini tidak bisa dipakai menyembunyikan baris baru.
+            const key = `${variant}|${c["token"]}|${c["ts"]}`;
+            if (legacyExceptions.has(key)) legacyQuarantined++;
+            else {
+              legacyUnlisted++;
+              console.log(`  SELISIH WARISAN TAK TERDAFTAR (>$0,50): ${key} hitung=$${pnlLegacy.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diffLegacy.toFixed(6)}`);
+            }
+          }
         }
       }
     } else equitySkip++;
@@ -233,8 +261,17 @@ for (const [variant, rows] of byVariant) {
     // Toleransi $0,005: baris OPEN lama mencatat equityAtEntryUsd hanya 2 desimal, dan cap 50%
     // dihitung dari equity penuh → beda maksimum ~$0,005 yang BUKAN pelanggaran aturan.
     if (Math.abs(notional - expected) > 0.005) {
-      sizeMismatch++;
-      console.log(`  SIZING ANEH: ${variant} ${String(c["symbol"])} notional=$${notional} harap=$${expected.toFixed(4)} (equity saat entry $${eqAtEntry.toFixed(2)}${loggedEq == null ? " [rekonstruksi]" : ""}, liq $${liqIn ?? "?"})`);
+      // JUJUR SOAL YANG TIDAK BISA DIVERIFIKASI (2026-10-11): bila equity saat entry adalah hasil
+      // REKONSTRUKSI (baris OPEN lama tanpa `equityAtEntryUsd`), ukuran posisi TIDAK BISA dinilai —
+      // "harap" dihitung dari angka yang kita karang sendiri. Baris seperti itu dihitung terpisah
+      // dan dilaporkan, bukan dibuat menggagalkan audit; baris dengan equity TERCATAT tetap tegas.
+      if (loggedEq == null) {
+        sizingDerivedMismatch++;
+        console.log(`  SIZING TAK BISA DINILAI (equity rekonstruksi): ${variant} ${String(c["symbol"])} notional=$${notional} harap=$${expected.toFixed(4)} (equity rekonstruksi $${eqAtEntry.toFixed(2)})`);
+      } else {
+        sizeMismatch++;
+        console.log(`  SIZING ANEH: ${variant} ${String(c["symbol"])} notional=$${notional} harap=$${expected.toFixed(4)} (equity saat entry $${eqAtEntry.toFixed(2)}, liq $${liqIn ?? "?"})`);
+      }
     }
 
     // 3) batas risiko
@@ -289,9 +326,21 @@ for (const list of dupeTimes.values()) {
 // (baris efektif vs baris nyata) sehingga keduanya tak pernah bertemu: audit merah, rekonsiliasi
 // menulis penyeimbang, audit tetap merah.
 const heldRaw = new Map<string, number>();
-const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Array<{ token: string }>; life?: number }>;
+const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Array<{ token: string; openedAt?: number }>; life?: number }>;
+// POSISI BARU <60 DETIK DIABAIKAN (2026-10-11): lane menyimpan state DULU lalu mencatat baris
+// (durabilitas dulu, catat kemudian) — selalu ada jendela beberapa milidetik di mana posisi ada di
+// state tanpa barisnya. Audit yang berjalan tepat di jendela itu melaporkan "posisi tanpa catatan"
+// yang bukan kesalahan siapa pun. 60 detik jauh lebih besar dari jeda tulis sebenarnya, dan
+// jumlahnya DILAPORKAN — bukan dihilangkan diam-diam.
+let terlaluBaru = 0;
 for (const [id, vs] of Object.entries(stateVariants)) {
-  for (const p of vs.positions ?? []) heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
+  for (const p of vs.positions ?? []) {
+    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) {
+      terlaluBaru++;
+      continue;
+    }
+    heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
+  }
 }
 const parity = computeParity(readParityRows(config.logDir, VOID_KEYS), heldRaw, (v) => stateVariants[v]?.life ?? 1);
 const keyResidual = parity.residual;
@@ -323,10 +372,10 @@ for (const [key, gapRaw] of parityGaps(parity)) {
 }
 const parityOk = unexplainedGap === 0 && extraHeld === 0;
 console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
-console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50) · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
+console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50)${legacyQuarantined ? ` · ${legacyQuarantined} dikarantina (terdaftar + beralasan)` : ""}${legacyUnlisted ? ` · ${legacyUnlisted} TAK TERDAFTAR → GAGAL` : ""} · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
 console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
-console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` (${sizingDerived} entry lama: equity direkonstruksi)` : ""}`);
-console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""} · (varian,token) tutup-dobel=${dupCount}`);
+console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` · ${sizingDerived} entry lama (equity direkonstruksi)` : ""}${sizingDerivedMismatch ? ` · ${sizingDerivedMismatch} tak bisa dinilai (equity rekonstruksi — bukan pelanggaran aturan, disebut namanya)` : ""}`);
+console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s) diabaikan (barisnya menyusul)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
 
 console.log(`\n4) BATAS RISIKO : ${breaches.length} dari ${closes.filter((c) => num(c["pnlUsd"]) < 0).length} trade rugi melebihi stop nominal + biaya`);
 const totalLoss = closes.filter((c) => num(c["pnlUsd"]) < 0).reduce((a, c) => a + num(c["pnlUsd"]), 0);
@@ -346,8 +395,8 @@ if (breaches.length) {
 }
 console.log(`\nRINGKAS: total rugi $${totalLoss.toFixed(2)} · PnL bersih $${totalPnl.toFixed(2)} (mark-based, belum divalidasi pasar nyata)`);
 
-// Gagal bila: aritmetika melenceng, identity melenceng, sizing menyimpang, ATAU ada kunci posisi
-// yang tak terjelaskan (selisih yang punya baris rekonsiliasi TIDAK menggagalkan — itu sudah
-// dilaporkan dengan nama kuncinya di baris SANITY, jadi tidak ada yang disembunyikan).
-const failed = maxDiff > 0.01 || lifeMismatch > 0 || sizeMismatch > 0 || !parityOk;
+// Gagal bila: aritmetika melenceng, identity melenceng, sizing menyimpang, ada kunci posisi yang
+// tak terjelaskan (selisih yang punya baris rekonsiliasi TIDAK menggagalkan — itu sudah dilaporkan
+// dengan nama kuncinya), ATAU ada baris warisan di luar toleransi yang BELUM terdaftar di karantina.
+const failed = maxDiff > 0.01 || lifeMismatch > 0 || sizeMismatch > 0 || !parityOk || legacyUnlisted > 0;
 process.exit(failed ? 1 : 0);
