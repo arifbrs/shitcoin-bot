@@ -19,7 +19,7 @@ export interface OkxBaseline {
   maxNoRoute: number;
 }
 
-export type OkxStrategy = "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60" | "V7_FAST_STOP_SL6_T45";
+export type OkxStrategy = "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60" | "V7_FAST_STOP_SL6_T45" | "V8_ROUTE_TIGHT_SL8_T60" | "V9_SHALLOW_STOP_SL4_T60";
 
 export interface OkxVariant extends OkxBaseline {
   id: string;
@@ -59,6 +59,27 @@ export function okxVariants(baseline: OkxBaseline): OkxVariant[] {
       hardStopPct: Math.max(baseline.hardStopPct, -6),
       maxHoldMs: Math.min(baseline.maxHoldMs, 45_000),
       strategy: "V7_FAST_STOP_SL6_T45",
+    },
+    // ── UJI "LINDUNGI RUTE, BUKAN HARGA" (2026-10-11) ────────────────────────────────────────
+    // Temuan terukur pada arm dasar: rata-rata −24,9%/trade padahal stop nominal −8% → kerugian
+    // datang lewat ROUTE_LOST (rute jual hilang), bukan lewat harga menyentuh stop. Kedua arm di
+    // bawah menguji itu memakai KNOB YANG SUDAH ADA (maxConsecutiveNoRoute + hardStopPct sudah
+    // per-posisi di `adaptive`) — tidak ada jalur kode baru, jadi tidak ada risiko bug baru.
+    {
+      ...baseline,
+      id: "v8-rute-ketat",
+      cohort: "okx-kohort-1",
+      label: "keluar pada rute hilang PERTAMA (noRoute=1)",
+      maxNoRoute: 1,
+      strategy: "V8_ROUTE_TIGHT_SL8_T60",
+    },
+    {
+      ...baseline,
+      id: "v9-stop-dangkal",
+      cohort: "okx-kohort-1",
+      label: "stop lebih dangkal (SL4/T60)",
+      hardStopPct: Math.max(baseline.hardStopPct, -4),
+      strategy: "V9_SHALLOW_STOP_SL4_T60",
     },
   ];
 }

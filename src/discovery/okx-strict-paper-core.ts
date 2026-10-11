@@ -82,7 +82,7 @@ export type StrictScalpExit = Omit<StrictExit, "horizonSec"> & {
 };
 
 export interface StrictAdaptiveScalp {
-  strategy: "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60" | "V7_FAST_STOP_SL6_T45";
+  strategy: "V5_TP5_SL8_T60_EXEC_DELAY" | "V6_FAST_RECHECK_TP5_SL8_T60" | "V7_FAST_STOP_SL6_T45" | "V8_ROUTE_TIGHT_SL8_T60" | "V9_SHALLOW_STOP_SL4_T60";
   status: "MONITORING" | "EXITED";
   takeProfitPct: number;
   hardStopPct: number;

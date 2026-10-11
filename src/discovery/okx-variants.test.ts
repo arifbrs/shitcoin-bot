@@ -30,10 +30,12 @@ test("okx varian: pembagian arm merata (tidak menumpuk di satu arm)", () => {
     const v = variantFor(`kandidat-${i}`, BASE);
     counts.set(v.id, (counts.get(v.id) ?? 0) + 1);
   }
-  eq(counts.size, okxVariants(BASE).length, "semua arm terpakai");
+  const arms = okxVariants(BASE).length;
+  eq(counts.size, arms, "semua arm terpakai");
+  const target = 1 / arms;
   for (const [id, n] of counts) {
     const share = n / 2000;
-    assert(share > 0.35 && share < 0.65, `arm ${id} dapat ${(share * 100).toFixed(1)}% (harus sekitar 50%)`);
+    assert(share > target - 0.1 && share < target + 0.1, `arm ${id} dapat ${(share * 100).toFixed(1)}% (harus sekitar ${(target * 100).toFixed(0)}%)`);
   }
 });
 
@@ -41,4 +43,16 @@ test("okx varian: hash32 stabil dan berbeda antar-input", () => {
   eq(hash32("abc"), hash32("abc"), "stabil");
   assert(hash32("abc") !== hash32("abd"), "input beda → hash beda (praktis)");
   assert(Number.isInteger(hash32("x")) && hash32("x") >= 0, "selalu bilangan bulat non-negatif");
+});
+
+test("okx varian: arm rute-ketat keluar pada rute hilang PERTAMA (uji 'lindungi rute, bukan harga')", () => {
+  const v8 = okxVariants(BASE).find((v) => v.id === "v8-rute-ketat")!;
+  eq(v8.maxNoRoute, 1, "noRoute = 1 (dasar 3)");
+  eq(v8.hardStopPct, BASE.hardStopPct, "stop harga TIDAK diubah — yang diuji hanya perlindungan rute");
+});
+
+test("okx varian: arm stop-dangkal lebih dangkal dari dasar, bukan lebih dalam", () => {
+  const v9 = okxVariants(BASE).find((v) => v.id === "v9-stop-dangkal")!;
+  assert(v9.hardStopPct > BASE.hardStopPct, "stop lebih dangkal (mis. −4 vs −8)");
+  eq(v9.maxNoRoute, BASE.maxNoRoute, "perlindungan rute tidak diubah — variabelnya dipisah");
 });

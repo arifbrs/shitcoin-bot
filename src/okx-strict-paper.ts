@@ -537,7 +537,7 @@ async function processCandidate(candidate: StrictCandidate): Promise<void> {
       strategy: variant.strategy, status: "MONITORING",
       takeProfitPct: variant.takeProfitPct, hardStopPct: variant.hardStopPct,
       maxHoldMs: variant.maxHoldMs, pollMs: SCALP_POLL_MS,
-      executionDelayMs: SCALP_EXECUTION_DELAY_MS, maxConsecutiveNoRoute: SCALP_MAX_NO_ROUTE,
+      executionDelayMs: SCALP_EXECUTION_DELAY_MS, maxConsecutiveNoRoute: variant.maxNoRoute,
       nextCheckAt: builtAt + SCALP_POLL_MS, checks: 0, consecutiveNoRoute: 0,
       peakPnlPct: null, exit: null,
     },
