@@ -37,5 +37,8 @@ while true; do
   guard "dex"       "run-dexscreener-supervised.sh" "logs/dex-supervisor.out"     "src/discovery/dex-full.ts"
   guard "okx"       "run-okx-supervised.sh"        "logs/okx-supervisor.out"     "src/okx-lane.ts"
   guard "okx-paper" "run-okx-paper-supervised.sh"  "logs/okx-paper-supervisor.out" "src/okx-strict-paper.ts"
+  # DASHBOARD (2026-10-11): supervisor dashboard TIDAK dijaga siapa pun sebelumnya — ia sempat mati
+  # dan panel (alat pemantauan utama) hilang tanpa ada yang tahu. Sekarang dijaga seperti lane lain.
+  guard "dashboard" "run-dashboard-supervised.sh" "logs/dashboard-supervisor.out" "src/server.ts"
   sleep "$LOOP_SEC"
 done
