@@ -73,6 +73,15 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
       "pita $25–50k (v42)": "v42-liq25-50",
     },
   },
+  {
+    name: "KOHORT-6: keluar karena LIKUIDITAS vs kontrol (gate pita $25–50k identik)",
+    gate: "loose",
+    arms: {
+      "KONTROL keluar harga saja (v44)": "v44-liqexit-kontrol",
+      "likuiditas −50% (v45)": "v45-liqdrop50",
+      "likuiditas −35% (v46)": "v46-liqdrop35",
+    },
+  },
 ];
 
 const lines: string[] = [];

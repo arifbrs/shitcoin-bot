@@ -91,12 +91,18 @@ const COHORT2 = (process.env.RH_COHORT2 ?? "rug-gate-2026-10-08").trim();
 const COHORT3 = (process.env.RH_COHORT3 ?? "band-rasio-2026-10-09").trim();
 const COHORT4 = (process.env.RH_COHORT4 ?? "shield-2026-10-09").trim();
 const COHORT5 = (process.env.RH_COHORT5 ?? "stop-likuiditas-2026-10-10").trim();
+// KOHORT-6 (2026-10-11): perlindungan dipindah dari HARGA ke LIKUIDITAS. Alasan terukur: penutupan
+// stop_loss melewati nominal 55 poin (78% dari seluruh kerugian), sementara penutupan karena
+// likuiditas (liq_shield) hanya melewati 3,2 poin. Perlakukan sebagai hipotesis yang diuji, bukan
+// kebenaran: gate masuk HARUS identik dengan kontrolnya, dan hanya aturan likuiditas yang berbeda.
+const COHORT6 = (process.env.RH_COHORT6 ?? "liq-exit-2026-10-11").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort6) return COHORT6;
   if (v.cohort5) return COHORT5;
   if (v.cohort4) return COHORT4;
   if (v.cohort3) return COHORT3;
@@ -177,6 +183,8 @@ interface Variant {
    * stop lebih ketat) — karena itu keduanya diuji sebagai arm dengan KONTROL, bukan diterapkan.
    */
   cohort5?: boolean;
+  /** KOHORT-6: uji keluar-karena-likuiditas (gate masuk WAJIB sama dengan kontrolnya). */
+  cohort6?: boolean;
   /** Batas ATAS likuiditas masuk — pasangan dari minLiqUsd untuk menguji pita likuiditas. */
   maxLiqUsd?: number;
 }
@@ -286,6 +294,14 @@ const VARIANTS: Variant[] = [
   { id: "v41-liq25-100", label: "S5 pita liq $25–100k", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 100_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
   { id: "v42-liq25-50", label: "S5 pita liq $25–50k (bucket terbaik)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
   { id: "v43-liq-kontrol", label: "S5 KONTROL liq ≥$15k tanpa batas atas", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 15_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort5: true },
+  // ── KOHORT-6 (2026-10-11): PERLINDUNGAN DARI LIKUIDITAS, BUKAN DARI HARGA ────────────────────
+  // Gate masuk ketiganya IDENTIK dengan v42 (pita $25–50k) — hanya ATURAN KELUAR yang berbeda.
+  // Dasar: stop berbasis harga melewati nominal 55 poin (78% kerugian), sedangkan keluar karena
+  // likuiditas hanya melewati 3,2 poin. Kalau hipotesis ini benar, v45/v46 mengalahkan v44 secara
+  // berpasangan: token yang sama, gate yang sama, hanya perlindungannya yang beda.
+  { id: "v44-liqexit-kontrol", label: "S6 KONTROL pita 25–50k, keluar harga saja", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true },
+  { id: "v45-liqdrop50", label: "S6 keluar bila likuiditas −50% dari acuan", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true, exitLiqDropPct: 0.50 },
+  { id: "v46-liqdrop35", label: "S6 keluar bila likuiditas −35% dari acuan", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort6: true, exitLiqDropPct: 0.35 },
 ];
 
 interface Position {
