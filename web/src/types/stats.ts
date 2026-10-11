@@ -607,6 +607,16 @@ export interface StatsResponse {
   /** Lane DexScreener + OKX paper (push via SSE, 2026-10-08). */
   laneDex?: LaneDexResponse;
   laneOkxPaper?: LaneOkxPaperResponse;
+  /** Kartu kualitas eksekusi (2026-10-11): retensi harga pasca-keluar + ringkasan laporan alat. */
+  quality?: {
+    day?: string;
+    traceRows?: number;
+    retention?: Array<{ reason?: string; n?: number; p50?: number; p10?: number; vanished?: number }>;
+    stop?: { file?: string; mtime?: string; lines?: string[] } | null;
+    realism?: { file?: string; mtime?: string; lines?: string[] } | null;
+    okxArms?: { file?: string; mtime?: string; lines?: string[] } | null;
+    note?: string;
+  };
   /** Kesehatan lane dari mtime berkas state (2026-10-09) — kartu status TIDAK lagi hardcode AKTIF. */
   laneHealth?: Record<string, { ageSec: number | null; fresh: boolean }>;
   stall?: { launchAgeSec: number | null; decisionAgeSec: number | null; deadlocked: boolean; starved: boolean; stalled: boolean };

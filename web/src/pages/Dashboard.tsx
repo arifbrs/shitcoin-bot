@@ -24,6 +24,7 @@ import { LaneRobinhood } from "@/components/panels/LaneRobinhood";
 import { LaneGmgn } from "@/components/panels/LaneGmgn";
 import { LaneDex } from "@/components/panels/LaneDex";
 import { LaneOkxPaper } from "@/components/panels/LaneOkxPaper";
+import { QualityCard } from "@/components/panels/QualityCard";
 
 /** Kartu ringkas status lane untuk landing multi-lane (2026-10-07). */
 function LaneTag({ name, status, tone, note }: { name: string; status: string; tone: "up" | "dim"; note: string }) {
@@ -101,6 +102,7 @@ export default function Dashboard() {
             <LaneGmgn />
             <LaneDex data={data.laneDex} />
             <LaneOkxPaper data={data.laneOkxPaper} />
+            <QualityCard data={data.quality} />
             {/* OKX WEB3 PANEL — dipindah keluar dari lipatan "Lane Solana" pada 2026-10-08: lane OKX
                 kini HIDUP (radar/observatory/strict-paper jalan terus), jadi menyembunyikannya di
                 balik label "dihentikan" akan membuat panel yang benar terlihat seperti arsip. */}

@@ -17,6 +17,7 @@ import { Hero } from "../src/components/panels/Hero";
 import { LaneDex } from "../src/components/panels/LaneDex";
 import { LaneOkxPaper } from "../src/components/panels/LaneOkxPaper";
 import { ChartBars } from "../src/components/panels/CoinChart";
+import { QualityCard } from "../src/components/panels/QualityCard";
 import type { ChartCandleView } from "../src/types/stats";
 
 const data = JSON.parse(readFileSync("/tmp/st.json", "utf8"));
@@ -142,6 +143,24 @@ for (const [label, candles] of [
     const nan = /NaN|undefined|Infinity/.test(html);
     const bars = (html.match(/<rect/g) || []).length;
     console.log(`  ${label.padEnd(20)} ${String(bars).padStart(3)} batang · ${nan ? "*** NILAI RUSAK ***" : "bersih"}`);
+    if (nan) bad++;
+  } catch (e) {
+    console.log(`  ${label.padEnd(20)} *** GAGAL RENDER: ${(e as Error).message.slice(0, 60)}`);
+    bad++;
+  }
+}
+// KARTU KUALITAS (2026-10-11): harus selamat pada data kosong, data hilang, dan angka rusak —
+// kartu status yang menampilkan angka salah lebih buruk daripada kartu yang jujur kosong.
+for (const [label, q] of [
+  ["kualitas data asli", data.quality],
+  ["kualitas belum ada", undefined],
+  ["kualitas kosong", { day: data.quality?.day ?? "—", traceRows: 0, retention: [] }],
+  ["kualitas angka rusak", { day: "x", traceRows: NaN, retention: [{ reason: "take_profit", n: NaN, p50: NaN, p10: Infinity, vanished: 1 }] }],
+] as Array<[string, any]>) {
+  try {
+    const html = renderToStaticMarkup(<QualityCard data={q} />);
+    const nan = /NaN|undefined|Infinity/.test(html);
+    console.log(`  ${label.padEnd(20)} ${nan ? "*** NILAI RUSAK ***" : "bersih"}`);
     if (nan) bad++;
   } catch (e) {
     console.log(`  ${label.padEnd(20)} *** GAGAL RENDER: ${(e as Error).message.slice(0, 60)}`);
