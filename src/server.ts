@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
 import { config, configHash } from "./config.js";
 import { readControl, writeControl } from "./control.js";
+import { summarizeTraces } from "./robinhood/mark-trace.js";
 import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
 import { applyExecutionRealism } from "./execution/exec-realism.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
@@ -3113,6 +3114,54 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
       : buildOkxPaper();
     res.end(JSON.stringify(lane));
     return;
+  }
+
+  // KARTU KUALITAS EKSEKUSI (2026-10-11): data untuk kartu dashboard — retensi harga pasca-keluar
+  // (dihitung dari jejak hari ini dengan fungsi yang SAMA dipakai review & realism) plus ringkasan
+  // berkas laporan alat (kualitas stop, realisme keluar, arm OKX). Semua dari berkas lokal, nol API.
+  if (path === "/api/quality") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildQuality()));
+    return;
+  }
+
+  /** Ringkasan sebuah berkas laporan (nama, waktu tulis, baris penting) — atau null bila belum ada. */
+  function reportDigest(pat: RegExp): { file: string; mtime: string; lines: string[] } | null {
+    const files = readdirSync(config.logDir).filter((f) => pat.test(f)).sort();
+    const file = files[files.length - 1];
+    if (!file) return null;
+    try {
+      const full = join(config.logDir, file);
+      const lines = readFileSync(full, "utf8").split("\n").filter((l) => l.trim()).slice(0, 120);
+      return { file, mtime: statSync(full).mtime.toISOString(), lines };
+    } catch {
+      return null;
+    }
+  }
+
+  function buildQuality(): unknown {
+    const day = new Date().toISOString().slice(0, 10);
+    let retention: ReturnType<typeof summarizeTraces> = [];
+    let traceRows = 0;
+    try {
+      const rows = readFileSync(join(config.logDir, `rh-events-${day}.jsonl`), "utf8").split("\n")
+        .filter((l) => l.includes("rh-mark-after"))
+        .map((l) => { try { return JSON.parse(l) as { reason: string; exitPriceUsd: number; marks: Array<{ p: number | null }> }; } catch { return null; } })
+        .filter((r): r is { reason: string; exitPriceUsd: number; marks: Array<{ p: number | null }> } => r != null);
+      traceRows = rows.length;
+      retention = summarizeTraces(rows);
+    } catch { /* belum ada jejak hari ini */ }
+    return {
+      day,
+      traceRows,
+      retention,
+      stop: reportDigest(/^rh-stop-quality-\d{4}-\d{2}-\d{2}\.md$/),
+      realism: reportDigest(/^rh-realism-\d{4}-\d{2}-\d{2}\.md$/),
+      okxArms: reportDigest(/^okx-verdict-\d{4}-\d{2}-\d{2}\.md$/),
+      note: "retensi rendah pada take_profit = harga tidak bertahan sesudah keluar (untung di atas kertas)",
+    };
   }
 
   // CHART per koin (2026-10-08): permintaan MANUAL dari dashboard (klik koin), bukan polling.
