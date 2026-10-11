@@ -28,6 +28,7 @@ import { config, configHash } from "../config.js";
 import { logRecord, ui } from "../util/log.js";
 import { discoverPools, markTokens, gtTokenMarks, gtPoolMark, dexPromotedTokens, type PoolMetrics } from "./market.js";
 import { fetchRugSignals, rugFlags, type RugSignals } from "./rug-signals.js";
+import { readParityRows, computeParity, parityGaps } from "./ledger-parity.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
 
@@ -979,58 +980,69 @@ function reconcileLedgerOnStart(st: State): void {
       for (const v of j.voids ?? []) voids.add(`${v.variant}|${v.token}|${v.ts}`);
     } catch { /* belum ada */ }
     const files = readdirSync(config.logDir).filter((f) => f.startsWith("rh-paper-") && f.endsWith(".jsonl")).sort();
-    // Hitungan PER KUNCI (varian|token|life) — perbandingan berbasis jumlah, bukan tebak-menebak
-    // "apakah token ini masih dipegang". Inilah yang membuat 4 selisih tersisa tak pernah beres.
-    const openCount = new Map<string, number>();   // baris OPEN riil (non-reconciled, non-void)
-    const closeCount = new Map<string, number>();
-    const recOpen = new Map<string, number>();     // baris rekonsiliasi yang sudah pernah ditulis
-    const recClose = new Map<string, number>();
-    for (const f of files) {
-      for (const line of readFileSync(join(config.logDir, f), "utf8").split("\n")) {
-        if (!line.includes('"RH_')) continue;
-        try {
-          const r = JSON.parse(line) as { action?: string; variant?: string; token?: string; life?: number; reconciled?: boolean; ts?: string };
-          if (!r.action || !r.variant || !r.token) continue;
-          const key = `${r.variant}|${r.token}|${r.life ?? 1}`;
-          const isVoid = voids.has(`${r.variant}|${r.token}|${r.ts}`);
-          if (r.action === "RH_OPEN") { if (!isVoid) (r.reconciled ? recOpen : openCount).set(key, ((r.reconciled ? recOpen : openCount).get(key) ?? 0) + 1); }
-          else if (r.action === "RH_CLOSE") { if (!isVoid) (r.reconciled ? recClose : closeCount).set(key, ((r.reconciled ? recClose : closeCount).get(key) ?? 0) + 1); }
-        } catch { /* baris rusak */ }
-      }
-    }
-    let addedOpen = 0, addedClose = 0;
-    // Kebutuhan NYATA dari state: berapa posisi per (varian|token) yang benar-benar dipegang.
-    const held = new Map<string, number>();
+    void files;
+    // SATU RUMUS (2026-10-10): paritas dihitung modul bersama ledger-parity.ts — modul yang SAMA
+    // dipakai audit. Sebelum ini rekonsiliasi memakai baris NYATA sementara audit memakai baris
+    // EFEKTIF, sehingga rekonsiliasi menulis penyeimbang yang tidak pernah memuaskan audit → berputar.
+    const heldRaw = new Map<string, number>();
     for (const [id, vs] of Object.entries(st.variants)) {
-      for (const p of vs.positions ?? []) held.set(`${id}|${p.token}`, (held.get(`${id}|${p.token}`) ?? 0) + 1);
+      for (const p of vs.positions ?? []) heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
     }
-    // Sisi yang KURANG: state memegang posisi, ledger (non-reconciled) tidak mencatatnya cukup.
-    for (const [idToken, want] of held) {
-      const [id, token] = idToken.split("|") as [string, string];
-      const life = st.variants[id]?.life ?? 1;
-      const key = `${id}|${token}|${life}`;
-      const have = (openCount.get(key) ?? 0) - (closeCount.get(key) ?? 0);
-      for (let i = have; i < want; i++) {
+    const parityRows = readParityRows(config.logDir, voids);
+    // LIFE LEBIH BARU DI LEDGER (2026-10-10): ledger bersifat append-only dan memuat nomor life di
+    // tiap barisnya, jadi ia sumber kebenaran untuk life. Kalau state tertinggal (tersangka: tulisan
+    // state basi SEBELUM penjaga monotonik dipasang), state diselaraskan ke life ledger dan equity
+    // life itu dibangun ulang dari baris bersih. Posisi life lama dikosongkan — ia memang sudah mati.
+    const maxLife = new Map<string, number>();
+    for (const r of parityRows) {
+      const isOpen = r.action === "RH_OPEN" && !r.reconciled;
+      const isLife = r.action === "RH_LIFE";
+      // Baris CLOSE juga diperhitungkan: kalau proses sempat menutup posisi pada life yang lebih baru
+      // tetapi tulisan state-nya hilang, hanya baris CLOSE inilah yang memberi tahu bahwa life itu ada.
+      const isClose = r.action === "RH_CLOSE" && !r.reconciled;
+      if (!r.variant || (!isOpen && !isLife && !isClose)) continue;
+      maxLife.set(r.variant, Math.max(maxLife.get(r.variant) ?? 1, r.life ?? 1));
+    }
+    let lifeFixed = 0;
+    for (const [id, ml] of maxLife) {
+      const vs = st.variants[id];
+      if (!vs || (vs.life ?? 1) >= ml) continue;
+      const mine = parityRows.filter((r) => r.variant === id && r.action === "RH_CLOSE" && !r.reconciled && (r.life ?? 1) === ml);
+      const pnl = mine.reduce((a, c) => a + Number((c as { pnlUsd?: number }).pnlUsd ?? 0), 0);
+      ui.warn(`[rh-paper] life state tertinggal: ${id} state ${vs.life ?? 1} → ledger ${ml} (equity dibangun ulang: $${(100 + pnl).toFixed(2)}, ${mine.length} close)`);
+      vs.life = ml; vs.positions = []; vs.equityUsd = Number((100 + pnl).toFixed(4)); vs.realizedUsd = Number(pnl.toFixed(4));
+      vs.trades = mine.length; vs.wins = mine.filter((c) => Number((c as { pnlUsd?: number }).pnlUsd ?? 0) >= 0).length;
+      vs.losses = mine.length - vs.wins;
+      st.corrections = [...(st.corrections ?? []), { at: new Date().toISOString(), type: "life-bump-from-ledger", variant: id, to: ml, pnl }];
+      lifeFixed++;
+    }
+    if (lifeFixed) saveState(st);
+    const parity = computeParity(parityRows, heldRaw, (v) => st.variants[v]?.life ?? 1);
+    const gaps = parityGaps(parity);
+    let addedOpen = 0, addedClose = 0;
+    for (const [key, gap] of gaps) {
+      const [id, token] = key.split("|") as [string, string];
+      const life = Number(key.split("|")[2] ?? 1);
+      const heldHere = heldRaw.get(`${id}|${token}`) ?? 0;
+      if (gap < 0 && heldHere > 0) {
+        // state memegang posisi yang catatannya hilang → tulis OPEN penyeimbang sejumlah kekurangan
+        // itu saja. KUNCI KUNCI: jangan menulis untuk kekurangan yang bukan milik posisi dipegang —
+        // residual negatif pada life lama (sisa OPEN yang di-void) itu wajar dan tak perlu ditambal;
+        // menambalnya membuat penulisan berputar tanpa pernah menyelesaikan apa pun.
+        const kurang = Math.min(-gap, heldHere);
         const p = (st.variants[id]?.positions ?? []).find((x) => x.token === token);
-        logRecord("rh-paper", {
-          action: "RH_OPEN", reconciled: true, reason: "state punya posisi ini, baris catatannya hilang (proses berhenti sebelum mencatat)",
-          variant: id, token, symbol: p?.symbol ?? "?", pool: p?.pool, entryPriceUsd: p?.entryPrice,
-          notionalUsd: p?.notionalUsd, stopPct: p?.stopPct, tpPct: p?.tpPct, life, cohort: st.cohort, cfg: configHash,
-        });
-        addedOpen++;
-      }
-    }
-    // Sisi yang LEBIH: ledger mencatat buka tanpa penutupan, sementara state tidak memegangnya.
-    // Semantik DISAMAKAN dengan audit: baris rekonsiliasi DIABAIKAN (ia scaffolding, bukan riwayat),
-    // dan perbandingan dilakukan per-kunci termasuk life — kunci life lama tidak mungkin dipegang.
-    const keys = new Set([...openCount.keys(), ...closeCount.keys()]);
-    for (const key of keys) {
-      const [id, token, lifeStr] = key.split("|") as [string, string, string];
-      const keyLife = Number(lifeStr ?? 1);
-      const curLife = st.variants[id]?.life ?? 1;
-      const residual = (openCount.get(key) ?? 0) - (closeCount.get(key) ?? 0);
-      const want = keyLife === curLife ? (held.get(`${id}|${token}`) ?? 0) : 0;
-      for (let i = want; i < residual; i++) {
+        for (let i = 0; i < kurang; i++) {
+          logRecord("rh-paper", {
+            action: "RH_OPEN", reconciled: true, reason: "state punya posisi ini, baris catatannya hilang (proses berhenti sebelum mencatat)",
+            variant: id, token, symbol: p?.symbol ?? "?", pool: p?.pool, entryPriceUsd: p?.entryPrice,
+            notionalUsd: p?.notionalUsd, stopPct: p?.stopPct, tpPct: p?.tpPct, life, cohort: st.cohort, cfg: configHash,
+          });
+          addedOpen++;
+        }
+      } else if (gap > 0 && !parity.reconciledCloseKeys.has(key)) {
+        // ledger mencatat buka yang tidak dipegang state → SATU baris penjelas per kunci sudah cukup
+        // (baris rekonsiliasi TIDAK mengurangi residual — ia menjelaskan; menulis berkali-kali hanya
+        //  membuat log membengkak tanpa menambah kebenaran).
         logRecord("rh-paper", {
           action: "RH_CLOSE", reconciled: true, reason: "rekonsiliasi_startup (state sudah menutup posisi ini; baris catatannya hilang)",
           variant: id, token, symbol: "?", pnlUsd: 0, pnlPct: 0, life: Number(key.split("|")[2] ?? 1), cohort: st.cohort, cfg: configHash,
@@ -1038,32 +1050,8 @@ function reconcileLedgerOnStart(st: State): void {
         addedClose++;
       }
     }
-    // 3) PENYEIMBANG (2026-10-09): pernah ada CLOSE rekonsiliasi yang ditulis dari aturan lama yang
-    // salah (kunci life berjalan dianggap life lama), sehingga OPEN yang SAH ikut terbuang dari
-    // hitungan. Karena riwayat tidak dihapus, pasangannya ditulis ulang sebagai OPEN rekonsiliasi —
-    // pasangan OPEN+CLOSE rekonsiliasi ini eksplisit, terhitung, dan tidak menyembunyikan apa pun.
-    for (const key of recClose.keys()) {
-      const [id, token, lifeStr] = key.split("|") as [string, string, string];
-      const keyLife = Number(lifeStr ?? 1);
-      const curLife = st.variants[id]?.life ?? 1;
-      if (keyLife !== curLife) continue;                       // hanya untuk life berjalan
-      const want = held.get(`${id}|${token}`) ?? 0;
-      if (want === 0) continue;                                 // state tidak memegangnya → tak perlu
-      // Sisa SETELAH memperhitungkan baris rekonsiliasi — syarat lama (`openCount === 0`) melewatkan
-      // kasus yang justru paling sering: OPEN sah ada, tetapi CLOSE rekonsiliasi lama "memakannya".
-      const have = (openCount.get(key) ?? 0) + (recOpen.get(key) ?? 0) - (closeCount.get(key) ?? 0) - (recClose.get(key) ?? 0);
-      for (let i = have; i < want; i++) {
-        const p = (st.variants[id]?.positions ?? []).find((x) => x.token === token);
-        logRecord("rh-paper", {
-          action: "RH_OPEN", reconciled: true, reason: "penyeimbang: posisi ini NYATA (dipegang state); CLOSE rekonsiliasi lama salah menutupnya",
-          variant: id, token, symbol: p?.symbol ?? "?", pool: p?.pool, entryPriceUsd: p?.entryPrice,
-          notionalUsd: p?.notionalUsd, stopPct: p?.stopPct, tpPct: p?.tpPct, life: curLife, cohort: st.cohort, cfg: configHash,
-        });
-        addedOpen++;
-      }
-    }
-    if (addedOpen || addedClose) ui.warn(`[rh-paper] rekonsiliasi ledger: +${addedOpen} OPEN dan +${addedClose} CLOSE ditulis (bertanda reconciled, tidak diaudit)`);
-    else if (!addedOpen && !addedClose) ui.info("[rh-paper] ledger konsisten dengan state — tidak ada yang perlu direkonsiliasi");
+    if (addedOpen || addedClose) ui.warn(`[rh-paper] rekonsiliasi ledger: +${addedOpen} OPEN dan +${addedClose} CLOSE ditulis (bertanda reconciled, tidak diaudit)${addedOpen ? ` · kunci: ${[...gaps].filter(([, g]) => g < 0).map(([k, g]) => `${k}(${g})`).slice(0, 3).join(" ")}` : ""}`);
+    else ui.info("[rh-paper] ledger konsisten dengan state — tidak ada yang perlu direkonsiliasi");
   } catch (e) {
     ui.warn(`[rh-paper] rekonsiliasi ledger gagal: ${(e as Error).message}`);
   }

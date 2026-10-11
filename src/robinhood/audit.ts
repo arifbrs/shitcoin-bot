@@ -30,6 +30,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { readParityRows, computeParity, parityGaps } from "./ledger-parity.js";
 
 const DEX_FEE_PCT = 0.003, GAS_USD = 0.01, RISK_USD = 5, MAX_NOTIONAL = 25, START_EQUITY = 100;
 const slipPct = (notional: number, liq: number | null): number =>
@@ -282,39 +283,43 @@ for (const list of dupeTimes.values()) {
 // dibandingkan sendiri: sisa positif = posisi yang seharusnya masih dipegang.
 // Selisih yang PUNYA PENJELASAN TERCATAT (baris rekonsiliasi untuk kunci itu) dihitung terpisah —
 // tidak disembunyikan, tapi juga tidak lagi membuat seluruh pemeriksaan merah tanpa alasan jelas.
-// Hanya OPEN RIIL yang boleh "dimakan" CLOSE rekonsiliasi. OPEN rekonsiliasi adalah baris
-// penyeimbang yang memang ditulis untuk posisi yang DIPEGANG state — ia harus tetap terhitung.
-const opensEffective = opens.filter((o) => {
-  const key = `${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`;
-  return o["reconciled"] === true || !reconciledCloseKeys.has(key);
-});
-const keyResidual = new Map<string, number>();
-for (const o of opensEffective) keyResidual.set(`${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`, (keyResidual.get(`${o["variant"]}|${o["token"]}|${o["life"] ?? 1}`) ?? 0) + 1);
-for (const c of closes) keyResidual.set(`${c["variant"]}|${c["token"]}|${c["life"] ?? 1}`, (keyResidual.get(`${c["variant"]}|${c["token"]}|${c["life"] ?? 1}`) ?? 0) - 1);
+// SATU RUMUS (2026-10-10): paritas dihitung modul bersama `ledger-parity.ts` — modul yang SAMA
+// dipakai rekonsiliasi di paper.ts. Sebelum ini audit dan rekonsiliasi memakai basis berbeda
+// (baris efektif vs baris nyata) sehingga keduanya tak pernah bertemu: audit merah, rekonsiliasi
+// menulis penyeimbang, audit tetap merah.
+const heldRaw = new Map<string, number>();
+const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Array<{ token: string }>; life?: number }>;
+for (const [id, vs] of Object.entries(stateVariants)) {
+  for (const p of vs.positions ?? []) heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
+}
+const parity = computeParity(readParityRows(config.logDir, VOID_KEYS), heldRaw, (v) => stateVariants[v]?.life ?? 1);
+const keyResidual = parity.residual;
 let expectedOpen = 0, explainedKeys = 0;
 // (perhitungan per-kunci ditangani blok di bawah)
-const stateHeld = new Map<string, number>();
-for (const [id, vs] of Object.entries((state.variants ?? {}) as Record<string, { positions?: Array<{ token: string }>; life?: number }>)) {
-  for (const p of vs.positions ?? []) stateHeld.set(`${id}|${p.token}|${vs.life ?? 1}`, (stateHeld.get(`${id}|${p.token}|${vs.life ?? 1}`) ?? 0) + 1);
-}
+const stateHeld = parity.held;
 // KOREKSI 2026-10-09: sisa positif per kunci BUKAN otomatis anomali — ia cocok dengan posisi yang
 // memang dipegang state (re-entry dalam life yang sama: buka → tutup → buka lagi). Yang benar-benar
 // salah adalah SELISIH antara sisa itu dan jumlah yang dipegang, per kunci.
 let unexplainedGap = 0;
 const unexplainedList: string[] = [];
-for (const [key, r] of keyResidual) {
-  if (r <= 0) continue;
-  expectedOpen += r;
-  const heldHere = stateHeld.get(key) ?? 0;
-  const gap = r - heldHere;
-  if (gap <= 0) continue;
-  if (reconciledCloseKeys.has(key)) { explainedKeys += gap; continue; }
-  unexplainedGap += gap;
-  unexplainedList.push(`${key} (+${gap} vs state ${heldHere})`);
-}
-// Sisi sebaliknya: state memegang lebih banyak daripada yang dicatat ledger.
 let extraHeld = 0;
-for (const [key, held] of stateHeld) extraHeld += Math.max(0, held - Math.max(0, keyResidual.get(key) ?? 0));
+for (const [key, gapRaw] of parityGaps(parity)) {
+  const heldHere = stateHeld.get(key) ?? 0;
+  const r = keyResidual.get(key) ?? 0;
+  if (r > 0) expectedOpen += r;
+  if (gapRaw > 0) {
+    // Selisih yang punya penjelasan tercatat (baris rekonsiliasi) dihitung terpisah — tidak
+    // disembunyikan, tapi juga tidak membuat seluruh pemeriksaan merah tanpa alasan jelas.
+    if (parity.reconciledCloseKeys.has(key)) { explainedKeys += gapRaw; continue; }
+    unexplainedGap += gapRaw;
+    unexplainedList.push(`${key} (+${gapRaw} vs state ${heldHere})`);
+  } else if (gapRaw < 0) {
+    // Sisi sebaliknya: state memegang lebih banyak daripada yang dicatat ledger. Residual NEGATIF
+    // tanpa posisi dipegang BUKAN anomali — itu wajar bagi kunci yang OPEN-nya di-void sementara
+    // CLOSE-nya tetap ada. Yang dihitung hanya kelebihan yang BENAR-BENAR dipegang state.
+    extraHeld += Math.max(0, heldHere - Math.max(0, r));
+  }
+}
 const parityOk = unexplainedGap === 0 && extraHeld === 0;
 console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
 console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50) · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
