@@ -38,6 +38,13 @@ import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
 
 const CYCLE_MS = intEnv(process.env.RH_PAPER_CYCLE_MS, 180_000, 30_000);
+/**
+ * HALAMAN POOLS PER SIKLUS (2026-10-12, permintaan operator: "perluas penemuan kandidat").
+ * Memperbanyak kandidat yang DILIHAT — TIDAK mengubah gate masuk varian mana pun, jadi eksperimen
+ * tetap sah. Rem otomatis tetap berlaku: TokenBucket + cooldown 429 (45s) di market.ts; kalau
+ * rate-limit naik, angkanya akan terlihat di log dan langkah ini dibalik.
+ */
+const DISCOVERY_TOP_PAGES = intEnv(process.env.RH_DISCOVERY_TOP_PAGES, 1, 1);
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const START_EQUITY_USD = numEnv(process.env.RH_START_EQUITY_USD, 100, 10);
 const MAX_OPEN = intEnv(process.env.RH_MAX_OPEN, 8, 1);
@@ -939,7 +946,7 @@ async function cycle(): Promise<void> {
   cycleRunning = true;
   const t0 = Date.now();
   try {
-    const discovered = await discoverPools();
+    const discovered = await discoverPools({ topPages: DISCOVERY_TOP_PAGES });
     if (!discovered.length) { ui.warn("[rh-paper] discovery kosong (rate limit?) — siklus dilewati"); return; }
 
     // Token tanpa harga/likuiditas dari GT (biasanya jalur dex-promoted) → ambil via mark batch.
