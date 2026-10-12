@@ -100,6 +100,15 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
       "TP tahan 6 tick (v52)": "v52-tp-tahan6-b",
     },
   },
+  {
+    name: "KOHORT-8: tanpa trailing vs dengan trailing vs keluar-likuiditas (gate v42 identik)",
+    gate: "loose",
+    arms: {
+      "DENGAN trailing (v42)": "v42-liq25-50",
+      "tanpa trailing KONTROL (v54)": "v54-tanpa-trail-kontrol",
+      "tanpa trailing + likuiditas −35% (v53)": "v53-liqexit-tanpa-trail",
+    },
+  },
 ];
 
 const lines: string[] = [];

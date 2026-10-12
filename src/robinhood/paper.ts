@@ -101,12 +101,14 @@ const COHORT6 = (process.env.RH_COHORT6 ?? "liq-exit-2026-10-11").trim();
 // sesudah keluar (retensi p50 0% dari 3.000+ jejak) → mungkin TP hanya tersentuh satu tick lonjakan
 // yang tidak bisa dijual. Arm: tahan 3 / 6 tick vs kontrol (langsung, perilaku lama).
 const COHORT7 = (process.env.RH_COHORT7 ?? "tp-hold-2026-10-11").trim();
+const COHORT8 = (process.env.RH_COHORT8 ?? "liq-tanpa-trail-2026-10-11").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort8) return COHORT8;
   if (v.cohort7) return COHORT7;
   if (v.cohort6) return COHORT6;
   if (v.cohort5) return COHORT5;
@@ -191,10 +193,18 @@ interface Variant {
   cohort5?: boolean;
   /** KOHORT-6: uji keluar-karena-likuiditas (gate masuk WAJIB sama dengan kontrolnya). */
   cohort6?: boolean;
+  /** KOHORT-8: buang trailing, keluar lewat likuiditas (gate sama dengan v42). */
+  cohort8?: boolean;
   /** KOHORT-7: uji TP harus BERTAHAN (gate masuk wajib sama dengan kontrolnya). */
   cohort7?: boolean;
   /** Berapa tick beruntun harga harus ≥ ambang TP sebelum dijual. 0/undefined = perilaku lama. */
   tpHoldTicks?: number;
+  /**
+   * BLOKIR ENTRY (2026-10-11). Dipakai untuk arm yang SUDAH TERJAWAB atau tidak mungkin menang:
+   * kandidat terbatas, jadi arm yang tak berguna hanya memecah aliran bukti. Posisi yang sudah
+   * terbuka tetap ditutup normal — yang diblokir hanya entry BARU.
+   */
+  entryBlocked?: boolean;
   /** Batas ATAS likuiditas masuk — pasangan dari minLiqUsd untuk menguji pita likuiditas. */
   maxLiqUsd?: number;
 }
@@ -316,17 +326,22 @@ const VARIANTS: Variant[] = [
   // Gate masuk IDENTIK dengan v42/v44 (pita $25–50k); hanya ATURAN TP yang berbeda. Kalau hipotesis
   // "lonjakan satu tick tidak bisa dijual" benar, arm tahan mengalahkan kontrol; kalau salah, tahan
   // justru kehilangan puncak dan kontrol menang — keduanya jawaban yang berguna.
-  { id: "v47-tp-kontrol", label: "S7 KONTROL jual pada sentuhan TP", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true },
-  { id: "v48-tp-tahan3", label: "S7 TP harus bertahan 3 tick (≈30s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 3 },
-  { id: "v49-tp-tahan6", label: "S7 TP harus bertahan 6 tick (≈60s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 6 },
+  { id: "v47-tp-kontrol", label: "S7 KONTROL jual pada sentuhan TP", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true },
+  { id: "v48-tp-tahan3", label: "S7 TP harus bertahan 3 tick (≈30s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true, tpHoldTicks: 3 },
+  { id: "v49-tp-tahan6", label: "S7 TP harus bertahan 6 tick (≈60s)", stopPct: 40, tpPct: 250, trailFromPct: 100, trailPct: 40, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true, tpHoldTicks: 6 },
   // ── KOHORT-7b (2026-10-11): PERBAIKAN DESAIN — trailing DIMATIKAN ─────────────────────────────
   // Temuan: arm 7a (v47–v49) memberi hasil IDENTIK sampai sen karena trailing (+100%) menyala lebih
   // dulu daripada TP (+250%) — aturan "TP harus bertahan" tak pernah dieksekusi. Uji yang tidak
   // menguji apa pun bukan hasil. Arm 7b: trailing dilepas, hanya TP yang bisa menutup (selain stop
   // dan batas hold), jadi syarat tahan benar-benar menjadi variabelnya.
-  { id: "v50-tp-kontrol-b", label: "S7b KONTROL jual pada sentuhan TP (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true },
-  { id: "v51-tp-tahan3-b", label: "S7b TP harus bertahan 3 tick (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 3 },
-  { id: "v52-tp-tahan6-b", label: "S7b TP harus bertahan 6 tick (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, tpHoldTicks: 6 },
+  { id: "v50-tp-kontrol-b", label: "S7b KONTROL jual pada sentuhan TP (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true },
+  { id: "v51-tp-tahan3-b", label: "S7b TP harus bertahan 3 tick (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true, tpHoldTicks: 3 },
+  { id: "v52-tp-tahan6-b", label: "S7b TP harus bertahan 6 tick (tanpa trailing)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort7: true, entryBlocked: true, tpHoldTicks: 6 },
+  // ── KOHORT-8 (2026-10-11): BUANG TRAILING, KELUAR LEWAT LIKUIDITAS ────────────────────────
+  // Bukti: trailing retensi p50 55% (46% harga lenyap — terburuk), liq_shield retensi 100%.
+  // v42 (gate sama, masih pakai trailing) jadi pembanding ketiga.
+  { id: "v53-liqexit-tanpa-trail", label: "S8 tanpa trailing · keluar bila likuiditas −35%", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort8: true, exitLiqDropPct: 0.35 },
+  { id: "v54-tanpa-trail-kontrol", label: "S8 KONTROL tanpa trailing (keluar harga saja)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort8: true },
 ];
 
 interface Position {
@@ -559,6 +574,7 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   const stopRisk = v.stopPct / 100;
   let notional = Math.min(RISK_USD / stopRisk, MAX_NOTIONAL_USD, vs.equityUsd * 0.5);
   if (m.liqUsd != null && m.liqUsd > 0) notional = Math.min(notional, m.liqUsd * 0.02);
+  if (v.entryBlocked) return false; // arm yang sudah terjawab — jangan tambah sampel (lihat komentar di Variant)
   if (notional < 2) return false;
   // PENJAGA RISIKO (item 7, 2026-10-11): kill switch / batas rugi harian / batas modal / batas
   // posisi. Semua batas DEFAULT 0 = tidak dibatasi, jadi memasang penjaga ini TIDAK mengubah
