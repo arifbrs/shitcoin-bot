@@ -33,6 +33,7 @@ import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { commitState, shouldBlockClose } from "./state-store.js";
 import { MARK_TRACE_MAX, shouldCaptureNow, traceFinished } from "./mark-trace.js";
 import { tpHoldSatisfied, nextTpHoldStreak } from "./tp-hold.js";
+import { readPool, onchainExitReason, type OnchainBaseline } from "./onchain-liq.js";
 import { loadLimits, checkEntryAllowed } from "../risk/limits.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
@@ -45,6 +46,15 @@ const CYCLE_MS = intEnv(process.env.RH_PAPER_CYCLE_MS, 180_000, 30_000);
  * rate-limit naik, angkanya akan terlihat di log dan langkah ini dibalik.
  */
 const DISCOVERY_TOP_PAGES = intEnv(process.env.RH_DISCOVERY_TOP_PAGES, 1, 1);
+
+// ── PEMANTAU ON-CHAIN (celah #1, 2026-10-12) ────────────────────────────────────────────────
+// Dasar terukur: pool RH = V3-style → liquidity() & slot0() terbaca (probe 0528c32). Sinyalnya:
+// likuiditas turun tajam (LP ditarik) ATAU harga on-chain jatuh — KEDUANYA dari rantai, bukan mark.
+// Saklar balik: RH_ONCHAIN_LIQ=0 mematikan seluruh jalur ini (nol perubahan pada lane).
+const ONCHAIN_ENABLED = (process.env.RH_ONCHAIN_LIQ ?? "1") !== "0";
+const ONCHAIN_POLL_MS = intEnv(process.env.RH_ONCHAIN_POLL_MS, 20_000, 5_000);
+const ONCHAIN_DROP_PCT = numEnv(process.env.RH_ONCHAIN_DROP_PCT, 0.35, 0.05);
+const ONCHAIN_RPC = process.env.ROBINHOOD_RPC_URL?.trim() || "https://rpc.mainnet.chain.robinhood.com";
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const START_EQUITY_USD = numEnv(process.env.RH_START_EQUITY_USD, 100, 10);
 const MAX_OPEN = intEnv(process.env.RH_MAX_OPEN, 8, 1);
@@ -413,6 +423,10 @@ interface State {
   riskDay?: { date: string; equityUsd: number };
   /** Jejak harga pasca-keluar (2026-10-11): 3 mark setelah penutupan, untuk membuktikan mark bisa dijual. */
   markTrace?: MarkTrace[];
+  /** Acuan on-chain per pool (likuiditas + sqrtPriceX96 saat pertama terlihat) — celah #1. */
+  onchainBase?: Record<string, OnchainBaseline>;
+  /** Kapan pool terakhir dibaca dari rantai (rem laju RPC per pool). */
+  onchainCheckedAt?: Record<string, number>;
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -844,6 +858,47 @@ async function markAndExit(st: State, now: number): Promise<number> {
 }
 
 /**
+ * KELUAR KARENA RANTAI (celah #1): baca liquidity()+slot0() untuk pool yang sedang dipegang, dan
+ * keluar SEBELUM harga menyentuh stop bila (a) likuiditas hilang ≥ ambang atau (b) harga on-chain
+ * jatuh ≥ ambang terhadap acuan. Harga keluar memakai mark terakhir (konservatif) — yang diperbaiki
+ * jalur ini adalah WAKTUNYA, bukan model harganya, dan itu akan terlihat di rh:stop/rh:realism.
+ */
+async function onchainExits(st: State, now: number): Promise<void> {
+  if (!ONCHAIN_ENABLED) return;
+  st.onchainBase = st.onchainBase ?? {};
+  st.onchainCheckedAt = st.onchainCheckedAt ?? {};
+  let changed = false;
+  for (const v of VARIANTS) {
+    const vs = st.variants[v.id] as VariantState;
+    for (const pos of [...vs.positions]) {
+      const pool = pos.pool;
+      if (!pool) continue;
+      if (now - (st.onchainCheckedAt[pool] ?? 0) < ONCHAIN_POLL_MS) continue;
+      st.onchainCheckedAt[pool] = now;
+      const snap = await readPool(ONCHAIN_RPC, pool, null);
+      if (!snap) continue; // kontrak tak menjawab → tidak mengarang apa pun, dicoba lagi nanti
+      const base = st.onchainBase[pool];
+      if (!base) {
+        st.onchainBase[pool] = { liq: snap.liq.toString(), sqrtPriceX96: snap.sqrtPriceX96.toString(), at: now };
+        changed = true;
+        continue;
+      }
+      const reason = onchainExitReason(snap, base, ONCHAIN_DROP_PCT);
+      if (!reason) continue;
+      logRecord("rh-events", {
+        type: "rh-onchain-liq", reason, token: pos.token, symbol: pos.symbol, variant: v.id, pool,
+        liqBefore: base.liq, liqNow: snap.liq.toString(), dropPct: ONCHAIN_DROP_PCT,
+        sqrtBefore: base.sqrtPriceX96, sqrtNow: snap.sqrtPriceX96.toString(),
+        src: "chain-rh-v3", cohort: st.cohort, cfg: configHash,
+      });
+      closePosition(st, v, vs, pos, pos.lastPrice, pos.poolLiqUsd ?? pos.entryLiqUsd ?? null, reason, now);
+      changed = true;
+    }
+  }
+  if (changed) saveState(st, "onchain");
+}
+
+/**
  * Ambil mark pasca-keluar untuk jejak yang slot waktunya sudah jatuh tempo (1/3/5 menit).
  *
  * Anggaran jaringan sengaja kecil: SATU panggilan batch per tick untuk semua token yang jatuh tempo
@@ -928,6 +983,7 @@ async function markTick(): Promise<void> {
     // JEJAK PASCA-KELUAR: dijalankan SETELAH state tersimpan, dengan anggaran jaringan kecil
     // (hanya token yang slot waktunya jatuh tempo) supaya kadens mark tidak terganggu.
     await capturePostExit(st, now);
+    await onchainExits(st, now);
     if (exits) logRecord("rh-events", { type: "rh-mark", exits, cohort: st.cohort, cfg: configHash });
     // Penantian >5 detik berarti mark tertahan fase lain — catat supaya kadens nyatanya terbaca.
     if (heldMs > 5_000) logRecord("rh-events", { type: "rh-mark-delayed", waitedMs: heldMs, cohort: st.cohort, cfg: configHash });
