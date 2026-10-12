@@ -366,6 +366,16 @@ async function runReview(): Promise<void> {
       say(`  (${cmd} gagal disegarkan: ${(e as Error).message.slice(0, 80)})`);
     }
   }
+  // penghitung jalur baru ikut dilaporkan otomatis (celah #1 + penjaga risiko), supaya laporan
+  // pagi tidak bergantung pada siapa pun yang ingat menjalankan sesuatu.
+  try {
+    const evDay = join(config.logDir, `rh-events-${day}.jsonl`);
+    const rows = existsSync(evDay) ? readFileSync(evDay, "utf8").split("\n").filter((l) => l.trim()) : [];
+    const hitung = (t: string): number => rows.filter((l) => l.includes(`"${t}"`)).length;
+    say(`  jalur baru hari ini: on-chain liq=${hitung("rh-onchain-liq")} · risiko ditolak=${hitung("rh-risk-block")} · tulis-basi ditolak=${hitung("rh-stale-save-blocked")} · jejak diselamatkan=${hitung("rh-marktrace-preserved")} · penutupan ganda ditahan=${hitung("rh-close-dedup-block")}`);
+  } catch (e) {
+    say(`  (penghitung jalur baru gagal: ${(e as Error).message.slice(0, 70)})`);
+  }
   // Ringkasan alat lain dibaca dari berkas laporannya (tidak menjalankan ulang alat di sini).
   for (const [label, pat] of [
     ["KUALITAS STOP", /^rh-stop-quality-\d{4}-\d{2}-\d{2}\.md$/],
