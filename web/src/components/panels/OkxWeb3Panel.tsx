@@ -184,8 +184,9 @@ export function OkxWeb3Panel() {
     .find((row) => row.policyVersion === 6);
   const fastDecision = [...(data.paper.candidateDecisionLatency ?? [])].reverse()
     .find((row) => row.policyVersion === 6 && row.lane === "toplist");
-  const pausedPaperSources = Array.isArray(data.paper.latestStatus?.pausedSources)
-    ? (data.paper.latestStatus?.pausedSources as Array<{ source?: string }>).map((row) => row.source).filter(Boolean)
+  const pausedSources = data.paper.latestStatus?.pausedSources;
+  const pausedPaperSources = Array.isArray(pausedSources)
+    ? pausedSources.flatMap((row: unknown) => row && typeof row === "object" && "source" in row && typeof row.source === "string" ? [row.source] : [])
     : [];
 
   return (

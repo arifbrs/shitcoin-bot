@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * MODE SWITCH RENDER CHECK — executes the exec-mode control for real and asserts the LIVE
  * button is locked whenever the .env permission is absent.
@@ -153,7 +154,7 @@ adapterCase("baris live berlabel LIVE + ada nominal SOL", (d) => <TradeJournal d
   console.log(`  ${ok ? "✓" : "✗"} ${"jurnal simulasi tidak tersentuh".padEnd(40)} ${ok ? "S1/S2, tanpa kolom SOL" : "*** ikut berubah ***"}`);
 }
 adapterCase("exit quality = aturan live", (d) => <ExitQuality data={d} />, { mustShow: ["EARLY_CUT"], mustNotShow: ["TRAIL_STOP"] });
-adapterCase("posisi = kosong bila tak ada bag", (d) => <OpenPositions data={d} />, { mustShow: ["no open positions"] });
+adapterCase("posisi = kosong bila tak ada bag", (d) => <OpenPositions data={d} />, { mustShow: ["tidak ada bag live"] });
 { // runs tidak berlaku di live — jangan tampilkan riwayat simulasi di bawah judul live
   const v = toLiveView(BASE as never) as Any;
   const html = renderToStaticMarkup(<RunLedger data={v} />);

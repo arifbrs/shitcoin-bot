@@ -153,15 +153,7 @@ export interface Strategy2Scout {
   candidates: ScoutCandidate[];
 }
 
-// ── Cross-cutting (used by both Strategy 2 and legacy panels) ─────────────────
-
-/**
- * ONE bankroll in USD. Strategy 1 trades in SOL and Strategy 2 in USD; showing them as two
- * separate accounts meant wins scrolled through the journal while the headline balance sat
- * still. Money is combined here at the live rate; strategy stays a property of each trade.
- * Every USD field is null when no live SOL price is available — the SOL leg cannot be valued
- * without one, and guessing it is worse than saying so.
- */
+/** Combined USD valuation; USD fields remain null when the SOL price is unavailable. */
 export interface CombinedWallet {
   solUsd: number | null;
   totalUsd: number | null;

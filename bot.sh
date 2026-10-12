@@ -102,7 +102,7 @@ else:
         print(f"  RH: {tot} posisi terbuka" + (f" · {', '.join(str(s) for s in syms[:8])}" if syms else " (menunggu kandidat)"))
     except Exception as e:
         print(f"  RH: state RUSAK — {e}")
-print("  Solana S1/S2: dihentikan 2026-10-07 (lane mati, data lama tetap di logs/)")
+print("  Solana S1/S2: dihentikan 2026-10-07 (lane mati, data lama tetap di logs/) — DINILAI GAGAL oleh operator 2026-10-11: pernah dicoba live, hasilnya nihil; jangan dihidupkan kembali tanpa rencana baru")
 PY
   return $(( ${#PROCS[@]} - live ))
 }

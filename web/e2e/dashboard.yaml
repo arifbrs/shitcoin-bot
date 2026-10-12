@@ -1,0 +1,9 @@
+url: http://127.0.0.1:4317/app
+name: Dashboard navigation
+---
+- launchApp
+- assertVisible: "Semua pergerakan."
+- takeScreenshot: dashboard-overview
+- tapOn: 'button[aria-label="Buka lane Robinhood"]'
+- assertVisible: 'input[type="search"]'
+- takeScreenshot: dashboard-robinhood
