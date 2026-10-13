@@ -427,6 +427,8 @@ interface State {
   onchainBase?: Record<string, OnchainBaseline>;
   /** Kapan pool terakhir dibaca dari rantai (rem laju RPC per pool). */
   onchainCheckedAt?: Record<string, number>;
+  /** Kapan kegagalan baca terakhir DILAPORKAN per pool (rem log, bukan rem baca). */
+  onchainFailLogged?: Record<string, number>;
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -891,8 +893,19 @@ async function onchainExits(st: State, now: number): Promise<void> {
       if (!pool) continue;
       if (now - (st.onchainCheckedAt[pool] ?? 0) < ONCHAIN_POLL_MS) continue;
       st.onchainCheckedAt[pool] = now;
-      const snap = await readPool(ONCHAIN_RPC, pool, null);
-      if (!snap) continue; // kontrak tak menjawab → tidak mengarang apa pun, dicoba lagi nanti
+      const hasil = await readPool(ONCHAIN_RPC, pool, null);
+      if (!hasil.ok) {
+        // BERSUARA, bukan senyap (pelajaran dari bug 2026-10-13: gagal berjam-jam tanpa jejak).
+        // Dibatasi satu laporan per pool agar log tidak dibanjiri, dan jumlahnya ikut dilaporkan.
+        const sudah = (st.onchainFailLogged ?? {})[pool];
+        if (!sudah || now - sudah > 600_000) {
+          logRecord("rh-events", { type: "rh-onchain-fail", pool, reason: hasil.reason, cfg: configHash });
+          st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [pool]: now };
+        }
+        changed = true; // simpan jejak kegagalan supaya terlihat di state, bukan hanya di memori
+        continue;
+      }
+      const snap = hasil.snap;
       const base = st.onchainBase[pool];
       if (!base) {
         st.onchainBase[pool] = { liq: snap.liq.toString(), sqrtPriceX96: snap.sqrtPriceX96.toString(), at: now };

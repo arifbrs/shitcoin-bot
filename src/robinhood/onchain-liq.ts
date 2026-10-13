@@ -61,13 +61,21 @@ export function onchainExitReason(
   return null;
 }
 
-/** Baca likuiditas + harga dari rantai. Mengembalikan null bila kontrak tak menjawab (bukan mengarang). */
+export type OnchainRead =
+  | { ok: true; snap: OnchainSnapshot }
+  | { ok: false; reason: string };
+
+/**
+ * Baca likuiditas + harga dari rantai. Kegagalan DIKEMBALIKAN SEBAGAI ALASAN, bukan null senyap:
+ * kelas bug yang baru saja terjadi — jalur ini gagal berjam-jam tanpa satu pun jejak di log, sehingga
+ * "0 keluar on-chain" tampak seperti "tidak ada peluang" padahal bisa berarti "tidak pernah membaca".
+ */
 export async function readPool(
   rpcUrl: string,
   pool: string,
   blockHint: number | null,
-): Promise<OnchainSnapshot | null> {
-  const call = async (data: string): Promise<string | null> => {
+): Promise<OnchainRead> {
+  const call = async (data: string): Promise<{ hex: string } | { err: string }> => {
     try {
       const res = await fetch(rpcUrl, {
         method: "POST",
@@ -75,25 +83,31 @@ export async function readPool(
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: pool, data }, "latest"] }),
         signal: AbortSignal.timeout(8_000),
       });
+      if (!res.ok) return { err: `HTTP ${res.status}` };
       const j = (await res.json()) as { result?: string; error?: { message?: string } };
-      if (j.error || typeof j.result !== "string" || j.result.length < 66) return null;
-      return j.result;
-    } catch {
-      return null;
+      if (j.error) return { err: String(j.error.message ?? "rpc error").slice(0, 90) };
+      if (typeof j.result !== "string" || j.result.length < 66) return { err: `balasan tak terduga (${typeof j.result}, len ${String(j.result).length})` };
+      return { hex: j.result };
+    } catch (e) {
+      return { err: `fetch: ${String((e as Error).message ?? e).slice(0, 70)}` };
     }
   };
-  const liqHex = await call("0x1a686502");
-  const slotHex = await call("0x3850c7bd");
-  if (!liqHex || !slotHex) return null;
+  const liqRes = await call("0x1a686502");
+  if ("err" in liqRes) return { ok: false, reason: `liquidity(): ${liqRes.err}` };
+  const slotRes = await call("0x3850c7bd");
+  if ("err" in slotRes) return { ok: false, reason: `slot0(): ${slotRes.err}` };
   try {
     return {
-      pool,
-      liq: BigInt(liqHex),
-      sqrtPriceX96: BigInt("0x" + slotHex.slice(2, 66)),
-      block: blockHint ?? 0,
-      at: Date.now(),
+      ok: true,
+      snap: {
+        pool,
+        liq: BigInt(liqRes.hex),
+        sqrtPriceX96: BigInt("0x" + slotRes.hex.slice(2, 66)),
+        block: blockHint ?? 0,
+        at: Date.now(),
+      },
     };
-  } catch {
-    return null;
+  } catch (e) {
+    return { ok: false, reason: `parse: ${String((e as Error).message ?? e).slice(0, 60)}` };
   }
 }
