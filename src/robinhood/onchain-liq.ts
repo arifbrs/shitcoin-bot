@@ -111,3 +111,67 @@ export async function readPool(
     return { ok: false, reason: `parse: ${String((e as Error).message ?? e).slice(0, 60)}` };
   }
 }
+
+
+// ── BATCH (2026-10-13, menjawab akar HTTP 403) ───────────────────────────────────────────────
+// Temuan: RPC publik RH menerima panggilan pool tetapi membalas 403 saat lane memanggil BANYAK pool
+// per tick. Solusinya: SATU permintaan HTTP berisi banyak panggilan (JSON-RPC batch) → jumlah
+// permintaan turun ~2×jumlah pool menjadi 1, sehingga tekanan ke endpoint jauh lebih kecil.
+
+export interface PoolBatchResult {
+  pool: string;
+  ok: boolean;
+  liq?: bigint;
+  sqrtPriceX96?: bigint;
+  reason?: string;
+}
+
+/** Isi permintaan batch untuk sekumpulan pool: id menyandi indeks+jenis, supaya hasil bisa dipetakan. */
+export function batchBody(pools: readonly string[]): Array<{ jsonrpc: string; id: string; method: string; params: unknown[] }> {
+  const out: Array<{ jsonrpc: string; id: string; method: string; params: unknown[] }> = [];
+  pools.forEach((pool, i) => {
+    out.push({ jsonrpc: "2.0", id: `${i}:liq`, method: "eth_call", params: [{ to: pool, data: "0x1a686502" }, "latest"] });
+    out.push({ jsonrpc: "2.0", id: `${i}:slot`, method: "eth_call", params: [{ to: pool, data: "0x3850c7bd" }, "latest"] });
+  });
+  return out;
+}
+
+/** Petakan hasil batch kembali ke per-pool. Yang tidak lengkap DILAPORKAN alasannya, bukan dibuang. */
+export function parseBatch(pools: readonly string[], payload: unknown): PoolBatchResult[] {
+  const byId = new Map<string, { result?: string; error?: { message?: string } }>();
+  const arr = Array.isArray(payload) ? payload : [];
+  for (const item of arr) {
+    const it = item as { id?: unknown; result?: unknown; error?: { message?: string } };
+    if (typeof it?.id === "string") byId.set(it.id, { result: typeof it.result === "string" ? it.result : undefined, error: it.error });
+  }
+  return pools.map((pool, i) => {
+    const liq = byId.get(`${i}:liq`);
+    const slot = byId.get(`${i}:slot`);
+    if (!liq?.result || !slot?.result) {
+      const why = liq?.error?.message ?? slot?.error?.message ?? "tak ada balasan untuk id ini";
+      return { pool, ok: false, reason: String(why).slice(0, 90) };
+    }
+    try {
+      return { pool, ok: true, liq: BigInt(liq.result), sqrtPriceX96: BigInt("0x" + slot.result.slice(2, 66)) };
+    } catch (e) {
+      return { pool, ok: false, reason: `parse: ${String((e as Error).message ?? e).slice(0, 60)}` };
+    }
+  });
+}
+
+/** Satu permintaan HTTP untuk SEMUA pool. Kegagalan jaringan → semua pool dilaporkan gagal (jujur). */
+export async function readPoolsBatch(rpcUrl: string, pools: readonly string[]): Promise<PoolBatchResult[]> {
+  if (!pools.length) return [];
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(batchBody(pools)),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return pools.map((pool) => ({ pool, ok: false, reason: `HTTP ${res.status} (batch)` }));
+    return parseBatch(pools, await res.json());
+  } catch (e) {
+    return pools.map((pool) => ({ pool, ok: false, reason: `fetch batch: ${String((e as Error).message ?? e).slice(0, 60)}` }));
+  }
+}

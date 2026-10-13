@@ -1,5 +1,5 @@
-import { test, eq, approx } from "../testing/harness.js";
-import { liquidityDropPct, priceRatio, onchainExitReason, type OnchainSnapshot, type OnchainBaseline } from "./onchain-liq.js";
+import { test, eq, approx, assert } from "../testing/harness.js";
+import { liquidityDropPct, priceRatio, onchainExitReason, batchBody, parseBatch, type OnchainSnapshot, type OnchainBaseline } from "./onchain-liq.js";
 
 const base = (liq: bigint, sqrt: bigint): OnchainBaseline => ({ liq: liq.toString(), sqrtPriceX96: sqrt.toString(), at: 0 });
 const snap = (liq: bigint, sqrt: bigint): OnchainSnapshot => ({ pool: "0xpool", liq, sqrtPriceX96: sqrt, block: 1, at: 1 });
@@ -34,4 +34,25 @@ test("onchain: harga on-chain jatuh juga bisa memicu (konfirmasi independen dari
 test("onchain: LP ditarik diprioritaskan di atas harga (sebab paling berbahaya)", () => {
   const sqrtAfter = BigInt(Math.round(Number(S) * Math.sqrt(0.1)));
   eq(onchainExitReason(snap(100_000n, sqrtAfter), base(L, S), 0.35), "onchain_lp_pull", "dua-duanya menyala → nama LP ditarik");
+});
+
+test("onchain batch: permintaan disusun per pool (liq+slot) dengan id yang bisa dipetakan", () => {
+  const body = batchBody(["0xaa", "0xbb"]);
+  eq(body.length, 4, "2 pool × 2 panggilan");
+  eq(body[0]!.id, "0:liq", "id pool pertama liquidity");
+  eq(body[1]!.id, "0:slot", "id pool pertama slot0");
+  eq(body[2]!.id, "1:liq", "id pool kedua liquidity");
+});
+
+test("onchain batch: hasil dipetakan kembali, yang hilang dilaporkan alasannya", () => {
+  const payload = [
+    { id: "0:liq", result: "0x" + "0".repeat(63) + "a" },
+    { id: "0:slot", result: "0x" + "0".repeat(63) + "5" },
+    { id: "1:liq", error: { message: "HTTP 403" } },
+  ];
+  const out = parseBatch(["0xaa", "0xbb"], payload);
+  eq(out[0]!.ok, true, "pool pertama lengkap");
+  eq(out[0]!.liq, 10n, "nilai liq terbaca");
+  eq(out[1]!.ok, false, "pool kedua gagal");
+  assert(String(out[1]!.reason).includes("403"), "alasan menyebut 403");
 });

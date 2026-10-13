@@ -33,7 +33,7 @@ import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
 import { commitState, shouldBlockClose } from "./state-store.js";
 import { MARK_TRACE_MAX, shouldCaptureNow, traceFinished } from "./mark-trace.js";
 import { tpHoldSatisfied, nextTpHoldStreak } from "./tp-hold.js";
-import { readPool, onchainExitReason, type OnchainBaseline } from "./onchain-liq.js";
+import { readPoolsBatch, onchainExitReason, liquidityDropPct, priceRatio, type OnchainBaseline, type OnchainSnapshot } from "./onchain-liq.js";
 import { loadLimits, checkEntryAllowed } from "../risk/limits.js";
 import { gmgnEnabled } from "../discovery/gmgn.js";
 import { sleep } from "../util/http.js";
@@ -54,6 +54,9 @@ const DISCOVERY_TOP_PAGES = intEnv(process.env.RH_DISCOVERY_TOP_PAGES, 1, 1);
 const ONCHAIN_ENABLED = (process.env.RH_ONCHAIN_LIQ ?? "1") !== "0";
 const ONCHAIN_POLL_MS = intEnv(process.env.RH_ONCHAIN_POLL_MS, 20_000, 5_000);
 const ONCHAIN_DROP_PCT = numEnv(process.env.RH_ONCHAIN_DROP_PCT, 0.35, 0.05);
+// Ambang OBSERVASI (tidak memicu keluar): penurunan mendekati ambang dicatat sebagai data, supaya
+// "kejadian nyata" bisa diukur lebih cepat TANPA mengubah aturan keluar 35%.
+const ONCHAIN_WATCH_PCT = numEnv(process.env.RH_ONCHAIN_WATCH_PCT, 0.15, 0.05);
 const ONCHAIN_RPC = process.env.ROBINHOOD_RPC_URL?.trim() || "https://rpc.mainnet.chain.robinhood.com";
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const START_EQUITY_USD = numEnv(process.env.RH_START_EQUITY_USD, 100, 10);
@@ -885,44 +888,63 @@ async function onchainExits(st: State, now: number): Promise<void> {
   if (!ONCHAIN_ENABLED) return;
   st.onchainBase = st.onchainBase ?? {};
   st.onchainCheckedAt = st.onchainCheckedAt ?? {};
-  let changed = false;
+  // 1) kumpulkan pool yang jatuh tempo — SATU kali per pool, secepat mungkin dikirim sebagai batch
+  const due = new Map<string, { v: Variant; vs: VariantState; pos: Position }>();
   for (const v of VARIANTS) {
     const vs = st.variants[v.id] as VariantState;
     for (const pos of [...vs.positions]) {
-      const pool = pos.pool;
-      if (!pool) continue;
-      if (now - (st.onchainCheckedAt[pool] ?? 0) < ONCHAIN_POLL_MS) continue;
-      st.onchainCheckedAt[pool] = now;
-      const hasil = await readPool(ONCHAIN_RPC, pool, null);
-      if (!hasil.ok) {
-        // BERSUARA, bukan senyap (pelajaran dari bug 2026-10-13: gagal berjam-jam tanpa jejak).
-        // Dibatasi satu laporan per pool agar log tidak dibanjiri, dan jumlahnya ikut dilaporkan.
-        const sudah = (st.onchainFailLogged ?? {})[pool];
-        if (!sudah || now - sudah > 600_000) {
-          logRecord("rh-events", { type: "rh-onchain-fail", pool, reason: hasil.reason, cfg: configHash });
-          st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [pool]: now };
-        }
-        changed = true; // simpan jejak kegagalan supaya terlihat di state, bukan hanya di memori
-        continue;
-      }
-      const snap = hasil.snap;
-      const base = st.onchainBase[pool];
-      if (!base) {
-        st.onchainBase[pool] = { liq: snap.liq.toString(), sqrtPriceX96: snap.sqrtPriceX96.toString(), at: now };
-        changed = true;
-        continue;
-      }
-      const reason = onchainExitReason(snap, base, ONCHAIN_DROP_PCT);
-      if (!reason) continue;
-      logRecord("rh-events", {
-        type: "rh-onchain-liq", reason, token: pos.token, symbol: pos.symbol, variant: v.id, pool,
-        liqBefore: base.liq, liqNow: snap.liq.toString(), dropPct: ONCHAIN_DROP_PCT,
-        sqrtBefore: base.sqrtPriceX96, sqrtNow: snap.sqrtPriceX96.toString(),
-        src: "chain-rh-v3", cohort: st.cohort, cfg: configHash,
-      });
-      closePosition(st, v, vs, pos, pos.lastPrice, pos.poolLiqUsd ?? pos.entryLiqUsd ?? null, reason, now);
-      changed = true;
+      if (!pos.pool || due.has(pos.pool)) continue;
+      if (now - (st.onchainCheckedAt[pos.pool] ?? 0) < ONCHAIN_POLL_MS) continue;
+      due.set(pos.pool, { v, vs, pos });
     }
+  }
+  if (!due.size) return;
+  const pools = [...due.keys()];
+  for (const pl of pools) st.onchainCheckedAt[pl] = now;
+  // 2) SATU permintaan HTTP untuk semua pool (akar HTTP 403: dulu 2 panggilan per pool per tick)
+  const hasil = await readPoolsBatch(ONCHAIN_RPC, pools);
+  let changed = true; // jejak cek berubah → disimpan supaya rem laju bertahan antar-tick
+  for (const h of hasil) {
+    const ctx = due.get(h.pool);
+    if (!ctx) continue;
+    if (!h.ok) {
+      const sudah = (st.onchainFailLogged ?? {})[h.pool];
+      if (!sudah || now - sudah > 600_000) {
+        logRecord("rh-events", { type: "rh-onchain-fail", pool: h.pool, reason: h.reason, cfg: configHash });
+        st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [h.pool]: now };
+      }
+      continue;
+    }
+    const snap: OnchainSnapshot = { pool: h.pool, liq: h.liq as bigint, sqrtPriceX96: h.sqrtPriceX96 as bigint, block: 0, at: now };
+    const base = st.onchainBase[h.pool];
+    if (!base) {
+      st.onchainBase[h.pool] = { liq: snap.liq.toString(), sqrtPriceX96: snap.sqrtPriceX96.toString(), at: now };
+      continue;
+    }
+    const drop = liquidityDropPct(BigInt(base.liq), snap.liq);
+    const rasioHarga = priceRatio(BigInt(base.sqrtPriceX96), snap.sqrtPriceX96);
+    // OBSERVASI: penurunan mendekati ambang dicatat sebagai DATA (tidak keluar) — supaya pertanyaan
+    // "seberapa sering pool turun tajam?" bisa dijawab sebelum ambang 35% pernah tersentuh.
+    if (drop >= ONCHAIN_WATCH_PCT && drop < ONCHAIN_DROP_PCT) {
+      const sudah = (st.onchainFailLogged ?? {})[`watch:${h.pool}`];
+      if (!sudah || now - sudah > 600_000) {
+        logRecord("rh-events", {
+          type: "rh-onchain-watch", pool: h.pool, symbol: ctx.pos.symbol, variant: ctx.v.id,
+          liqBefore: base.liq, liqNow: snap.liq.toString(), dropPct: Number(drop.toFixed(4)),
+          hargaRasio: Number(rasioHarga.toFixed(4)), ambangKeluar: ONCHAIN_DROP_PCT, cfg: configHash,
+        });
+        st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [`watch:${h.pool}`]: now };
+      }
+    }
+    const reason = onchainExitReason(snap, base, ONCHAIN_DROP_PCT);
+    if (!reason) continue;
+    logRecord("rh-events", {
+      type: "rh-onchain-liq", reason, token: ctx.pos.token, symbol: ctx.pos.symbol, variant: ctx.v.id, pool: h.pool,
+      liqBefore: base.liq, liqNow: snap.liq.toString(), dropPct: ONCHAIN_DROP_PCT,
+      sqrtBefore: base.sqrtPriceX96, sqrtNow: snap.sqrtPriceX96.toString(),
+      src: "chain-rh-v3", cohort: st.cohort, cfg: configHash,
+    });
+    closePosition(st, ctx.v, ctx.vs, ctx.pos, ctx.pos.lastPrice, ctx.pos.poolLiqUsd ?? ctx.pos.entryLiqUsd ?? null, reason, now);
   }
   if (changed) saveState(st, "onchain");
 }
