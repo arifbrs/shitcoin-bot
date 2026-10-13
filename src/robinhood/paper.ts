@@ -486,6 +486,22 @@ function saveState(s: State, by = "?"): void {
       logRecord("rh-events", { type: "rh-marktrace-preserved", by, missing: missing.length, mine: mine.length, disk: (disk.markTrace ?? []).length, cfg: configHash });
       s.markTrace = [...mine, ...missing].slice(-MARK_TRACE_MAX);
     }
+    // CACAT YANG SAMA, KELAS YANG SAMA (2026-10-13): `onchainBase`/`onchainCheckedAt` (celah #1)
+    // sempat ADA di berkas lalu HILANG — persis seperti markTrace dulu. Penyebabnya satu: penulisan
+    // dari salinan yang lebih tua tidak memuat field baru, dan penjaga hanya melindungi markTrace.
+    // Sekarang ketiganya dilindungi dengan aturan yang sama: field yang ada di BERKAS tapi tidak ada
+    // di salinan ini TIDAK boleh hilang — dilaporkan sebagai `rh-state-field-preserved`.
+    const diskAny = disk as Record<string, unknown>;
+    for (const f of ["onchainBase", "onchainCheckedAt"] as const) {
+      const diskVal = diskAny[f] as Record<string, unknown> | undefined;
+      const mineVal = (s as unknown as Record<string, unknown>)[f] as Record<string, unknown> | undefined;
+      const diskN = diskVal ? Object.keys(diskVal).length : 0;
+      const mineN = mineVal ? Object.keys(mineVal).length : 0;
+      if (diskN > mineN) {
+        logRecord("rh-events", { type: "rh-state-field-preserved", by, field: f, disk: diskN, mine: mineN, cfg: configHash });
+        (s as unknown as Record<string, unknown>)[f] = diskVal;
+      }
+    }
   } catch { /* state belum ada — lanjut */ }
   // PENJAGA TULISAN BASI (2026-10-10) — kelas penutupan ganda yang akhirnya TERBUKTI mekanismenya
   // lewat instrumentasi: salinan state LAMA ditulis menimpa yang baru, sehingga `closedKeys` dan
