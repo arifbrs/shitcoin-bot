@@ -57,6 +57,11 @@ const ONCHAIN_DROP_PCT = numEnv(process.env.RH_ONCHAIN_DROP_PCT, 0.35, 0.05);
 // Ambang OBSERVASI (tidak memicu keluar): penurunan mendekati ambang dicatat sebagai data, supaya
 // "kejadian nyata" bisa diukur lebih cepat TANPA mengubah aturan keluar 35%.
 const ONCHAIN_WATCH_PCT = numEnv(process.env.RH_ONCHAIN_WATCH_PCT, 0.15, 0.05);
+// CIRCUIT-BREAKER (2026-10-13): 4.224 kegagalan terkumpul karena pool non-V3 dipoll terus tiap 20s.
+// Setelah N gagal BERUNTUN, pool itu dilewati lama (6 jam) — hemat kuota RPC dan deraunya hilang,
+// sementara kegagalan sejati (pool V3 yang tiba-tiba tidak menjawab) tetap terlihat.
+const ONCHAIN_FAIL_LIMIT = intEnv(process.env.RH_ONCHAIN_FAIL_LIMIT, 3, 1);
+const ONCHAIN_SKIP_MS = intEnv(process.env.RH_ONCHAIN_SKIP_MS, 6 * 3_600_000, 60_000);
 const ONCHAIN_RPC = process.env.ROBINHOOD_RPC_URL?.trim() || "https://rpc.mainnet.chain.robinhood.com";
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const START_EQUITY_USD = numEnv(process.env.RH_START_EQUITY_USD, 100, 10);
@@ -432,6 +437,9 @@ interface State {
   onchainCheckedAt?: Record<string, number>;
   /** Kapan kegagalan baca terakhir DILAPORKAN per pool (rem log, bukan rem baca). */
   onchainFailLogged?: Record<string, number>;
+  /** Gagal beruntun per pool (circuit-breaker) + sampai kapan pool dilewati. */
+  onchainFails?: Record<string, number>;
+  onchainSkipUntil?: Record<string, number>;
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
    * sebelumnya field ini tidak ada di tipe State sehingga DIHAPUS setiap lane menulis state —
@@ -894,6 +902,7 @@ async function onchainExits(st: State, now: number): Promise<void> {
     const vs = st.variants[v.id] as VariantState;
     for (const pos of [...vs.positions]) {
       if (!pos.pool || due.has(pos.pool)) continue;
+      if (now < (st.onchainSkipUntil?.[pos.pool] ?? 0)) continue; // circuit-breaker: pool dilewati
       if (now - (st.onchainCheckedAt[pos.pool] ?? 0) < ONCHAIN_POLL_MS) continue;
       due.set(pos.pool, { v, vs, pos });
     }
@@ -908,13 +917,22 @@ async function onchainExits(st: State, now: number): Promise<void> {
     const ctx = due.get(h.pool);
     if (!ctx) continue;
     if (!h.ok) {
-      const sudah = (st.onchainFailLogged ?? {})[h.pool];
-      if (!sudah || now - sudah > 600_000) {
-        logRecord("rh-events", { type: "rh-onchain-fail", pool: h.pool, reason: h.reason, cfg: configHash });
-        st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [h.pool]: now };
+      const gagal = (st.onchainFails?.[h.pool] ?? 0) + 1;
+      st.onchainFails = { ...(st.onchainFails ?? {}), [h.pool]: gagal };
+      if (gagal >= ONCHAIN_FAIL_LIMIT) {
+        st.onchainSkipUntil = { ...(st.onchainSkipUntil ?? {}), [h.pool]: now + ONCHAIN_SKIP_MS };
+        logRecord("rh-events", { type: "rh-onchain-skip", pool: h.pool, gagal, dilewatiJam: Number((ONCHAIN_SKIP_MS / 3_600_000).toFixed(1)), reasonTerakhir: h.reason, cfg: configHash });
+      } else {
+        const sudah = (st.onchainFailLogged ?? {})[h.pool];
+        if (!sudah || now - sudah > 600_000) {
+          logRecord("rh-events", { type: "rh-onchain-fail", pool: h.pool, reason: h.reason, gagalKe: gagal, cfg: configHash });
+          st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [h.pool]: now };
+        }
       }
       continue;
     }
+    // berhasil → hitungan gagal beruntun direset (pool sehat lagi)
+    if ((st.onchainFails?.[h.pool] ?? 0) > 0) st.onchainFails = { ...(st.onchainFails ?? {}), [h.pool]: 0 };
     const snap: OnchainSnapshot = { pool: h.pool, liq: h.liq as bigint, sqrtPriceX96: h.sqrtPriceX96 as bigint, block: 0, at: now };
     const base = st.onchainBase[h.pool];
     if (!base) {
