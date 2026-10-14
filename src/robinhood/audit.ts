@@ -383,8 +383,13 @@ for (const [key, gapRaw] of parityGaps(parity)) {
     // KELONGGARAN SIMETRIS (2026-10-11): posisi yang baru lahir <60 detik boleh belum punya
     // barisnya (lane menyimpan state dulu, mencatat kemudian) — sisi atas pun sudah begitu.
     if (freshHeldKeys.has(key)) { freshGap += -gapRaw; continue; }
-    extraHeldKeys.push(key);
-    extraHeld += Math.max(0, heldHere - Math.max(0, r));
+    // HANYA KUNCI YANG BENAR-BENAR MENYUMBANG (2026-10-13): sebelumnya nama kunci didorong ke daftar
+    // SEBELUM menghitung sumbangannya, sehingga audit bisa MENUDUH kunci yang sumbangannya nol
+    // (terbukti pada v10-degen|0x9dbc…: gap −1, held 0 → sumbangan 0, tapi namanya tercetak).
+    // Alat diagnosis yang menyebut nama salah lebih buruk daripada tidak menyebut nama.
+    const sumbangan = Math.max(0, heldHere - Math.max(0, r));
+    if (sumbangan > 0) extraHeldKeys.push(key);
+    extraHeld += sumbangan;
   }
 }
 const parityOk = unexplainedGap === 0 && extraHeld === 0;
