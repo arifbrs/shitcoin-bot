@@ -415,5 +415,8 @@ console.log(`\nRINGKAS: total rugi $${totalLoss.toFixed(2)} · PnL bersih $${tot
 // Gagal bila: aritmetika melenceng, identity melenceng, sizing menyimpang, ada kunci posisi yang
 // tak terjelaskan (selisih yang punya baris rekonsiliasi TIDAK menggagalkan — itu sudah dilaporkan
 // dengan nama kuncinya), ATAU ada baris warisan di luar toleransi yang BELUM terdaftar di karantina.
-const failed = maxDiff > 0.01 || lifeMismatch > 0 || sizeMismatch > 0 || !parityOk || legacyUnlisted > 0;
+// CELAH YANG DITUTUP (2026-10-13): `dupCount` (tutup-dobel) dulu hanya DILAPORKAN, tidak menggagalkan
+// audit — padahal kelas inilah yang pernah membukukan PnL dua kali (kerusakan buku nyata). Sekarang
+// ia ikut menggagalkan: kelas berbahaya tidak boleh jadi informasi pasif.
+const failed = maxDiff > 0.01 || lifeMismatch > 0 || sizeMismatch > 0 || !parityOk || legacyUnlisted > 0 || dupCount > 0;
 process.exit(failed ? 1 : 0);
