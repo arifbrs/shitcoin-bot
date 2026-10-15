@@ -19,6 +19,11 @@ info(){ printf "  ${D}%s${N}\n" "$1"; }
 # MULTI-LANE (2026-10-07): dashboard + GMGN + Robinhood. Lane Solana dimatikan oleh owner.
 # DASHBOARD DIMATIKAN (2026-10-13): operator mematikannya → ia tidak dihitung sebagai lane yang
 # seharusnya jalan (kalau tidak, status akan selalu tampak "silang" padahal itu keputusan sadar).
+# SAKLAR DARI .env (2026-10-13): skrip bash tidak memuat .env, sehingga DASHBOARD_DISABLED di sana
+# TIDAK terlihat — akibatnya status tetap menghitung dashboard sebagai silang padahal sengaja mati.
+# Dibaca di sini (tanpa menyentuh rahasia lain) supaya keputusan operator benar-benar berlaku.
+if [ -f .env ]; then DASHBOARD_DISABLED=$(grep -E '^DASHBOARD_DISABLED=' .env | tail -1 | cut -d= -f2- | tr -d ' \r'); fi
+
 SUPERVISORS=(gmgn robinhood analisa dexscreener okx okx-paper)
 [ "${DASHBOARD_DISABLED:-0}" != "1" ] && SUPERVISORS=(dashboard "${SUPERVISORS[@]}")
 # DASHBOARD DIMATIKAN (2026-10-13): entri prosesnya ikut dilepas supaya status tidak menghitungnya
@@ -94,7 +99,11 @@ for label, pat, sup, limit in checks:
         print(f"  \033[31m✗ DIAM\033[0m {label}: tulis {age:.0f}m lalu (batas {limit}m)")
 PYCHK
   echo "── PORT ──"
-  lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1 && ok "4317 dashboard" || bad "4317 kosong"
+  if [ "${DASHBOARD_DISABLED:-0}" = "1" ]; then
+    info "4317 dashboard — DIMATIKAN (sengaja, lihat PLAN_PROGRESS.md)"
+  else
+    lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1 && ok "4317 dashboard" || bad "4317 kosong"
+  fi
   echo "── POSISI TERBUKA ──"
   python3 - <<'PY' 2>/dev/null || info "state belum bisa dibaca"
 import json,os
