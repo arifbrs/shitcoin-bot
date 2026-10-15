@@ -136,12 +136,14 @@ const COHORT8 = (process.env.RH_COHORT8 ?? "liq-tanpa-trail-2026-10-11").trim();
 // IDENTIK dengan kontrolnya (stopPct tetap 40 untuk perhitungan ukuran posisi — yang dilepas hanya
 // PENGECEKAN stop-nya), sehingga variabel yang diuji benar-benar satu: stop harga ada atau tidak.
 const COHORT9 = (process.env.RH_COHORT9 ?? "tanpa-stop-harga-2026-10-13").trim();
+const COHORT10 = (process.env.RH_COHORT10 ?? "fee-nyata-2026-10-13").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
 function cohortTagOf(v: { cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort10) return COHORT10;
   if (v.cohort9) return COHORT9;
   if (v.cohort8) return COHORT8;
   if (v.cohort7) return COHORT7;
@@ -234,6 +236,15 @@ interface Variant {
   cohort9?: boolean;
   /** Lepas PENGECEKAN stop harga saja; stopPct tetap dipakai untuk ukuran posisi. */
   noPriceStop?: boolean;
+  /**
+   * KOHORT-10 (2026-10-13): FEE NYATA per pool. Temuan dari rantai: pool yang kita pegang punya fee
+   * tier 1,00% (0x64) sedangkan paper memodelkan 0,30%/sisi → setiap PnL paper terlalu optimistis
+   * 1,4% per putaran. Arm kohort-10 memakai fee 1,00% yang TERVERIFIKASI; kontrolnya tetap 0,30%,
+   * sehingga kita melihat berapa besar edge yang sebenarnya tersisa — tanpa menyunting kohort lama.
+   */
+  dexFeePct?: number;
+  /** KOHORT-10: uji biaya nyata vs model (lihat catatan dexFeePct). */
+  cohort10?: boolean;
   /** KOHORT-7: uji TP harus BERTAHAN (gate masuk wajib sama dengan kontrolnya). */
   cohort7?: boolean;
   /** Berapa tick beruntun harga harus ≥ ambang TP sebelum dijual. 0/undefined = perilaku lama. */
@@ -384,6 +395,11 @@ const VARIANTS: Variant[] = [
   // ── KOHORT-9 (2026-10-13): TANPA STOP HARGA, andalkan keluar on-chain ───────────────────────
   { id: "v55-tanpa-stop-harga", label: "S9 tanpa stop harga (on-chain + hold)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort9: true, noPriceStop: true },
   { id: "v56-kontrol-stop", label: "S9 KONTROL dengan stop harga (pembanding berpasangan)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort9: true },
+  // ── KOHORT-10 (2026-10-13): FEE NYATA 1,00% vs model 0,30% (validitas biaya) ────────────────
+  // Konfigurasi sama dengan anchor (pita 25–50k, tanpa trailing, keluar likuiditas −35%); yang
+  // berbeda HANYA model biaya. Kalau edge hilang di arm fee-nyata → edge itu artefak biaya.
+  { id: "v57-fee-nyata-1pct", label: "S10 fee NYATA 1,00% (terverifikasi rantai)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort10: true, exitLiqDropPct: 0.35, dexFeePct: 0.01 },
+  { id: "v58-fee-model-03pct", label: "S10 KONTROL fee model 0,30% (cara paper lama)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort10: true, exitLiqDropPct: 0.35, dexFeePct: 0.003 },
 ];
 
 interface Position {
@@ -672,8 +688,9 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
     logRecord("rh-events", { type: "rh-risk-block", variant: v.id, token: m.tokenAddress, symbol: m.symbol, reason: risk.reason, cohort: st.cohort, cfg: configHash });
     return false;
   }
+  const feePct = v.dexFeePct ?? DEX_FEE_PCT;
   const slip = slipPct(notional, m.liqUsd);
-  const cost = notional * (DEX_FEE_PCT + slip) + GAS_USD;
+  const cost = notional * (feePct + slip) + GAS_USD;
   const tokensRaw = (notional - cost) / m.priceUsd;
   const pos: Position = {
     token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress, openedAt: now, entryPrice: m.priceUsd, tokensRaw,
@@ -740,7 +757,7 @@ function closePosition(st: State, v: Variant, vs: VariantState, pos: Position, p
   if (reason === "mark_basi") exitPrice = (price || pos.entryPrice) * 0.5; // tidak ada mark 20 mnt → realistis 50%
   const gross = pos.tokensRaw * exitPrice;
   const slip = slipPct(gross, liqUsd ?? pos.entryLiqUsd);
-  const proceeds = gross * (1 - DEX_FEE_PCT - slip) - GAS_USD;
+  const proceeds = gross * (1 - (v.dexFeePct ?? DEX_FEE_PCT) - slip) - GAS_USD;
   const pnl = proceeds - pos.notionalUsd;
   vs.equityUsd += pnl;
   vs.realizedUsd += pnl;
