@@ -564,8 +564,17 @@ function saveState(s: State, by = "?"): void {
   // ia dicatat sebagai peristiwa dan ditampilkan.
   const res = commitState(STATE_PATH, s);
   if (!res.written) {
-    logRecord("rh-events", { type: "rh-stale-save-blocked", mine: (s.stateWrites ?? 0) + 1, disk: res.diskWrites, cfg: configHash });
-    ui.warn(`[rh-paper] TOLAK tulis state basi (punyaku #${(s.stateWrites ?? 0) + 1}, berkas #${res.diskWrites}) — mencegah timpa-meniimpa`);
+    logRecord("rh-events", { type: "rh-stale-save-blocked", by, mine: (s.stateWrites ?? 0) + 1, disk: res.diskWrites, cfg: configHash });
+    ui.warn(`[rh-paper] TOLAK tulis state basi oleh \`${by}\` (punyaku #${(s.stateWrites ?? 0) + 1}, berkas #${res.diskWrites}).`);
+    // AKAR PENUTUPAN DOBEL YANG TERSISA (2026-10-13): penulis yang tulisannya DITOLAK tetap
+    // MELANJUTKAN dan menulis baris ledger untuk aksi (mis. penutupan posisi) yang tak pernah
+    // tersimpan di state. Proses berikutnya — yang membaca state dari berkas — mengulang aksi itu,
+    // dan jadilah dobel (terukur: 2 pasangan baru, audit menggagalkannya). Jadi penulis basi harus
+    // BERHENTI, bukan melanjutkan: keluarnya terkendali, supervisor menghidupkan ulang, dan proses
+    // baru membaca state yang benar.
+    logRecord("rh-events", { type: "rh-state-writer-yield", by, cfg: configHash });
+    ui.warn(`[rh-paper] berhenti terkendali: ${by} bukan lagi penulis state (proses lain memegang berkas).`);
+    process.exit(1);
   }
 }
 
