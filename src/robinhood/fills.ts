@@ -53,8 +53,39 @@ async function main(): Promise<void> {
     if (wethOut && tokIn) {
       const w = Number(BigInt(wethOut.data)) / 1e18;
       const t = KNOWN[tokIn.address.toLowerCase()] ? Number(BigInt(tokIn.data)) / 1e18 : null;
-      if (t && t > 0) console.log(`     harga efektif: ${(w / t).toFixed(8)} WETH per token (dibayar ${w.toFixed(6)} WETH untuk ${t.toFixed(6)} token)`);
+      if (t && t > 0) {
+        console.log(`     harga efektif: ${(w / t).toFixed(8)} WETH per token (dibayar ${w.toFixed(6)} WETH untuk ${t.toFixed(6)} token)`);
+        const mid = await poolPriceAtBlock(tx, e.block);
+        if (mid) console.log(`     pembanding pool: ${mid}`);
+      }
     }
+  }
+}
+
+
+/** Harga pool V3 pada blok tertentu — untuk membandingkan dengan harga eksekusi (fee+slippage nyata). */
+const V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+async function poolPriceAtBlock(tx: string, block: number): Promise<string | null> {
+  try {
+    const receipt = (await rpc("eth_getTransactionReceipt", [tx])) as { logs?: Array<{ address: string; topics: string[] }> } | null;
+    const swap = receipt?.logs?.find((l) => l.topics?.[0] === V3_SWAP);
+    if (!swap) return null;
+    const hex = "0x" + block.toString(16);
+    const call = async (data: string): Promise<string> => (await rpc("eth_call", [{ to: swap.address, data }, hex])) as string;
+    const t0 = "0x" + (await call("0x0dfe1681")).slice(-40);
+    const t1 = "0x" + (await call("0xd21220a7")).slice(-40);
+    const slot0 = await call("0x3850c7bd");
+    const sqrtP = BigInt("0x" + slot0.slice(2, 66));
+    const raw = (Number(sqrtP) / 2 ** 96) ** 2; // token1 per token0 (satuan mentah)
+    const k0 = KNOWN[t0.toLowerCase()]; const k1 = KNOWN[t1.toLowerCase()];
+    if (!k0 || !k1) return "pool " + swap.address.slice(0, 10) + "… (decimal salah satu token belum terverifikasi → rasio mentah " + raw.toExponential(4) + ")";
+    const adj = raw * 10 ** (k0.dec - k1.dec);
+    // harga token1 dalam satuan token0:
+    const priceT1inT0 = adj;
+    if (t0.toLowerCase() === WETH) return priceT1inT0.toFixed(8) + " " + k0.sym + " per " + k1.sym + " (mid pool)";
+    return (1 / priceT1inT0).toFixed(8) + " " + k0.sym + " per " + k1.sym + " (mid pool)";
+  } catch (e) {
+    return "gagal baca pool: " + String((e as Error).message).slice(0, 60);
   }
 }
 

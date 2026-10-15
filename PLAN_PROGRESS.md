@@ -67,3 +67,13 @@ BUKAN tempat mendanai eksekusi GMGN. Yang benar (dari dialog Deposit GMGN milik 
   Uji: deposit kecil → swap kecil di web UI GMGN jaringan Robinhood → ukur fee/gas/slippage nyata.
 
 Status saldo terukur (2026-10-13): alamat bot 0 ETH di RH/mainnet/Base; alamat deposit GMGN 0 ETH di RH/mainnet.
+
+## PENGUKURAN JEMBATAN (2026-10-13) — angka nyata, bukan estimasi
+
+- Wallet1 `0x4b2600ce0Ab31D16E54FA493e7FFFc94bCdBDeC2` (checksum sah; salinan teks dari operator).
+- Kirim 0,0051 ETH (mainnet) → terima **0,005088 ETH (Robinhood chain)**; sisa mainnet 0,000589 ETH.
+- Biaya kurs/jembatan ≈ 0,000012 ETH (~0,24%) · gas mainnet ≈ 0,000311 ETH (≈$0,76).
+- **Estimasi gas di dialog GMGN hanya $0,016764 — nyatanya ≈$0,76 (≈45× lebih besar).** Untuk nominal kecil,
+  biaya mainnet jadi porsi besar (≈6,3% dari $12,47). Sisi Robinhood sendiri murah (~0,08 gwei).
+- Alat ukur siap: `npm run rh:fills` (token keluar/masuk, blok, harga efektif + pembanding harga pool V3
+  di blok yang sama → fee+slippage nyata) · `npm run rh:trench -- <alamat>` (sinyal kualitas trenches).
