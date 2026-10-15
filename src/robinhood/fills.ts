@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     console.log(`  blok ${e.block} · ${tx.slice(0, 18)}…`);
     console.log(`     keluar: ${e.out.join(" | ") || "-"}`);
     console.log(`     masuk : ${e.in.join(" | ") || "-"}`);
+    if (!out.some((l) => l.transactionHash === tx && l.address.toLowerCase() === WETH)) await nativeLeg(tx, e.block);
     const wethOut = out.find((l) => l.transactionHash === tx && l.address.toLowerCase() === WETH);
     const tokIn = inn.find((l) => l.transactionHash === tx && l.address.toLowerCase() !== WETH);
     if (wethOut && tokIn) {
@@ -55,6 +56,13 @@ async function main(): Promise<void> {
       const t = KNOWN[tokIn.address.toLowerCase()] ? Number(BigInt(tokIn.data)) / 1e18 : null;
       if (t && t > 0) {
         console.log(`     harga efektif: ${(w / t).toFixed(8)} WETH per token (dibayar ${w.toFixed(6)} WETH untuk ${t.toFixed(6)} token)`);
+        const rc = (await rpc("eth_getTransactionReceipt", [tx])) as { gasUsed?: string; effectiveGasPrice?: string } | null;
+        if (rc?.gasUsed) {
+          const g = BigInt(rc.gasUsed);
+          const p = BigInt(rc.effectiveGasPrice ?? "0x0");
+          const cost = Number(g * p) / 1e18;
+          console.log(`     gas terbayar: ${g.toString()} unit × ${(Number(p) / 1e9).toFixed(4)} gwei = ${cost.toFixed(8)} ETH (≈${(cost * 2444).toFixed(4)} @ $2444/ETH dari transaksimu)`);
+        }
         const mid = await poolPriceAtBlock(tx, e.block);
         if (mid) console.log(`     pembanding pool: ${mid}`);
       }
@@ -82,10 +90,45 @@ async function poolPriceAtBlock(tx: string, block: number): Promise<string | nul
     const adj = raw * 10 ** (k0.dec - k1.dec);
     // harga token1 dalam satuan token0:
     const priceT1inT0 = adj;
-    if (t0.toLowerCase() === WETH) return priceT1inT0.toFixed(8) + " " + k0.sym + " per " + k1.sym + " (mid pool)";
-    return (1 / priceT1inT0).toFixed(8) + " " + k0.sym + " per " + k1.sym + " (mid pool)";
+    // priceT1inT0 = token1 per token0 (satuan mentah). Label harus mengikuti arah itu, jangan dibalik.
+    if (t0.toLowerCase() === WETH) {
+      return (1 / priceT1inT0).toExponential(7) + " " + k0.sym + " per " + k1.sym + " (mid pool; setara " + priceT1inT0.toFixed(2) + " " + k1.sym + " per " + k0.sym + ")";
+    }
+    return priceT1inT0.toExponential(7) + " " + k1.sym + " per " + k0.sym + " (mid pool)";
   } catch (e) {
     return "gagal baca pool: " + String((e as Error).message).slice(0, 60);
+  }
+}
+
+
+/** Pelengkap: swap yang dibayar dengan ETH NATIVE (bukan WETH) — pakai value tx sebagai sisi bayar. */
+async function nativeLeg(tx: string, block: number): Promise<void> {
+  try {
+    const t = (await rpc("eth_getTransactionByHash", [tx])) as { value?: string } | null;
+    const rc = (await rpc("eth_getTransactionReceipt", [tx])) as { gasUsed?: string; effectiveGasPrice?: string } | null;
+    if (!t) return;
+    const ethIn = Number(BigInt(t.value ?? "0x0")) / 1e18;
+    if (rc?.gasUsed) {
+      const g = BigInt(rc.gasUsed); const p2 = BigInt(rc.effectiveGasPrice ?? "0x0");
+      const cost = Number(g * p2) / 1e18;
+      console.log("     gas terbayar: " + g.toString() + " unit × " + (Number(p2) / 1e9).toFixed(4) + " gwei = " + cost.toFixed(8) + " ETH (≈$" + (cost * 2444).toFixed(4) + ")");
+    }
+    if (ethIn <= 0) return;
+    const RPC2 = RPC;
+    const pad = "0x000000000000000000000000" + "0x4b2600ce0Ab31D16E54FA493e7FFFc94bCdBDeC2".slice(2).toLowerCase();
+    const inn = (await rpc("eth_getLogs", [{ fromBlock: "0x" + (block - 1).toString(16), toBlock: "0x" + block.toString(16), topics: [TRANSFER, null, pad] }])) as Array<{ address: string; data: string; transactionHash: string }>;
+    const tok = inn.find((l) => l.transactionHash === tx && l.address.toLowerCase() !== WETH);
+    if (!tok) { console.log("     bayar pakai ETH native " + ethIn.toFixed(6) + " ETH, tapi token masuk tak terdeteksi"); return; }
+    const k = KNOWN[tok.address.toLowerCase()];
+    if (!k) { console.log("     bayar pakai ETH native " + ethIn.toFixed(6) + " ETH → token " + tok.address.slice(0, 10) + "… (decimal belum diverifikasi, jumlah mentah " + tok.data + ")"); return; }
+    const qty = Number(BigInt(tok.data)) / 10 ** k.dec;
+    console.log("     bayar pakai ETH native: " + ethIn.toFixed(6) + " ETH → " + qty.toFixed(6) + " " + k.sym);
+    console.log("     harga efektif: " + (ethIn / qty).toExponential(7) + " ETH per " + k.sym + " (= $" + ((ethIn * 2444) / qty).toFixed(8) + " per token)");
+    const mid = await poolPriceAtBlock(tx, block);
+    if (mid) console.log("     pembanding pool: " + mid);
+    void RPC2;
+  } catch (e) {
+    console.log("     (pelengkap native gagal: " + String((e as Error).message).slice(0, 70) + ")");
   }
 }
 

@@ -77,3 +77,14 @@ Status saldo terukur (2026-10-13): alamat bot 0 ETH di RH/mainnet/Base; alamat d
   biaya mainnet jadi porsi besar (≈6,3% dari $12,47). Sisi Robinhood sendiri murah (~0,08 gwei).
 - Alat ukur siap: `npm run rh:fills` (token keluar/masuk, blok, harga efektif + pembanding harga pool V3
   di blok yang sama → fee+slippage nyata) · `npm run rh:trench -- <alamat>` (sinyal kualitas trenches).
+
+## UJI LIVE PERTAMA (2026-10-13/16) — angka nyata, terukur dari rantai
+
+- Beli instan di jaringan Robinhood: **0,002 ETH → 15.802,271386 XZON** (tx `0x7c3928cc09c501e4…`, blok 89474510).
+- Harga efektif **1,2656408e-07 ETH/XZON** ($0,00030932). Harga mid pool (V3, blok sama): **1,2531e-07 ETH/XZON**
+  → **biaya nyata = +1,00%**, yaitu **fee pool 1,00%** yang sebelumnya kita baca dari kontrak, dengan
+  **slippage di luar fee = 0**. Estimasi "Auto 40%" di UI tidak terpakai.
+- Gas nyata: **202.910 unit × 0,0218 gwei = 0,00000442 ETH (≈$0,0108)** — jauh di bawah estimasi apa pun.
+- Order limit 0,002 ETH (buy_low, limit 0,00017672) berdiri; terlihat & terkelola lewat API (berat 1–5, gratis).
+- Kesimpulan validitas: **model paper kita benar soal fee (1%)**; yang belum ia modelkan: gas nyata (kecil) dan
+  slippage eksekusi (terukur 0 pada trade kecil ini).
