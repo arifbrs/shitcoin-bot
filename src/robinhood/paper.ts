@@ -142,7 +142,7 @@ const COHORT10 = (process.env.RH_COHORT10 ?? "fee-nyata-2026-10-13").trim();
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort10?: boolean; cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
   if (v.cohort10) return COHORT10;
   if (v.cohort9) return COHORT9;
   if (v.cohort8) return COHORT8;
