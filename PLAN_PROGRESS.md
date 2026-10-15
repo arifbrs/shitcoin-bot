@@ -44,7 +44,7 @@ audit). Namun **pekerjaan analisis/koding-ku hanya berjalan saat sesi ini aktif*
   Pelajaran yang sama seperti hari-hari sebelumnya: **klaim tidak boleh mendahului bukti.**
 
 ## Perubahan konfigurasi yang disengaja (agar sesi berikutnya tidak bingung)
-- **Dashboard DIMATIKAN oleh operator (2026-10-13).** Saklar: `DASHBOARD_DISABLED=1` di `.env`.
+- **Dashboard DINYALAKAN LAGI oleh operator (2026-10-13, sore).** Catatan historis: sempat DIMATIKAN (2026-10-13). Saklar: `DASHBOARD_DISABLED=1` di `.env`.
   `bot.sh start` tidak menyalakannya, dan `tools/lane-guard.sh` **tidak lagi menjaganya** (baris guard
   dikomentari) supaya ia tidak dihidupkan ulang diam-diam. Untuk menyalakan lagi: hapus
   `DASHBOARD_DISABLED=1`, buka komentar baris `guard "dashboard"` di lane-guard, lalu `./bot.sh start`.

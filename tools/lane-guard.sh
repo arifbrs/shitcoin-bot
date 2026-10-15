@@ -39,8 +39,7 @@ while true; do
   guard "okx-paper" "run-okx-paper-supervised.sh"  "logs/okx-paper-supervisor.out" "src/okx-strict-paper.ts"
   # DASHBOARD (2026-10-11): supervisor dashboard TIDAK dijaga siapa pun sebelumnya — ia sempat mati
   # dan panel (alat pemantauan utama) hilang tanpa ada yang tahu. Sekarang dijaga seperti lane lain.
-  # DASHBOARD DIMATIKAN (2026-10-13): operator mematikannya. Baris penjaga dihapus supaya lane-guard
-  # tidak menghidupkannya kembali. Kembalikan baris guard ini bila dashboard ingin dinyalakan lagi.
-  # guard "dashboard" "run-dashboard-supervised.sh" "logs/dashboard-supervisor.out" "src/server.ts"
+  # DASHBOARD AKTIF LAGI (2026-10-13): penjaga dikembalikan atas permintaan operator.
+  guard "dashboard" "run-dashboard-supervised.sh" "logs/dashboard-supervisor.out" "src/server.ts"
   sleep "$LOOP_SEC"
 done
