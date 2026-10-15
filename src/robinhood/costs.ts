@@ -48,3 +48,22 @@ export function netPnlUsd(
   const proceeds = exitProceedsUsd(qty * exitPriceUsd, liqUsd, opts);
   return proceeds - entryNotionalUsd;
 }
+
+/**
+ * ── SET BIAYA TERUKUR (2026-10-13/16) ─────────────────────────────────────────────────────────
+ * Berasal dari DUA transaksi NYATA di jaringan Robinhood, bukan asumsi:
+ *   masuk : 0,002 ETH → 15.802,271386 XZON (blok 89474510, tx 0x7c3928cc…) → biaya +1,01%
+ *   keluar: 7.901,135693 XZON → 0,000957 ETH (blok 89477299, tx 0xaf3a30a6…) → biaya +1,12%
+ * Fee pool yang dibaca dari kontrak pool = 1,00%; sisa selisih = slippage eksekusi (0,01%–0,12%).
+ * Set ini TIDAK menggantikan konstanta model lama (arm yang berjalan harus tetap sebanding);
+ * ia dipakai oleh alat penilai ulang agar tiap arm bisa dinilai dengan biaya nyata.
+ */
+export const MEASURED_FEE_PCT = 0.01;
+export const MEASURED_SLIP_PCT = 0.0006;
+export const MEASURED_GAS_USD = 0.0105;
+export const MEASURED_ROUND_TRIP_PCT = 2 * MEASURED_FEE_PCT + 2 * MEASURED_SLIP_PCT;
+
+/** Biaya satu putaran penuh (masuk+keluar) menurut pengukuran, dalam dolar, untuk notional tertentu. */
+export function measuredRoundTripCostUsd(notionalUsd: number): number {
+  return notionalUsd * MEASURED_ROUND_TRIP_PCT + 2 * MEASURED_GAS_USD;
+}
