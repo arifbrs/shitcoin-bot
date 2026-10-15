@@ -336,6 +336,16 @@ async function runReview(): Promise<void> {
     say(`  (studi gagal dijalankan: ${(e as Error).message.slice(0, 120)})`);
   }
 
+  section("H. VALIDITAS MODEL & JALUR LIVE (fakta terukur, bukan asumsi)");
+  // Setiap baris di bawah ini berasal dari pengukuran 2026-10-13; bila angka berubah, ubah di sini juga.
+  say("  biaya: fee pool NYATA 1,00% (dibaca dari kontrak pool) · gas RH 0,035–0,143 gwei → praktis nol");
+  say("  latency RPC RH: p50 ≈300 ms (via WARP; tanpa WARP, ISP memblokir RPC/DNS chain ini)");
+  say("  kandidat baru (trenches RH, preset smart-money): 60/an · 2 di pita $25–50k · 0 lolos gate kita");
+  say("    → trenches dipakai sebagai FILTER KUALITAS (bot/bundler/tax/burn/creator), bukan sumber entry");
+  say("  eksekusi: GMGN mendukung chain robinhood; paket gratis menolak quote/swap (weight 10)");
+  say("    → jalur live menunggu keputusan operator: (A) paket GMGN, atau (B) ABI router chain");
+  say("  wallet bot: 0x629Ec42444A43A0E02A572587E3A49904542F4E8 (kunci 0600; proses lane tidak membacanya)");
+
   section("I. KUALITAS EKSEKUSI & ARM (otomatis: harga pasca-keluar, kualitas stop, arm OKX)");
   // Bagian ini menjawab pertanyaan yang tidak bisa dijawab model biaya: apakah harga saat kita keluar
   // BENAR-BENAR bisa dijual? Jejak 1/3/5 menit pasca-keluar sudah terkumpul otomatis tiap penutupan.

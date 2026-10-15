@@ -96,7 +96,10 @@
     "rh:realism": "tsx src/robinhood/realism.ts",
     "rh:stop": "tsx src/robinhood/stop-quality.ts",
     "okx:verdict": "tsx src/okx-verdict.ts",
-    "alert": "node tools/notify.mjs"
+    "alert": "node tools/notify.mjs",
+    "rh:wallet": "tsx src/robinhood/wallet.ts",
+    "rh:social": "tsx src/robinhood/social.ts",
+    "rh:rpc-watch": "tsx src/robinhood/rpc-watch.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
@@ -104,6 +107,7 @@
     "bs58": "^6.0.0",
     "dotenv": "^16.4.5",
     "gmgn-cli": "^1.5.4",
+    "viem": "^2.57.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
