@@ -62,6 +62,10 @@ const ONCHAIN_WATCH_PCT = numEnv(process.env.RH_ONCHAIN_WATCH_PCT, 0.15, 0.05);
 // sementara kegagalan sejati (pool V3 yang tiba-tiba tidak menjawab) tetap terlihat.
 const ONCHAIN_FAIL_LIMIT = intEnv(process.env.RH_ONCHAIN_FAIL_LIMIT, 3, 1);
 const ONCHAIN_SKIP_MS = intEnv(process.env.RH_ONCHAIN_SKIP_MS, 6 * 3_600_000, 60_000);
+// Trip berbasis JENDELA (2026-10-13): 1.203 kegagalan terkumpul TANPA satu pun pool mencapai 3 gagal
+// BERUNTUN — pola 403 berselang-seling. Jadi trip juga bila ≥`RH_ONCHAIN_FAIL_WINDOW_N` gagal dalam
+// 1 jam terakhir (jejak waktu per pool, dipangkas otomatis).
+const ONCHAIN_FAIL_WINDOW_N = intEnv(process.env.RH_ONCHAIN_FAIL_WINDOW_N, 6, 2);
 const ONCHAIN_RPC = process.env.ROBINHOOD_RPC_URL?.trim() || "https://rpc.mainnet.chain.robinhood.com";
 const RISK_USD = numEnv(process.env.RH_RISK_USD, 5, 0.5);
 const START_EQUITY_USD = numEnv(process.env.RH_START_EQUITY_USD, 100, 10);
@@ -452,6 +456,10 @@ interface State {
   onchainFailLogged?: Record<string, number>;
   /** Gagal beruntun per pool (circuit-breaker) + sampai kapan pool dilewati. */
   onchainFails?: Record<string, number>;
+  /** Jejak waktu gagal per pool (1 jam terakhir) — trip berbasis jendela. */
+  onchainFailTimes?: Record<string, number[]>;
+  /** Kapan rekonsiliasi berkala terakhir dijalankan (audit temuan D). */
+  lastReconcileAt?: number;
   onchainSkipUntil?: Record<string, number>;
   /**
    * Catatan koreksi buku (mis. void penutupan ganda / rekonstruksi equity). HARUS ikut tersimpan:
@@ -934,7 +942,11 @@ async function onchainExits(st: State, now: number): Promise<void> {
     if (!h.ok) {
       const gagal = (st.onchainFails?.[h.pool] ?? 0) + 1;
       st.onchainFails = { ...(st.onchainFails ?? {}), [h.pool]: gagal };
-      if (gagal >= ONCHAIN_FAIL_LIMIT) {
+      // jejak waktu gagal (1 jam terakhir) untuk trip berbasis jendela
+      const jam = now - 3_600_000;
+      const jejak = [...((st.onchainFailTimes ?? {})[h.pool] ?? []).filter((t) => t >= jam), now];
+      st.onchainFailTimes = { ...(st.onchainFailTimes ?? {}), [h.pool]: jejak };
+      if (gagal >= ONCHAIN_FAIL_LIMIT || jejak.length >= ONCHAIN_FAIL_WINDOW_N) {
         st.onchainSkipUntil = { ...(st.onchainSkipUntil ?? {}), [h.pool]: now + ONCHAIN_SKIP_MS };
         logRecord("rh-events", { type: "rh-onchain-skip", pool: h.pool, gagal, dilewatiJam: Number((ONCHAIN_SKIP_MS / 3_600_000).toFixed(1)), reasonTerakhir: h.reason, cfg: configHash });
       } else {
@@ -1068,6 +1080,15 @@ async function markTick(): Promise<void> {
     // (hanya token yang slot waktunya jatuh tempo) supaya kadens mark tidak terganggu.
     await capturePostExit(st, now);
     await onchainExits(st, now);
+    // REKONSILIASI BERKALA (2026-10-13, audit temuan D): dulu hanya saat lane start, sehingga kelas
+    // "posisi tanpa catatan" membuat audit merah sampai restart berikutnya. Sekarang menyembuhkan
+    // diri tiap 30 menit — memakai fungsi yang SUDAH diuji, bukan logika baru.
+    const REKONSILIASI_MS = 30 * 60_000;
+    if (now - (st.lastReconcileAt ?? 0) > REKONSILIASI_MS) {
+      st.lastReconcileAt = now;
+      try { reconcileLedgerOnStart(st); } catch (e) { logRecord("rh-events", { type: "rh-reconcile-error", reason: String((e as Error).message ?? "").slice(0, 90), cfg: configHash }); }
+      saveState(st, "reconcile-periodic");
+    }
     if (exits) logRecord("rh-events", { type: "rh-mark", exits, cohort: st.cohort, cfg: configHash });
     // Penantian >5 detik berarti mark tertahan fase lain — catat supaya kadens nyatanya terbaca.
     if (heldMs > 5_000) logRecord("rh-events", { type: "rh-mark-delayed", waitedMs: heldMs, cohort: st.cohort, cfg: configHash });
