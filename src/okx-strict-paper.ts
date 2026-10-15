@@ -614,11 +614,11 @@ async function settle(position: StrictPosition, horizonSec: number): Promise<voi
     position.exits.push(exit);
     position.pendingHorizons = position.pendingHorizons.filter((h) => h !== horizonSec);
     if (position.pendingHorizons.length === 0) position.status = "CLOSED";
-    ledger.append({ type: "POSITION_EXIT", paperId: position.paperId, source: position.source,
+    ledger.append({ type: "POSITION_EXIT", variant: position.variant, cohort: position.cohort, paperId: position.paperId, source: position.source,
       sourceKey: position.sourceKey, riskVerdict: position.riskVerdict, liveEligible: position.liveEligible,
       policyVersion: position.policyVersion, mint: position.mint, symbol: position.symbol,
       entryCostLamports: position.entry.payerCostLamports, ...exit });
-    if (position.status === "CLOSED") ledger.append({ type: "POSITION_CLOSED", paperId: position.paperId,
+    if (position.status === "CLOSED") ledger.append({ type: "POSITION_CLOSED", variant: position.variant, cohort: position.cohort, paperId: position.paperId,
       source: position.source, sourceKey: position.sourceKey, riskVerdict: position.riskVerdict,
       policyVersion: position.policyVersion, liveEligible: position.liveEligible, mint: position.mint });
     dirty();
@@ -660,7 +660,7 @@ async function recordScalpExit(
   };
   adaptive.status = "EXITED";
   adaptive.exit = exit;
-  ledger.append({ type: "SCALP_EXIT", paperId: position.paperId, source: position.source,
+  ledger.append({ type: "SCALP_EXIT", variant: position.variant, cohort: position.cohort, paperId: position.paperId, source: position.source,
     sourceKey: position.sourceKey, riskVerdict: position.riskVerdict, liveEligible: position.liveEligible,
     policyVersion: position.policyVersion, mint: position.mint, symbol: position.symbol,
     entryCostLamports: position.entry.payerCostLamports, strategy: adaptive.strategy,
