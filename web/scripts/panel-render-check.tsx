@@ -20,7 +20,24 @@ import { ChartBars } from "../src/components/panels/CoinChart";
 import { QualityCard } from "../src/components/panels/QualityCard";
 import type { ChartCandleView } from "../src/types/stats";
 
-const data = JSON.parse(readFileSync("/tmp/st.json", "utf8"));
+// FIXTURE BERLAPIS (2026-10-13): dulu check ini HANYA membaca /tmp/st.json (hasil curl manual), sehingga
+// setelah reboot `ui:check` merah ENOENT — merah karena berkas sementara hilang, bukan karena panel rusak.
+// Sekarang: /tmp (snapshot hidup, terbaik) → fixture repo → fixture MINIMAL yang jelas berlabel.
+const FIXTURE_MINIMAL = {
+  combined: { solUsd: 150, equity: [{ bal: 100 }], s1: { balanceUsd: 100 }, totalUsd: 100, floatUsd: 0, pnlUsd: 0 },
+  liveBridge: { armed: false, walletSol: null },
+  paper: { balanceSol: 0, floatSol: 0 },
+  laneDex: null, laneOkxPaper: null, quality: null, strategy2: null, cohorts: null,
+};
+const FIXTURE_REPO = "web/scripts/fixtures/st.json";
+const data = ((): any => {
+  for (const src of ["/tmp/st.json", FIXTURE_REPO]) {
+    try { return JSON.parse(readFileSync(src, "utf8")); } catch { /* coba berikutnya */ }
+  }
+  console.log("  CATATAN: memakai fixture MINIMAL (snapshot hidup & fixture repo tak ada). Jalankan\n" +
+              "  `curl -b cookie localhost:4317/api/stats > /tmp/st.json` untuk menguji payload nyata.");
+  return FIXTURE_MINIMAL;
+})();
 const cases: Array<[string, any]> = [
   ["data asli", data],
   ["solUsd null", { ...data, combined: { ...data.combined, solUsd: null } }],

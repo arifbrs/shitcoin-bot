@@ -13,13 +13,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { StatsResponse } from "../src/types/stats";
 
-if (!existsSync("/tmp/pushes.json")) {
-  console.error("FIXTURE HILANG: /tmp/pushes.json belum ada.");
-  console.error("Rekam dari server yang hidup: login ke dashboard, lalu simpan 3–5 frame `data: {...}`");
-  console.error("dari http://127.0.0.1:4317/api/stream ke berkas itu (array JSON of StatsResponse).");
+// FIXTURE BERLAPIS (2026-10-13): /tmp hilang saat reboot → check merah karena berkas sementara.
+// Cadangan = REKAMAN NYATA yang ikut di-commit (bukan frame karangan); kalau keduanya tak ada,
+// check tetap GAGAL seperti semula (fail-closed dipertahankan sesuai niat desain).
+const FIXTURE_PATHS = ["/tmp/pushes.json", "web/scripts/fixtures/pushes.json"];
+const FIXTURE_USED = FIXTURE_PATHS.find((f) => existsSync(f));
+if (!FIXTURE_USED) {
+  console.error("FIXTURE HILANG: /tmp/pushes.json dan web/scripts/fixtures/pushes.json belum ada.");
+  console.error("Rekam dari server yang hidup: login ke dashboard lalu simpan `data: {...}` dari /api/stream.");
   process.exit(1);
 }
-const pushes: StatsResponse[] = JSON.parse(readFileSync("/tmp/pushes.json", "utf8"));
+if (FIXTURE_USED !== "/tmp/pushes.json") console.log(`  CATATAN: memakai rekaman repo ${FIXTURE_USED} (rekaman nyata, ikut di-commit).`);
+const pushes: StatsResponse[] = JSON.parse(readFileSync(FIXTURE_USED, "utf8"));
 
 const FP: Record<string, [(d: StatsResponse) => unknown[], (d: StatsResponse) => string]> = {
   TradeJournal: [
