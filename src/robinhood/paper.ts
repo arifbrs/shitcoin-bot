@@ -127,12 +127,18 @@ const COHORT6 = (process.env.RH_COHORT6 ?? "liq-exit-2026-10-11").trim();
 // yang tidak bisa dijual. Arm: tahan 3 / 6 tick vs kontrol (langsung, perilaku lama).
 const COHORT7 = (process.env.RH_COHORT7 ?? "tp-hold-2026-10-11").trim();
 const COHORT8 = (process.env.RH_COHORT8 ?? "liq-tanpa-trail-2026-10-11").trim();
+// KOHORT-9 (2026-10-13): BUANG STOP HARGA, andalkan keluar on-chain. Dasar terukur hari ini:
+// 104 keluar on-chain @ −5%…+55% vs stop_loss 83 @ −73% dan pool_mati 21 @ −65%. Gate & sizing
+// IDENTIK dengan kontrolnya (stopPct tetap 40 untuk perhitungan ukuran posisi — yang dilepas hanya
+// PENGECEKAN stop-nya), sehingga variabel yang diuji benar-benar satu: stop harga ada atau tidak.
+const COHORT9 = (process.env.RH_COHORT9 ?? "tanpa-stop-harga-2026-10-13").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort9) return COHORT9;
   if (v.cohort8) return COHORT8;
   if (v.cohort7) return COHORT7;
   if (v.cohort6) return COHORT6;
@@ -220,6 +226,10 @@ interface Variant {
   cohort6?: boolean;
   /** KOHORT-8: buang trailing, keluar lewat likuiditas (gate sama dengan v42). */
   cohort8?: boolean;
+  /** KOHORT-9: uji TANPA stop harga (andalkan keluar on-chain); gate sama dengan kontrolnya. */
+  cohort9?: boolean;
+  /** Lepas PENGECEKAN stop harga saja; stopPct tetap dipakai untuk ukuran posisi. */
+  noPriceStop?: boolean;
   /** KOHORT-7: uji TP harus BERTAHAN (gate masuk wajib sama dengan kontrolnya). */
   cohort7?: boolean;
   /** Berapa tick beruntun harga harus ≥ ambang TP sebelum dijual. 0/undefined = perilaku lama. */
@@ -367,6 +377,9 @@ const VARIANTS: Variant[] = [
   // v42 (gate sama, masih pakai trailing) jadi pembanding ketiga.
   { id: "v53-liqexit-tanpa-trail", label: "S8 tanpa trailing · keluar bila likuiditas −35%", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort8: true, exitLiqDropPct: 0.35 },
   { id: "v54-tanpa-trail-kontrol", label: "S8 KONTROL tanpa trailing (keluar harga saja)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort8: true },
+  // ── KOHORT-9 (2026-10-13): TANPA STOP HARGA, andalkan keluar on-chain ───────────────────────
+  { id: "v55-tanpa-stop-harga", label: "S9 tanpa stop harga (on-chain + hold)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort9: true, noPriceStop: true },
+  { id: "v56-kontrol-stop", label: "S9 KONTROL dengan stop harga (pembanding berpasangan)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort9: true },
 ];
 
 interface Position {
@@ -864,7 +877,9 @@ async function markAndExit(st: State, now: number): Promise<number> {
           closePosition(st, v, vs, pos, price, perPoolLiq ?? shieldLiq, "liq_shield", now); exits++; continue;
         }
       }
-      if (price <= stopPrice) { closePosition(st, v, vs, pos, price, perPoolLiq, "stop_loss", now); exits++; continue; }
+      // KOHORT-9: sebagian arm SENGAJA tanpa pengecekan stop harga — perlindungannya dari rantai
+      // (likuiditas/harga on-chain) dan batas hold. stopPct TIDAK diubah supaya sizing tetap sebanding.
+      if (!v.noPriceStop && price <= stopPrice) { closePosition(st, v, vs, pos, price, perPoolLiq, "stop_loss", now); exits++; continue; }
       // KOHORT-7 (2026-10-11): TP boleh DITAHAN beberapa tick sebelum dijual. Kontrol (tpHoldTicks
       // 0) berperilaku PERSIS seperti sebelumnya; arm tahan baru menjual setelah harga bertahan di
       // atas ambang — memisahkan "menjual di puncak" dari "menjual pada lonjakan yang tak bisa dijual".

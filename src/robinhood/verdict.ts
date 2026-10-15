@@ -109,6 +109,14 @@ const GROUPS: Array<{ name: string; gate: string; arms: Record<string, string> }
       "tanpa trailing + likuiditas −35% (v53)": "v53-liqexit-tanpa-trail",
     },
   },
+  {
+    name: "KOHORT-9: TANPA stop harga vs kontrol (gate pita $25–50k identik)",
+    gate: "loose",
+    arms: {
+      "KONTROL dengan stop harga (v56)": "v56-kontrol-stop",
+      "tanpa stop harga, andalkan on-chain (v55)": "v55-tanpa-stop-harga",
+    },
+  },
 ];
 
 const lines: string[] = [];
