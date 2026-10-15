@@ -99,7 +99,9 @@
     "alert": "node tools/notify.mjs",
     "rh:wallet": "tsx src/robinhood/wallet.ts",
     "rh:social": "tsx src/robinhood/social.ts",
-    "rh:rpc-watch": "tsx src/robinhood/rpc-watch.ts"
+    "rh:rpc-watch": "tsx src/robinhood/rpc-watch.ts",
+    "rh:fills": "tsx src/robinhood/fills.ts",
+    "rh:trench": "tsx src/robinhood/trench-quality.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
