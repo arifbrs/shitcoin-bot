@@ -115,6 +115,8 @@ const MARK_MS = intEnv(process.env.RH_MARK_MS, 10_000, 10_000);
 // yang dipakai bersama lane discovery.
 // Penanda kohort: aturan eksekusi berubah → sampel lama tidak boleh dicampur. State membawa
 // cohort-nya sendiri dan baris log memakai nilai yang sama, jadi kohort tak pernah tercampur diam-diam.
+import { makePending, loadPending, savePending, settle, limitFilePath, type PendingLimit } from "./limit-pending.js";
+import { LIMIT_MATRIX, limitArmId } from "./limit-entry.js";
 const COHORT = (process.env.RH_COHORT ?? "mark10s-2026-10-09").trim();
 /** Penanda kohort-2 (varian ber-gate). Baris log memakai ini supaya perbandingan vs kohort-1 adil. */
 const COHORT2 = (process.env.RH_COHORT2 ?? "rug-gate-2026-10-08").trim();
@@ -137,12 +139,15 @@ const COHORT8 = (process.env.RH_COHORT8 ?? "liq-tanpa-trail-2026-10-11").trim();
 // PENGECEKAN stop-nya), sehingga variabel yang diuji benar-benar satu: stop harga ada atau tidak.
 const COHORT9 = (process.env.RH_COHORT9 ?? "tanpa-stop-harga-2026-10-13").trim();
 const COHORT10 = (process.env.RH_COHORT10 ?? "fee-nyata-2026-10-13").trim();
+/** KOHORT-11 (2026-10-13): entry LEWAT LIMIT (jarak × masa berlaku) — sampel baru; arm lama tidak disentuh. */
+const COHORT11 = (process.env.RH_COHORT11 ?? "limit-entry-2026-10-13").trim();
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort10?: boolean; cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort11?: boolean; cohort10?: boolean; cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort11) return COHORT11;
   if (v.cohort10) return COHORT10;
   if (v.cohort9) return COHORT9;
   if (v.cohort8) return COHORT8;
@@ -183,6 +188,10 @@ function intEnv(v: string | undefined, def: number, min: number): number {
 
 // ── 10 VARIAN: profil risiko dari paling konservatif ke paling degen ─────────────────────
 interface Variant {
+  /** KOHORT-11: bila diisi, arm ini TIDAK beli di pasar — ia mendaftarkan limit lalu menunggu. */
+  cohort11?: boolean;
+  limitDistPct?: number;
+  limitExpiryMin?: number;
   id: string; label: string;
   stopPct: number; tpPct: number | null; trailFromPct: number | null; trailPct: number | null; maxHoldMin: number;
   minAgeMin: number; maxAgeMin: number | null;
@@ -402,6 +411,24 @@ const VARIANTS: Variant[] = [
   { id: "v58-fee-model-03pct", label: "S10 KONTROL fee model 0,30% (cara paper lama)", stopPct: 40, tpPct: 250, trailFromPct: null, trailPct: null, maxHoldMin: 720, minAgeMin: 0, maxAgeMin: null, minLiqUsd: 25_000, maxLiqUsd: 50_000, minVol24Usd: 0, minVol1hUsd: 5_000, minBuys1h: 0, minBuyRatio1h: null, sellRatioMax1h: null, ch1Min: null, ch1Max: null, ch24Min: null, requireCleanGmgn: false, cohort10: true, exitLiqDropPct: 0.35, dexFeePct: 0.003 },
 ];
 
+// SAKLAR: arm kohort-11 BELUM BOLEH berjalan sampai cabang entry limit tersambung — kalau tidak,
+// ia akan beli di pasar seperti arm biasa dan mengotori sampel. Ubah ke true SETELAH langkah 4 masuk.
+const COHORT11_ARMS_ENABLED = false;
+
+// ── KOHORT-11 (2026-10-13): ENTRY LEWAT LIMIT — 10 varian (5 jarak × 2 masa berlaku) ─────────────
+// Gate SALINAN PERSIS anchor v57 (pita 25–50k, fee nyata 1,00%, tanpa trailing). Yang berbeda HANYA
+// cara masuk (limit menunggu) → perbandingan berpasangan: gate sama, entry beda.
+{
+  const anchor11 = VARIANTS.find((x) => x.id === "v57-fee-nyata-1pct");
+  if (COHORT11_ARMS_ENABLED && anchor11) {
+    for (const r of LIMIT_MATRIX) {
+      VARIANTS.push({ ...anchor11, id: limitArmId(r), label: "S11 limit " + r.distPct + "% · " + r.expiryMin + " menit", cohort11: true, limitDistPct: r.distPct, limitExpiryMin: r.expiryMin });
+    }
+  } else {
+    console.error("[rh-paper] KOHORT-11: anchor v57 tidak ditemukan — arm limit TIDAK didaftarkan (tidak menebak)");
+  }
+}
+
 interface Position {
   token: string; symbol: string; pool: string; openedAt: number; entryPrice: number; tokensRaw: number;
   notionalUsd: number; peakPrice: number; lastPrice: number; lastMarkAt: number;
@@ -446,6 +473,8 @@ interface VariantState {
   lifeHistory: LifeRecord[];
 }
 interface State {
+  /** KOHORT-11: limit yang menunggu (BUKAN posisi; audit tidak menghitungnya sebagai posisi). */
+  limitPending?: PendingLimit[];
   startedAt: number; cycles: number; cohort: string;
   variants: Record<string, VariantState>;
   /** Sinyal rug GMGN per mint (sukses saja) — bertahan melewati retensi log 7 hari. */
@@ -660,7 +689,9 @@ function rejects(v: Variant, m: PoolMetrics, now: number, sig?: RugSignals | nul
   return null;
 }
 
-function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boolean {
+function openPosition(st: State, v: Variant, m: PoolMetrics, now: number, forcedPrice?: number): boolean {
+  // KOHORT-11: bila limit terisi, harga masuk = HARGA TARGET limit (bukan harga pasar saat itu).
+  const entryPx: number = forcedPrice ?? (m.priceUsd as number);
   const vs = st.variants[v.id] as VariantState;
   if (vs.positions.length >= MAX_OPEN) return false;
   if (vs.positions.some((p) => p.token === m.tokenAddress)) return false;
@@ -691,10 +722,10 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   const feePct = v.dexFeePct ?? DEX_FEE_PCT;
   const slip = slipPct(notional, m.liqUsd);
   const cost = notional * (feePct + slip) + GAS_USD;
-  const tokensRaw = (notional - cost) / m.priceUsd;
+  const tokensRaw = (notional - cost) / entryPx;
   const pos: Position = {
-    token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress, openedAt: now, entryPrice: m.priceUsd, tokensRaw,
-    notionalUsd: Number(notional.toFixed(4)), peakPrice: m.priceUsd, lastPrice: m.priceUsd, lastMarkAt: now,
+    token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress, openedAt: now, entryPrice: entryPx, tokensRaw,
+    notionalUsd: Number(notional.toFixed(4)), peakPrice: entryPx, lastPrice: entryPx, lastMarkAt: now,
     entryLiqUsd: m.liqUsd, stopPct: v.stopPct, tpPct: v.tpPct, trailFromPct: v.trailFromPct, trailPct: v.trailPct, maxHoldMin: v.maxHoldMin,
   };
   vs.positions.push(pos);
@@ -707,7 +738,7 @@ function openPosition(st: State, v: Variant, m: PoolMetrics, now: number): boole
   const gi = st.gmgnInfo[m.tokenAddress]; // sinyal rug (kalau sudah diperkaya) — ikut ke baris OPEN
   logRecord("rh-paper", {
     action: "RH_OPEN", variant: v.id, variantLabel: v.label, token: m.tokenAddress, symbol: m.symbol, pool: m.poolAddress,
-    entryPriceUsd: m.priceUsd, notionalUsd: pos.notionalUsd, riskUsd: Number((pos.notionalUsd * stopRisk).toFixed(2)),
+    entryPriceUsd: entryPx, notionalUsd: pos.notionalUsd, riskUsd: Number((pos.notionalUsd * stopRisk).toFixed(2)),
     // Tarif slippage masuk DICATAT (2026-10-10): audit memverifikasi eksak hanya bila KEDUA sisi
     // tercatat (masuk + keluar). Edisi pertama field ini tidak pernah mendarat — akibatnya jalur
     // eksak tak pernah aktif dan semua baris jatuh ke jalur model (terukur: 0 baris eksak).
