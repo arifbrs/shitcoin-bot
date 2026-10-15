@@ -413,7 +413,7 @@ const VARIANTS: Variant[] = [
 
 // SAKLAR: arm kohort-11 BELUM BOLEH berjalan sampai cabang entry limit tersambung — kalau tidak,
 // ia akan beli di pasar seperti arm biasa dan mengotori sampel. Ubah ke true SETELAH langkah 4 masuk.
-const COHORT11_ARMS_ENABLED = false;
+const COHORT11_ARMS_ENABLED = true;
 
 // ── KOHORT-11 (2026-10-13): ENTRY LEWAT LIMIT — 10 varian (5 jarak × 2 masa berlaku) ─────────────
 // Gate SALINAN PERSIS anchor v57 (pita 25–50k, fee nyata 1,00%, tanpa trailing). Yang berbeda HANYA
@@ -1320,6 +1320,27 @@ async function cycle(): Promise<void> {
         }
         continue;
       }
+      // KOHORT-11: selesaikan limit yang menunggu dengan harga SIKLUS INI (tanpa melihat masa depan).
+      try {
+        const lf = limitFilePath(config.logDir);
+        const loaded = loadPending(lf);
+        if (loaded.corrupt) logRecord("rh-events", { type: "rh-limit-store-corrupt", cohort: COHORT11, cfg: configHash });
+        if (loaded.items.length) {
+          const priceMap = new Map<string, number>();
+          for (const mm of ranked) priceMap.set(mm.tokenAddress, mm.priceUsd as number);
+          const res = settle(loaded.items, (t) => priceMap.get(t) ?? null, Date.now());
+          for (const f of res.filled) {
+            logRecord("rh-events", { type: "rh-limit-fill", variant: f.armId, token: f.token, fillPrice: f.fillPrice, targetPrice: f.targetPrice, cohort: COHORT11, cfg: configHash });
+            const mm = ranked.find((x) => x.tokenAddress === f.token);
+            const vv = VARIANTS.find((x) => x.id === f.armId);
+            if (mm && vv && f.fillPrice != null) openPosition(st, vv, mm, Date.now(), f.fillPrice);
+          }
+          for (const x of res.expired) logRecord("rh-events", { type: "rh-limit-expire", variant: x.armId, token: x.token, cohort: COHORT11, cfg: configHash });
+          savePending(lf, res.items);
+        }
+      } catch (e) {
+        logRecord("rh-events", { type: "rh-limit-error", msg: String(e && (e as Error).message ? (e as Error).message : e).slice(0, 140), cohort: COHORT11, cfg: configHash });
+      }
       for (const m of ranked) {
         if (rejects(v, m, now, st.gmgnInfo[m.tokenAddress]) !== null) continue;
         const sig = st.gmgnInfo[m.tokenAddress];
@@ -1352,7 +1373,16 @@ async function cycle(): Promise<void> {
             continue;
           }
         }
-        if (openPosition(st, v, m, now)) opened++;
+        if (v.limitDistPct && v.limitExpiryMin) {
+          // KOHORT-11: JANGAN beli di pasar. Daftarkan limit (target = harga × (1 − jarak)) lalu tunggu.
+          const pend = (st.limitPending ??= []);
+          const dup = pend.some((q) => q.armId === v.id && q.token === m.tokenAddress && q.status === "waiting");
+          if (!dup) {
+            const item = makePending({ id: v.id + "|" + m.tokenAddress + "|" + now, token: m.tokenAddress, armId: v.id, cohort: COHORT11, signalMs: now, signalPrice: m.priceUsd as number, distPct: v.limitDistPct, expiryMin: v.limitExpiryMin });
+            pend.push(item);
+            logRecord("rh-events", { type: "rh-limit-pending", variant: v.id, token: m.tokenAddress, symbol: m.symbol, targetPrice: Number(item.targetPrice.toPrecision(12)), signalPrice: m.priceUsd, cohort: COHORT11, cfg: configHash });
+          }
+        } else if (openPosition(st, v, m, now)) opened++;
       }
     }
 
