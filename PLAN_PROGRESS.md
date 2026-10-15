@@ -88,3 +88,13 @@ Status saldo terukur (2026-10-13): alamat bot 0 ETH di RH/mainnet/Base; alamat d
 - Order limit 0,002 ETH (buy_low, limit 0,00017672) berdiri; terlihat & terkelola lewat API (berat 1–5, gratis).
 - Kesimpulan validitas: **model paper kita benar soal fee (1%)**; yang belum ia modelkan: gas nyata (kecil) dan
   slippage eksekusi (terukur 0 pada trade kecil ini).
+
+## UJI LIVE — SISI KELUAR (blok 89477299, tx 0xaf3a30a6da37b991…)
+
+- Jual **7.901,135693 XZON → 0,000957 ETH** ($2,3389); gas 0,00000421 ETH (≈$0,0103).
+- Harga jual efektif **1,2112220e-07 ETH/XZON**; mid pool blok sama **1,2248092e-07 WETH/XZON**
+  → **biaya keluar 1,12%** (fee 1,00% + slippage 0,12%).
+- **TOTAL BIAYA PUTARAN (masuk+keluar) ≈ 2,13%** — angka nyata pertama untuk model kita
+  (sebelumnya hanya fee 1% diasumsikan per sisi, kini terukur), gas putaran ≈$0,021.
+- Catatan jujur: harga mid bergerak 1,2529699e-07 → 1,2248092e-07 (−2,25%) selama jeda,
+  jadi separuh yang dijual terealisasi ≈−4,3% vs harga belinya — itu **gerak pasar, bukan biaya**.
