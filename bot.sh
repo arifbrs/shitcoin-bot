@@ -24,7 +24,7 @@ info(){ printf "  ${D}%s${N}\n" "$1"; }
 # Dibaca di sini (tanpa menyentuh rahasia lain) supaya keputusan operator benar-benar berlaku.
 if [ -f .env ]; then DASHBOARD_DISABLED=$(grep -E '^DASHBOARD_DISABLED=' .env | tail -1 | cut -d= -f2- | tr -d ' \r'); fi
 
-SUPERVISORS=(gmgn robinhood analisa dexscreener okx okx-paper)
+SUPERVISORS=(gmgn robinhood analisa dexscreener)
 [ "${DASHBOARD_DISABLED:-0}" != "1" ] && SUPERVISORS=(dashboard "${SUPERVISORS[@]}")
 # DASHBOARD DIMATIKAN (2026-10-13): entri prosesnya ikut dilepas supaya status tidak menghitungnya
 # sebagai lane yang gagal. Kembalikan dua baris ini bila dashboard dinyalakan lagi.
@@ -133,7 +133,7 @@ start(){
   # tidak ada lagi proses yang memakan RPC/quota Solana. Yang jalan: dashboard + GMGN + Robinhood.
   # Rollback mudah: script run-sniper/run-research/run-watchdog/run-kol-* masih ada, jalankan manual.
   info "lane aktif : dashboard · GMGN (proxy+watch+report) · Robinhood (10 varian + review 08:00)"
-  info "lane mati  : sniper S1 · Strategy-2 · watchdog Solana · probe KOL"
+  info "lane mati  : sniper S1 · Strategy-2 · watchdog Solana · probe KOL · okx · okx-paper (2026-10-13 fokus Robinhood)"
   # DASHBOARD DIMATIKAN (2026-10-13): operator mematikannya. Hidupkan lagi dengan menghapus
   # DASHBOARD_DISABLED=1 di .env. Baris asli: nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 &
   if [ "${DASHBOARD_DISABLED:-0}" != "1" ]; then nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 & fi
@@ -144,9 +144,9 @@ start(){
   # DEXSCREENER FULL (2026-10-08): semua 13 endpoint, siklus 5 menit, tanpa key.
   nohup ./run-dexscreener-supervised.sh > logs/dex-supervisor.out     2>&1 &
   # OKX LANE (2026-10-08): blokir DNS ISP hilang — lane observasi read-only dinyalakan lagi.
-  nohup ./run-okx-supervised.sh       > logs/okx-supervisor.out       2>&1 &
+  # DIMATIKAN 2026-10-13 (fokus Robinhood; skrip ada di legacy/solana-lanes/): nohup ./run-okx-supervised.sh       > logs/okx-supervisor.out       2>&1 &
   # OKX STRICT-PAPER (2026-10-08): uang kertas. Tanpa signer/broadcast — hanya tx unsigned + simulasi.
-  nohup ./run-okx-paper-supervised.sh > logs/okx-paper-supervisor.out 2>&1 &
+  # DIMATIKAN 2026-10-13 (fokus Robinhood; skrip ada di legacy/solana-lanes/): nohup ./run-okx-paper-supervised.sh > logs/okx-paper-supervisor.out 2>&1 &
   # PENJAGA LANE (2026-10-07): supervisor bisa mati diam sementara anaknya jadi orphan — tanpa ini
   # lane berhenti tanpa suara. Guard memeriksa tiap 2 menit dan menghidupkan ulang yang hilang.
   nohup ./tools/lane-guard.sh         > logs/lane-guard.out 2>&1 &

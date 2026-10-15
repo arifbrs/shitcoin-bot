@@ -50,3 +50,20 @@ audit). Namun **pekerjaan analisis/koding-ku hanya berjalan saat sesi ini aktif*
   `DASHBOARD_DISABLED=1`, buka komentar baris `guard "dashboard"` di lane-guard, lalu `./bot.sh start`.
   Konsekuensi jujur: kartu "Kualitas eksekusi" & panel web tidak bisa diakses selama ini mati; laporan
   tetap datang lewat review 08:00 (`logs/robinhood-review-<tanggal>.md`) dan `npm run` di terminal.
+
+## KOREKSI PENTING (2026-10-13, dari screenshot operator) — JALUR DANA EKSEKUSI
+
+**Aku salah sebelumnya.** Wallet yang kubuat (`0x629Ec42444A43A0E02A572587E3A49904542F4E8`)
+BUKAN tempat mendanai eksekusi GMGN. Yang benar (dari dialog Deposit GMGN milik operator):
+
+- Untuk eksekusi lewat GMGN, dana masuk ke **alamat deposit GMGN** pada jaringan **Robinhood**:
+  `0x4b2600ce0Ab31D16E54FA493e7FFFc94bCdBDcC2` (diverifikasi: RPC Robinhood menjawab untuk alamat ini).
+- GMGN menyatakan sendiri: alamat itu **hanya menerima ETH & USDG**, **hanya lewat jaringan Robinhood**
+  ("do not use other networks to avoid any loss of funds").
+- Daftar jaringan di GMGN: SOL · BSC · **Robinhood** · Base · ETH · Arbitrum · Stable · Arc · X Layer · HyperEVM.
+- Jadi: **wallet buatan bot hanya relevan untuk jalur langsung ke router (Opsi B)**, bukan untuk GMGN (Opsi A).
+- **Hipotesis yang bisa diuji murah:** gerbang `PLAN_UPGRADE_REQUIRED` (weight 10) yang kita ukur berlaku
+  untuk **API/CLI**; **web UI GMGN (wallet tertanam, model fomo.family)** mungkin bisa eksekusi tanpa paket.
+  Uji: deposit kecil → swap kecil di web UI GMGN jaringan Robinhood → ukur fee/gas/slippage nyata.
+
+Status saldo terukur (2026-10-13): alamat bot 0 ETH di RH/mainnet/Base; alamat deposit GMGN 0 ETH di RH/mainnet.
