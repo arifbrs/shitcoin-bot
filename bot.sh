@@ -17,8 +17,15 @@ bad(){ printf "  ${R}✗${N} %s\n" "$1"; }
 info(){ printf "  ${D}%s${N}\n" "$1"; }
 
 # MULTI-LANE (2026-10-07): dashboard + GMGN + Robinhood. Lane Solana dimatikan oleh owner.
-SUPERVISORS=(dashboard gmgn robinhood analisa dexscreener okx okx-paper)
-PROCS=("tsx src/server.ts:dashboard" \
+# DASHBOARD DIMATIKAN (2026-10-13): operator mematikannya → ia tidak dihitung sebagai lane yang
+# seharusnya jalan (kalau tidak, status akan selalu tampak "silang" padahal itu keputusan sadar).
+SUPERVISORS=(gmgn robinhood analisa dexscreener okx okx-paper)
+[ "${DASHBOARD_DISABLED:-0}" != "1" ] && SUPERVISORS=(dashboard "${SUPERVISORS[@]}")
+# DASHBOARD DIMATIKAN (2026-10-13): entri prosesnya ikut dilepas supaya status tidak menghitungnya
+# sebagai lane yang gagal. Kembalikan dua baris ini bila dashboard dinyalakan lagi.
+PROCS=()
+[ "${DASHBOARD_DISABLED:-0}" != "1" ] && PROCS+=("tsx src/server.ts:dashboard")
+PROCS+=(
        "gmgn-proxy:proxy GMGN" \
        "gmgn-full-watch:watch GMGN" \
        "gmgn-report:report GMGN" \
@@ -118,7 +125,9 @@ start(){
   # Rollback mudah: script run-sniper/run-research/run-watchdog/run-kol-* masih ada, jalankan manual.
   info "lane aktif : dashboard · GMGN (proxy+watch+report) · Robinhood (10 varian + review 08:00)"
   info "lane mati  : sniper S1 · Strategy-2 · watchdog Solana · probe KOL"
-  nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 &
+  # DASHBOARD DIMATIKAN (2026-10-13): operator mematikannya. Hidupkan lagi dengan menghapus
+  # DASHBOARD_DISABLED=1 di .env. Baris asli: nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 &
+  if [ "${DASHBOARD_DISABLED:-0}" != "1" ]; then nohup ./run-dashboard-supervised.sh > logs/dashboard-supervisor.out 2>&1 & fi
   nohup ./run-gmgn-supervised.sh      > logs/gmgn-supervisor.out 2>&1 &
   nohup ./run-robinhood-supervised.sh > logs/robinhood-supervisor.out 2>&1 &
   # LOOP ANALISA (2026-10-08): digest interpretasi tiap 12 menit — "jangan berhenti".
