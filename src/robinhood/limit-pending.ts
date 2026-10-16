@@ -67,10 +67,13 @@ export interface EvalResult { action: "fill" | "expire" | "wait"; fillPrice: num
 /** Evaluasi satu item terhadap harga SEKARANG. Item yang sudah final tidak pernah berubah. */
 export function evaluate(p: PendingLimit, priceNow: number | null, nowMs: number): EvalResult {
   if (p.status !== "waiting") return { action: "wait", fillPrice: null, reason: `final:${p.status}` };
-  if (priceNow == null || !(priceNow > 0)) return { action: "wait", fillPrice: null, reason: "harga tidak tersedia" };
   const deadline = p.signalMs + p.expiryMin * 60_000;
-  if (priceNow <= p.targetPrice) return { action: "fill", fillPrice: p.targetPrice, reason: "harga ≤ target" };
+  // FIX 2026-10-16: KEDALUWARSA DIPERIKSA SEBELUM HARGA. Bug nyata: token yang keluar dari daftar
+  // kandidat → harga null → pending tidak bisa terisi DAN tidak bisa kedaluwarsa → menumpuk (30→100).
+  // Kedaluwarsa hanya butuh WAKTU; menunggu harga untuk memutuskan kedaluwarsa itu salah.
+  if (priceNow != null && priceNow > 0 && priceNow <= p.targetPrice) return { action: "fill", fillPrice: p.targetPrice, reason: "harga ≤ target" };
   if (nowMs > deadline) return { action: "expire", fillPrice: null, reason: "lewat masa berlaku" };
+  if (priceNow == null || !(priceNow > 0)) return { action: "wait", fillPrice: null, reason: "harga tidak tersedia" };
   return { action: "wait", fillPrice: null, reason: "menunggu" };
 }
 

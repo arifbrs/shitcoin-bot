@@ -78,3 +78,20 @@ test("limit: hanya item 'waiting' yang dievaluasi ulang tiap siklus", () => {
   const p2: PendingLimit = { ...makePending({ ...base, id: "w2" }), status: "expired", settledMs: 2, fillPrice: null };
   eq(waitingOf([p1, p2]).length, 1, "satu yang menunggu");
 });
+
+test("limit: token HILANG dari daftar harga → tetap KEDALUWARSA tepat waktu (bug 2026-10-16)", () => {
+  const p = makePending(base);
+  const r = evaluate(p, null, base.signalMs + 16 * 60_000);
+  eq(r.action, "expire", "kedaluwarsa tanpa harga");
+});
+
+test("limit: harga tak tersedia TAPI belum deadline → menunggu (tidak mengarang)", () => {
+  const p = makePending(base);
+  eq(evaluate(p, null, base.signalMs + 5 * 60_000).action, "wait", "menunggu");
+});
+
+test("limit: harga ≤ target DAN sudah lewat deadline → FILL menang (bukan expire)", () => {
+  const p = makePending(base);
+  const r = evaluate(p, 80, base.signalMs + 20 * 60_000);
+  eq(r.action, "fill", "fill menang atas waktu");
+});

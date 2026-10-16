@@ -427,6 +427,7 @@ const COHORT11_ARMS_ENABLED = true;
   } else {
     console.error("[rh-paper] KOHORT-11: anchor v57 tidak ditemukan — arm limit TIDAK didaftarkan (tidak menebak)");
   }
+  console.log("[rh-paper] KOHORT-11: " + VARIANTS.filter((x) => x.cohort11).length + " arm limit terdaftar (total arm " + VARIANTS.length + ")");
 }
 
 interface Position {
