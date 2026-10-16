@@ -23,8 +23,23 @@ export const LIMIT_DISTANCES = [5, 10, 15, 20, 30] as const;
 export const LIMIT_EXPIRIES_MIN = [15, 60] as const;
 export const LIMIT_MATRIX: LimitRule[] = LIMIT_DISTANCES.flatMap((distPct) => LIMIT_EXPIRIES_MIN.map((expiryMin) => ({ distPct, expiryMin })));
 
+/**
+ * TAMBAHAN (2026-10-16): jarak menengah + masa 30 menit, supaya kurva jarak↔laju-fill lebih halus.
+ * PENTING — arm lama v59-v68 sudah berjalan dan sampelnya sudah terkumpul: peta ID lama TIDAK BOLEH
+ * bergeser. Karena itu pemetaan lama dipertahankan apa adanya, dan kombinasi baru memakai v69+.
+ * limitArmId() MELEMPAR galat untuk aturan yang tak dikenal — lebih baik gagal keras daripada
+ * mengembalikan ID yang salah dan mencampur sampel (kelas bug yang dilarang).
+ */
+export const LIMIT_EXTRA: LimitRule[] = [7.5, 12.5].flatMap((distPct) => [15, 30, 60].map((expiryMin) => ({ distPct, expiryMin })));
+export const ALL_LIMIT_RULES: LimitRule[] = [...LIMIT_MATRIX, ...LIMIT_EXTRA];
+
 export function limitArmId(rule: LimitRule): string {
-  return `v${59 + LIMIT_MATRIX.findIndex((r) => r.distPct === rule.distPct && r.expiryMin === rule.expiryMin)}-limit-d${rule.distPct}-e${rule.expiryMin}`;
+  const key = (r: LimitRule): boolean => r.distPct === rule.distPct && r.expiryMin === rule.expiryMin;
+  const i = LIMIT_MATRIX.findIndex(key);
+  if (i >= 0) return `v${59 + i}-limit-d${rule.distPct}-e${rule.expiryMin}`;
+  const j = LIMIT_EXTRA.findIndex(key);
+  if (j >= 0) return `v${69 + j}-limit-d${rule.distPct}-e${rule.expiryMin}`;
+  throw new Error(`limitArmId: aturan tak dikenal (jarak ${rule.distPct}% · masa ${rule.expiryMin}m) — menolak mengembalikan ID yang mungkin salah`);
 }
 
 export function simulateLimitEntry(ticks: Tick[], rule: LimitRule): LimitResult {

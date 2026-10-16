@@ -116,7 +116,7 @@ const MARK_MS = intEnv(process.env.RH_MARK_MS, 10_000, 10_000);
 // Penanda kohort: aturan eksekusi berubah → sampel lama tidak boleh dicampur. State membawa
 // cohort-nya sendiri dan baris log memakai nilai yang sama, jadi kohort tak pernah tercampur diam-diam.
 import { makePending, loadPending, savePending, settle, limitFilePath, type PendingLimit } from "./limit-pending.js";
-import { LIMIT_MATRIX, limitArmId } from "./limit-entry.js";
+import { ALL_LIMIT_RULES, limitArmId } from "./limit-entry.js";
 const COHORT = (process.env.RH_COHORT ?? "mark10s-2026-10-09").trim();
 /** Penanda kohort-2 (varian ber-gate). Baris log memakai ini supaya perbandingan vs kohort-1 adil. */
 const COHORT2 = (process.env.RH_COHORT2 ?? "rug-gate-2026-10-08").trim();
@@ -421,7 +421,7 @@ const COHORT11_ARMS_ENABLED = true;
 {
   const anchor11 = VARIANTS.find((x) => x.id === "v57-fee-nyata-1pct");
   if (COHORT11_ARMS_ENABLED && anchor11) {
-    for (const r of LIMIT_MATRIX) {
+    for (const r of ALL_LIMIT_RULES) {
       VARIANTS.push({ ...anchor11, id: limitArmId(r), label: "S11 limit " + r.distPct + "% · " + r.expiryMin + " menit", cohort11: true, limitDistPct: r.distPct, limitExpiryMin: r.expiryMin });
     }
   } else {
