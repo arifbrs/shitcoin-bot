@@ -1381,6 +1381,10 @@ async function cycle(): Promise<void> {
           if (!dup) {
             const item = makePending({ id: v.id + "|" + m.tokenAddress + "|" + now, token: m.tokenAddress, armId: v.id, cohort: COHORT11, signalMs: now, signalPrice: m.priceUsd as number, distPct: v.limitDistPct, expiryMin: v.limitExpiryMin });
             pend.push(item);
+            // FIX 2026-10-16: registrasi HARUS ikut ditulis ke berkas pending — settle() membaca berkas,
+            // bukan state. Tanpa baris ini: 100 pending terdaftar di state tapi berkas kosong → settle
+            // tak pernah melihatnya → fill=0 DAN expire=0 (bug yang terukur malam ini).
+            savePending(limitFilePath(config.logDir), pend);
             logRecord("rh-events", { type: "rh-limit-pending", variant: v.id, token: m.tokenAddress, symbol: m.symbol, targetPrice: Number(item.targetPrice.toPrecision(12)), signalPrice: m.priceUsd, cohort: COHORT11, cfg: configHash });
           }
         } else if (openPosition(st, v, m, now)) opened++;
