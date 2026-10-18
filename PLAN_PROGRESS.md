@@ -110,3 +110,21 @@ Implikasi: jalur "router sendiri" TIDAK butuh dekode ABI non-standar — cukup p
 publik + path V3 dengan fee 10000 (1,00% — sudah terverifikasi di kontrak pool). Catatan: Universal Router
 versi baru memakai Permit2 untuk transfer ERC-20; itu bagian yang harus diuji (approve langsung vs permit).
 Sample calldata tersimpan di docs/onchain/router-calls-sample.json (6 tx) untuk pass berikutnya.
+
+## JALUR POOL LANGSUNG — TERBUKTI DI RANTAI (2026-10-18)
+
+Kontrak: **0xb7c640835f6250e06990cc6d9b14d3ca8554a005** (deploy tx 0xf03c0fae…, gas $0,0220)
+Sumber: contracts/RhSwapHelper.sol · artefak: contracts/RhSwapHelper.json (solc 0.8.37)
+Swap pertama: **1.000 gilet → 0,00000404 WETH** (tx 0x3fb3fe31…, gas $0,0064) — persis harga pool.
+
+Tiga fakta teknis yang WAJIB diingat saat menyambung jembatan live:
+1. **Fee pool RH = 100 (0,01%)** — bukan 10000. `fee()` V3 menyatakan seperseratus basis poin.
+2. **Arah `sqrtPriceLimitX96`**: `zeroForOne=false` (harga NAIK, mis. jual token1) → limit harus
+   **DI ATAS** harga sekarang; `zeroForOne=true` → limit **DI BAWAH**. Salah sisi = galat "SPL".
+3. **Helper butuh izin**: token input harus di-approve ke helper (sekali per token). Untuk beli,
+   ETH harus di-wrap dulu → WETH → approve → helper.swapExactIn.
+4. Router `0xaf9d…` (Universal Router) **ber-whitelist** — "Invalid token" untuk gilet; jadi jalur pool
+   langsung yang dipakai untuk semesta luas, bukan router.
+
+Sisa penyambungan jembatan: di live-executor.ts ganti panggilan OKX → pool-swap helper (wrap→approve→
+swapExactIn), plus pencarian pool (GMGN `biggest_pool_address` → baca token0/token1/fee di rantai).
