@@ -20,16 +20,17 @@ const HELPER = "0xb7c640835f6250e06990cc6d9b14d3ca8554a005";
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 const KEY_PATH = join(config.logDir, "rh-wallet.key");
 
-const abiOf = (rows: Array<[string, string, string[]]>): unknown[] => rows.map(([n, sm, ins]) => ({ name: n, type: "function", stateMutability: sm, inputs: ins.map((t) => ({ type: t })), outputs: [] }));
+// FIX 2026-10-18: ABI tanpa `outputs` membuat viem gagal membaca nilai balik (fee NaN, token0 undefined).
+const abiOf = (rows: Array<[string, string, string[], string[]]>): unknown[] => rows.map(([n, sm, ins, outs]) => ({ name: n, type: "function", stateMutability: sm, inputs: ins.map((t) => ({ type: t })), outputs: outs.map((t) => ({ type: t })) }));
 const ABI = abiOf([
-  ["swapExactIn", "nonpayable", ["address", "bool", "uint256", "uint160", "uint256"]],
-  ["approve", "nonpayable", ["address", "uint256"]],
-  ["deposit", "payable", []],
-  ["balanceOf", "view", ["address"]],
-  ["slot0", "view", []],
-  ["token0", "view", []],
-  ["token1", "view", []],
-  ["fee", "view", []],
+  ["swapExactIn", "nonpayable", ["address", "bool", "uint256", "uint160", "uint256"], ["uint256"]],
+  ["approve", "nonpayable", ["address", "uint256"], ["bool"]],
+  ["deposit", "payable", [], []],
+  ["balanceOf", "view", ["address"], ["uint256"]],
+  ["slot0", "view", [], ["uint160", "int24", "uint16", "uint16", "uint16", "uint8", "bool"]],
+  ["token0", "view", [], ["address"]],
+  ["token1", "view", [], ["address"]],
+  ["fee", "view", [], ["uint24"]],
 ]);
 
 async function main(): Promise<void> {
