@@ -97,29 +97,35 @@ async function main(): Promise<void> {
     return rc.status === "success" ? hash : null;
   };
   const weiPerUsd = BigInt(Math.round((1 / 2361) * 1e18));
+  // JALUR: pool-swap (helper sendiri) — dipanggil lewat CLI yang sudah tervalidasi, bukan disalin.
+  // Alasan: CLI itu sudah punya wrap→approve→swapExactIn + simulasi pra-kirim di tiap langkah.
+  const { execFileSync } = await import("node:child_process");
+  const runSwap = (side: "buy" | "sell", token: string, amount: number): boolean => {
+    try {
+      const out = execFileSync("npx", ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, "--amount", String(amount), "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
+      return out.includes("selesai");
+    } catch (e) {
+      console.log("    ✗ " + side + " gagal: " + String((e as Error).message).slice(0, 90));
+      return false;
+    }
+  };
   let executed = 0;
-  const scanned: string[] = [];
   for (const r of todoBuy) {
     if (executed >= max) break;
     const token = String(r.token);
-    const amount = weiPerUsd * BigInt(Math.round(usd));
-    const sw = await okx(`/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&fromTokenAddress=${WETH}&toTokenAddress=${token}&amount=${amount}&swapMode=exactIn&slippagePercent=5&userWalletAddress=${bot.address}`, env);
-    const sd = ((sw.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
-    const tx = (sd.tx ?? {}) as Record<string, unknown>;
-    if (!tx.to || !tx.data) {
-      scanned.push(String(r.symbol ?? token));
-      console.log("    ⟳ " + String(r.symbol ?? token) + ": OKX tidak bisa merutekan → dilewati (bukan gagal, tidak ada biaya)");
-      continue;
-    }
-    console.log("    ▶ " + String(r.symbol) + " BISA dirutekan → eksekusi $" + usd);
-    const h1 = await send("wrap", WETH, "0xd0e30db0", amount);
-    const h2 = h1 ? await send("approve", WETH, "0x095ea7b3" + BigInt(DEX_APPROVE).toString(16).padStart(64, "0") + amount.toString(16).padStart(64, "0"), 0n) : null;
-    const h3 = h2 ? await send("beli " + String(r.symbol), String(tx.to), String(tx.data), BigInt(String(tx.value ?? "0"))) : null;
-    appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_BUY", strategy, token, symbol: r.symbol, notionalUsd: usd, amountEth: Number(amount) / 1e18, tx: h3, ok: h3 != null }) + "\n");
-    if (h3) executed++;
+    console.log("    ▶ beli " + String(r.symbol ?? token) + " $" + usd + " via pool-swap …");
+    const ok = runSwap("buy", token, Number((usd / 2361).toFixed(6)));
+    appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_BUY", strategy, token, symbol: r.symbol, notionalUsd: usd, route: "pool-swap", ok }) + "\n");
+    if (ok) executed++;
   }
-  if (scanned.length) console.log("  dilewati karena tak bisa dirutekan: " + scanned.length + " (" + scanned.slice(0, 5).join(", ") + ")");
-  if (!executed) console.log("  tidak ada order yang tereksekusi pada pemindaian ini.");
+  for (const r of todoSell) {
+    const token = String(r.token);
+    const held = live.find((x) => x.action === "LIVE_BUY" && x.ok && String(x.token).toLowerCase() === token.toLowerCase());
+    const amount = Number(held?.notionalUsd ?? usd) / 2361; // jual seluruh posisi (nilai ETH saat beli)
+    console.log("    ▶ jual " + String(r.symbol ?? token) + " (seluruh posisi) via pool-swap …");
+    const ok = runSwap("sell", token, Number(amount.toFixed(6)));
+    appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_SELL", strategy, token, symbol: r.symbol, route: "pool-swap", ok }) + "\n");
+  }
 }
 
 void main();
