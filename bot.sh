@@ -24,7 +24,7 @@ info(){ printf "  ${D}%s${N}\n" "$1"; }
 # Dibaca di sini (tanpa menyentuh rahasia lain) supaya keputusan operator benar-benar berlaku.
 if [ -f .env ]; then DASHBOARD_DISABLED=$(grep -E '^DASHBOARD_DISABLED=' .env | tail -1 | cut -d= -f2- | tr -d ' \r'); fi
 
-SUPERVISORS=(gmgn robinhood analisa dexscreener)
+SUPERVISORS=(gmgn robinhood analisa dexscreener live-exits)
 [ "${DASHBOARD_DISABLED:-0}" != "1" ] && SUPERVISORS=(dashboard "${SUPERVISORS[@]}")
 # DASHBOARD DIMATIKAN (2026-10-13): entri prosesnya ikut dilepas supaya status tidak menghitungnya
 # sebagai lane yang gagal. Kembalikan dua baris ini bila dashboard dinyalakan lagi.
@@ -142,6 +142,8 @@ start(){
   # LOOP ANALISA (2026-10-08): digest interpretasi tiap 12 menit — "jangan berhenti".
   nohup ./run-analisa-supervised.sh   > logs/analisa-supervisor.out   2>&1 &
   # DEXSCREENER FULL (2026-10-08): semua 13 endpoint, siklus 5 menit, tanpa key.
+  # JUAL OTOMATIS v42 (2026-10-18): hanya keluar (--exits-only), tidak membuka posisi baru.
+  nohup ./run-live-exits-supervised.sh > logs/live-exits-supervisor.out 2>&1 &
   nohup ./run-dexscreener-supervised.sh > logs/dex-supervisor.out     2>&1 &
   # OKX LANE (2026-10-08): blokir DNS ISP hilang — lane observasi read-only dinyalakan lagi.
   # DIMATIKAN 2026-10-13 (fokus Robinhood; skrip ada di legacy/solana-lanes/): nohup ./run-okx-supervised.sh       > logs/okx-supervisor.out       2>&1 &

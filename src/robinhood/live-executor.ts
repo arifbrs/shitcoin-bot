@@ -41,6 +41,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const arg = (n: string, d: string): string => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1]! : d; };
   const yes = argv.includes("--yes");
+  const exitsOnly = argv.includes("--exits-only"); // mode supervisor: HANYA keluar, tidak membuka posisi baru
   const strategy = arg("strategy", "v42-liq25-50");
   const usd = Number(arg("usd", "25"));
   const max = Number(arg("max", "1"));
@@ -49,11 +50,18 @@ async function main(): Promise<void> {
   const liveLog = join(config.logDir, "rh-live-" + day + ".jsonl");
   const live = existsSync(liveLog) ? readFileSync(liveLog, "utf8").trim().split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return {}; } }) : [];
   const held = live.filter((r) => r.action === "LIVE_BUY" && r.ok);
-  const ethNow = Number(BigInt((await rpc("eth_getBalance", [process.env.BOT_WALLET ?? "0x629Ec42444A43A0E02A572587E3A49904542F4E8", "latest"])).result as string)) / 1e18;
+  const BOTW = process.env.BOT_WALLET ?? "0x629Ec42444A43A0E02A572587E3A49904542F4E8";
+  const ethNow = Number(BigInt((await rpc("eth_getBalance", [BOTW, "latest"])).result as string)) / 1e18;
+  // FIX 2026-10-18: hasil penjualan berbentuk WETH — jadi tunai = ETH + WETH (bukan ETH saja).
+  const wethRaw = (await rpc("eth_call", [{ to: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", data: "0x70a08231000000000000000000000000" + BOTW.slice(2) }, "latest"])).result as string;
+  const wethNow = Number(BigInt(wethRaw ?? "0x0")) / 1e18;
+  const cashNow = ethNow + wethNow;
 
   console.log("  ══ JEMBATAN SINYAL→EKSEKUSI — arm " + strategy + " · notional $" + usd + (yes ? " · MODE: EKSEKUSI" : " · MODE: DRY-RUN") + " ══");
-  console.log("  saldo ETH wallet bot: " + ethNow.toFixed(6) + " ETH ≈ $" + (ethNow * 2361).toFixed(2));
-  if (ethNow * 2361 < usd) { console.log("  TOLAK: saldo < notional $" + usd + " — tidak ada yang dijalankan."); return; }
+  console.log("  saldo tunai: " + ethNow.toFixed(6) + " ETH + " + wethNow.toFixed(6) + " WETH ≈ $" + (cashNow * 2361).toFixed(2));
+  // FIX 2026-10-18: pemeriksaan tunai hanya untuk MEMBUKA posisi. Menjual tidak butuh tunai —
+  // dan mode exits-only (supervisor) harus tetap bisa keluar walau saldo tunai kecil.
+  if (!exitsOnly && cashNow * 2361 < usd) { console.log("  TOLAK: tunai (ETH+WETH) < notional $" + usd + " — tidak ada posisi baru dibuka (penjualan tetap jalan)."); }
 
   // Sinyal dari ledger paper arm terpilih (hari ini)
   const files = readdirSync(config.logDir).filter((f) => /^rh-paper-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().slice(-1);
@@ -110,7 +118,10 @@ async function main(): Promise<void> {
     }
   };
   let executed = 0;
-  for (const r of todoBuy) {
+  const cukupTunai = cashNow * 2361 >= usd;
+  if (exitsOnly) { console.log("  MODE exits-only: melewati semua pembukaan posisi baru."); }
+  if (!cukupTunai) console.log("  (tunai kurang: hanya jalur KELUAR yang dijalankan)") ;
+  for (const r of (exitsOnly || !cukupTunai ? [] : todoBuy)) {
     if (executed >= max) break;
     const token = String(r.token);
     console.log("    ▶ beli " + String(r.symbol ?? token) + " $" + usd + " via pool-swap …");

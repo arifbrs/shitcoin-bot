@@ -69,8 +69,12 @@ async function main(): Promise<void> {
   const limit = zeroForOne ? BigInt(Math.floor(Number(sqrtP) * 0.95)) : BigInt(Math.floor(Number(sqrtP) * 1.05));
   const amountIn = BigInt(Math.round(amountEth * 1e6)) * 10n ** 12n; // ETH/token 18 desimal
   const steps: Array<{ name: string; to: string; data: string; value: bigint }> = [];
+  const wethNow = BigInt((await pub.readContract({ address: WETH as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never)) as bigint);
   if (buy) {
-    steps.push({ name: "wrap ETH→WETH", to: WETH, data: encodeFunctionData({ abi: ABI as never, functionName: "deposit", args: [] } as never), value: amountIn });
+    // FIX 2026-10-18: WETH yang sudah ada DIPAKAI dulu (hasil jual sebelumnya) — wrap hanya kekurangannya.
+    const shortfall = wethNow >= amountIn ? 0n : amountIn - wethNow;
+    if (shortfall > 0n) steps.push({ name: "wrap ETH→WETH (kekurangan)", to: WETH, data: encodeFunctionData({ abi: ABI as never, functionName: "deposit", args: [] } as never), value: shortfall });
+    else console.log("  (WETH yang ada cukup: " + (Number(wethNow) / 1e18).toFixed(6) + " — tidak perlu wrap)");
     steps.push({ name: "approve WETH→helper", to: WETH, data: encodeFunctionData({ abi: ABI as never, functionName: "approve", args: [HELPER, amountIn] } as never), value: 0n });
   } else {
     steps.push({ name: "approve token→helper", to: token, data: encodeFunctionData({ abi: ABI as never, functionName: "approve", args: [HELPER, amountIn] } as never), value: 0n });
