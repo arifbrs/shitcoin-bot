@@ -105,7 +105,8 @@
     "rh:realcost": "tsx src/robinhood/realcost.ts",
     "rh:live-swap": "tsx src/robinhood/live-swap.ts",
     "rh:live": "tsx src/robinhood/live-executor.ts",
-    "rh:routable": "tsx src/robinhood/routable.ts"
+    "rh:routable": "tsx src/robinhood/routable.ts",
+    "rh:pool-swap": "tsx src/robinhood/pool-swap.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
