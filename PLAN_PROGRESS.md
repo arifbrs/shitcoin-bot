@@ -98,3 +98,15 @@ Status saldo terukur (2026-10-13): alamat bot 0 ETH di RH/mainnet/Base; alamat d
   (sebelumnya hanya fee 1% diasumsikan per sisi, kini terukur), gas putaran ≈$0,021.
 - Catatan jujur: harga mid bergerak 1,2529699e-07 → 1,2248092e-07 (−2,25%) selama jeda,
   jadi separuh yang dijual terealisasi ≈−4,3% vs harga belinya — itu **gerak pasar, bukan biaya**.
+
+## TEMUAN ROUTER (2026-10-18) — Universal Router, bukan ABI misterius
+
+Dipindai 250 blok (91992964–91993213): **6 transaksi ke router `0xaf9d6fa019328d8cf8598d0d5be22cc6622b09f1`,
+semuanya memakai selector `0x3593564c`** = `execute(bytes commands, bytes[] inputs, uint256 deadline)`
+milik **Uniswap Universal Router** (ABI publik). Bedah calldata contoh (16 kata):
+  deadline (0x6ad51430) · commands length 1 (byte 0x00 = V3_SWAP_EXACT_IN) · inputs: 1 struct 224 byte
+  (recipient, amountIn, amountOutMin, path, payerIsUser).
+Implikasi: jalur "router sendiri" TIDAK butuh dekode ABI non-standar — cukup pakai ABI Universal Router
+publik + path V3 dengan fee 10000 (1,00% — sudah terverifikasi di kontrak pool). Catatan: Universal Router
+versi baru memakai Permit2 untuk transfer ERC-20; itu bagian yang harus diuji (approve langsung vs permit).
+Sample calldata tersimpan di docs/onchain/router-calls-sample.json (6 tx) untuk pass berikutnya.
