@@ -58,7 +58,7 @@ async function main(): Promise<void> {
       const w = Number(BigInt(wethOut.data)) / 1e18;
       const t = KNOWN[tokIn.address.toLowerCase()] ? Number(BigInt(tokIn.data)) / 1e18 : null;
       if (t && t > 0) {
-        console.log(`     harga efektif: ${(w / t).toFixed(8)} WETH per token (dibayar ${w.toFixed(6)} WETH untuk ${t.toFixed(6)} token)`);
+        console.log(`     harga efektif: ${(w / t).toExponential(7)} WETH per token (dibayar ${w.toFixed(6)} WETH untuk ${t.toFixed(6)} token)`);
         const rc = (await rpc("eth_getTransactionReceipt", [tx])) as { gasUsed?: string; effectiveGasPrice?: string } | null;
         if (rc?.gasUsed) {
           const g = BigInt(rc.gasUsed);
