@@ -11,6 +11,9 @@ const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 const KNOWN: Record<string, { sym: string; dec: number }> = {
   "0x0bd7d308f8e1639fab988df18a8011f41eacad73": { sym: "WETH", dec: 18 },
   "0xe01d7eb1aceae4047ea70be02fc01c4f3fbd48e2": { sym: "XZON", dec: 18 },
+  // Terverifikasi on-chain 2026-10-18 (symbol() + decimals()); gilet dari catatan order live kita.
+  "0x7d96ddcf176de54e4b279c78fb9459e758b8ae7d": { sym: "gilet", dec: 18 },
+  "0x5fc5360d0400a0fd4f2af552add042d716f1d168": { sym: "USDG", dec: 6 },
 };
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
