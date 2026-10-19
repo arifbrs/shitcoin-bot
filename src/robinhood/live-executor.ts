@@ -82,9 +82,27 @@ async function main(): Promise<void> {
   if (openLive >= 1) { console.log("  ATURAN SATU-POSISI: ada " + openLive + " posisi live terbuka → tidak buka posisi baru dulu."); todoBuy = []; }
   todoBuy = todoBuy.slice(0, Math.max(max, 25)); // PINDAI jendela luas; eksekusi tetap dibatasi max
   const liveTokens = new Set(held.map((r) => String(r.token).toLowerCase()));
-  const todoSell = closes.filter((r) => liveTokens.has(String(r.token).toLowerCase()) && !doneSells.has(String(r.token).toLowerCase()));
+  const todoSell0 = closes.filter((r) => liveTokens.has(String(r.token).toLowerCase()) && !doneSells.has(String(r.token).toLowerCase()));
+  // (a) ATURAN YATIM + BATAS 24 JAM (2026-10-19): jual bila (i) arm paper tak lagi memegang token ini
+  // padahal kita memegangnya, atau (ii) posisi live sudah lebih tua dari batas — supaya tidak ada posisi
+  // yang menggantung tanpa pemicu (kasus nyata: gilet — pembelian live terjadi setelah sinyal papernya lewat).
+  const stj = JSON.parse(readFileSync(join(config.logDir, "rh-paper-state.json"), "utf8")) as { variants?: Record<string, { positions?: Array<{ token: string }> }> };
+  const heldPaper = new Set((stj.variants?.[strategy]?.positions ?? []).map((x) => String(x.token).toLowerCase()));
+  const MAX_AGE_MS = Number(process.env.LIVE_MAX_POSITION_HOURS ?? 24) * 3_600_000;
+  const buys = live.filter((r) => r.action === "LIVE_BUY" && r.ok);
+  const yatim: Array<Record<string, unknown>> = [];
+  for (const b of buys) {
+    const tk = String(b.token).toLowerCase();
+    if (doneSells.has(tk)) continue;
+    const tua = Date.now() - Number(b.ts ?? 0) > MAX_AGE_MS;
+    if (!heldPaper.has(tk) || tua) yatim.push({ token: b.token, symbol: b.symbol, why: tua ? "umur > batas" : "yatim (paper tak memegang)" });
+  }
+  const todoSell = todoSell0.slice();
+  for (const y of yatim) {
+    if (!todoSell.some((x) => String(x.token).toLowerCase() === String(y.token).toLowerCase())) { todoSell.push(y); console.log("    (yatim) " + String(y.symbol ?? y.token) + " — " + String(y.why)); }
+  }
 
-  console.log("  rencana: BELI " + todoBuy.length + " token · JUAL " + todoSell.length + " token");
+  if (!exitsOnly) console.log("  rencana: BELI " + todoBuy.length + " token · JUAL " + todoSell.length + " token");
   for (const r of todoBuy.slice(0, 5)) console.log("    beli : " + String(r.symbol ?? r.token).padEnd(12) + " $" + usd + " (" + String(r.token).slice(0, 12) + "…)");
   for (const r of todoSell.slice(0, 5)) console.log("    jual : " + String(r.symbol ?? r.token).padEnd(12) + " 100%");
   if (!todoBuy.length && !todoSell.length) { console.log("  tidak ada aksi baru (sinyal hari ini sudah dijalankan atau belum ada)."); return; }
@@ -109,8 +127,9 @@ async function main(): Promise<void> {
   // Alasan: CLI itu sudah punya wrap→approve→swapExactIn + simulasi pra-kirim di tiap langkah.
   const { execFileSync } = await import("node:child_process");
   const runSwap = (side: "buy" | "sell", token: string, amount: number): boolean => {
+    const amountArg = side === "sell" ? ["--all"] : ["--amount", String(amount)];
     try {
-      const out = execFileSync("npx", ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, "--amount", String(amount), "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
+      const out = execFileSync("npx", ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, ...amountArg, "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
       return out.includes("selesai");
     } catch (e) {
       console.log("    ✗ " + side + " gagal: " + String((e as Error).message).slice(0, 90));
@@ -119,7 +138,7 @@ async function main(): Promise<void> {
   };
   let executed = 0;
   const cukupTunai = cashNow * 2361 >= usd;
-  if (exitsOnly) { console.log("  MODE exits-only: melewati semua pembukaan posisi baru."); }
+  if (exitsOnly) { console.log("  MODE exits-only: rencana BELI 0 (semua pembukaan dilewati) · JUAL " + todoSell.length + " token"); }
   if (!cukupTunai) console.log("  (tunai kurang: hanya jalur KELUAR yang dijalankan)") ;
   for (const r of (exitsOnly || !cukupTunai ? [] : todoBuy)) {
     if (executed >= max) break;
@@ -134,7 +153,7 @@ async function main(): Promise<void> {
     const held = live.find((x) => x.action === "LIVE_BUY" && x.ok && String(x.token).toLowerCase() === token.toLowerCase());
     const amount = Number(held?.notionalUsd ?? usd) / 2361; // jual seluruh posisi (nilai ETH saat beli)
     console.log("    ▶ jual " + String(r.symbol ?? token) + " (seluruh posisi) via pool-swap …");
-    const ok = runSwap("sell", token, Number(amount.toFixed(6)));
+    const ok = runSwap("sell", token, 0); // 0 + mode --all di pool-swap
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_SELL", strategy, token, symbol: r.symbol, route: "pool-swap", ok }) + "\n");
   }
 }

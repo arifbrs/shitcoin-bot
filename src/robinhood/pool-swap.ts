@@ -39,9 +39,10 @@ async function main(): Promise<void> {
   const yes = argv.includes("--yes");
   const token = arg("token");
   const side = arg("side", "buy")!;
+  const amountAll = argv.includes("--all"); // jual SELURUH saldo token (atau pakai seluruh WETH untuk beli)
   const amountEth = Number(arg("amount", "0.002"));
   if (!token) { console.log("  pakai: --token 0x… --side buy|sell --amount 0.002 [--yes]"); return; }
-  if (amountEth <= 0) { console.log("  --amount harus > 0"); return; }
+  if (!amountAll && amountEth <= 0) { console.log("  --amount harus > 0 (atau pakai --all)"); return; }
 
   const env = Object.fromEntries(readFileSync(".env", "utf8").split("\n").filter((l) => l.includes("=") && !l.trim().startsWith("#")).map((l) => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^['"]|['"]$/g, "")]; }));
   const { privateKeyToAccount } = await import("viem/accounts");
@@ -67,7 +68,9 @@ async function main(): Promise<void> {
   const slot0 = (await read("slot0")) as unknown[];
   const sqrtP = BigInt(slot0[0] as bigint);
   const limit = zeroForOne ? BigInt(Math.floor(Number(sqrtP) * 0.95)) : BigInt(Math.floor(Number(sqrtP) * 1.05));
-  const amountIn = BigInt(Math.round(amountEth * 1e6)) * 10n ** 12n; // ETH/token 18 desimal
+  // --all: jual seluruh saldo token; untuk beli, pakai seluruh WETH yang ada.
+  const balOf = async (tok: string): Promise<bigint> => BigInt((await pub.readContract({ address: tok as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never)) as bigint);
+  const amountIn = amountAll ? await balOf(side === "buy" ? WETH : token) : BigInt(Math.round(amountEth * 1e6)) * 10n ** 12n;
   const steps: Array<{ name: string; to: string; data: string; value: bigint }> = [];
   const wethNow = BigInt((await pub.readContract({ address: WETH as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never)) as bigint);
   if (buy) {
