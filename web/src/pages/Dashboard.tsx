@@ -6,17 +6,14 @@ import type { DashboardSection } from "@/lib/dashboard";
 import { TopBar } from "@/components/panels/TopBar";
 import { FeedStatus, DashboardLoading } from "@/components/panels/FeedStatus";
 import { DashboardOverview } from "@/components/panels/DashboardOverview";
-import { SolanaPanels } from "@/components/panels/SolanaPanels";
 import { StaleBanner } from "@/components/panels/StaleBanner";
 import { ControlDialog } from "@/components/panels/ControlDialog";
 import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
-import { OkxWeb3Panel } from "@/components/panels/OkxWeb3Panel";
 import { RobinhoodChainPanel } from "@/components/panels/RobinhoodChainPanel";
 import { LaneRobinhood } from "@/components/panels/LaneRobinhood";
 import { LivePanel } from "@/components/panels/LivePanel";
 import { LaneGmgn } from "@/components/panels/LaneGmgn";
 import { LaneDex } from "@/components/panels/LaneDex";
-import { LaneOkxPaper } from "@/components/panels/LaneOkxPaper";
 import { QualityCard } from "@/components/panels/QualityCard";
 
 export default function Dashboard() {
@@ -56,8 +53,6 @@ export default function Dashboard() {
           {section === "robinhood" && <><LaneRobinhood data={data.laneRobinhood} /><LivePanel /><RobinhoodChainPanel /></>}
           {section === "gmgn" && <LaneGmgn />}
           {section === "dex" && <LaneDex data={data.laneDex} />}
-          {section === "okxPaper" && <><LaneOkxPaper data={data.laneOkxPaper} /><OkxWeb3Panel /></>}
-          {section === "solana" && <><p className="archive-notice">Panel S1 / S2 · data historis dan status eksekusi Solana. Periksa mode di kontrol sebelum membaca hasil.</p><SolanaPanels data={data} /></>}
         </div>}
         <footer className="console-footer"><span>SHITCOIN / OPERATIONS</span><span>Data monitoring · hasil paper bukan hasil eksekusi nyata</span></footer>
       </main>
