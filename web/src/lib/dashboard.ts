@@ -4,7 +4,6 @@ export const dashboardLanes = [
   { id: "robinhood", name: "Robinhood", mark: "RH", description: "Forward test strategi · Ethereum L2", mode: "Paper" },
   { id: "gmgn", name: "GMGN", mark: "GM", description: "Sinyal smart money & kualitas wallet", mode: "Observasi" },
   { id: "dex", name: "DexScreener", mark: "DX", description: "Pergerakan pasar & watchlist token", mode: "Observasi" },
-  { id: "okxPaper", name: "OKX", mark: "OK", description: "Simulasi eksekusi & integritas ledger", mode: "Strict paper" },
 ] as const;
 
 export type DashboardSection = "overview" | typeof dashboardLanes[number]["id"] | "solana";
