@@ -107,7 +107,8 @@
     "rh:live": "tsx src/robinhood/live-executor.ts",
     "rh:routable": "tsx src/robinhood/routable.ts",
     "rh:pool-swap": "tsx src/robinhood/pool-swap.ts",
-    "rh:retire": "tsx src/robinhood/retire.ts"
+    "rh:retire": "tsx src/robinhood/retire.ts",
+    "rh:live-status": "tsx src/robinhood/live-status.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
