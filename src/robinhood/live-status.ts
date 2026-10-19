@@ -32,7 +32,7 @@ export interface LiveStatus {
   generatedAt: number;
 }
 
-async function status(): Promise<LiveStatus> {
+export async function liveStatus(): Promise<LiveStatus> {
   const files = readdirSync(config.logDir).filter((f) => /^rh-live-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
   const rows: Array<Record<string, unknown>> = [];
   for (const f of files) for (const l of readFileSync(join(config.logDir, f), "utf8").split("\n")) { try { if (l.trim()) rows.push(JSON.parse(l) as Record<string, unknown>); } catch { /* lewati */ } }
@@ -62,6 +62,6 @@ async function status(): Promise<LiveStatus> {
 }
 
 void (async () => {
-  const s = await status();
+  const s = await liveStatus();
   console.log(JSON.stringify(s, null, 1));
 })();

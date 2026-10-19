@@ -3072,6 +3072,15 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   // OKX capability/arming truth. This is intentionally configuration + registry state only: the
   // dashboard must not spend paid API quota every time it polls. `npm run okx:probe` remains the
   // explicit live-health test, while this endpoint makes missing/unprobed/armed states visible.
+  if (path === "/api/live") {
+    try {
+      const { liveStatus } = await import("./robinhood/live-status.js");
+      res.end(JSON.stringify(await liveStatus()));
+    } catch (error) {
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
   if (path === "/api/okx/status") {
     if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
