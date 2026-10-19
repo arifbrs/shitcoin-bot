@@ -13,6 +13,7 @@ import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { OkxWeb3Panel } from "@/components/panels/OkxWeb3Panel";
 import { RobinhoodChainPanel } from "@/components/panels/RobinhoodChainPanel";
 import { LaneRobinhood } from "@/components/panels/LaneRobinhood";
+import { LivePanel } from "@/components/panels/LivePanel";
 import { LaneGmgn } from "@/components/panels/LaneGmgn";
 import { LaneDex } from "@/components/panels/LaneDex";
 import { LaneOkxPaper } from "@/components/panels/LaneOkxPaper";
@@ -52,7 +53,7 @@ export default function Dashboard() {
         </nav>
         {!data ? <DashboardLoading /> : <div className="console-content">
           {section === "overview" && <><DashboardOverview data={data} age={age} healthy={healthy} onSelect={setSection} /><QualityCard data={data.quality} /></>}
-          {section === "robinhood" && <><LaneRobinhood data={data.laneRobinhood} /><RobinhoodChainPanel /></>}
+          {section === "robinhood" && <><LaneRobinhood data={data.laneRobinhood} /><LivePanel /><RobinhoodChainPanel /></>}
           {section === "gmgn" && <LaneGmgn />}
           {section === "dex" && <LaneDex data={data.laneDex} />}
           {section === "okxPaper" && <><LaneOkxPaper data={data.laneOkxPaper} /><OkxWeb3Panel /></>}
