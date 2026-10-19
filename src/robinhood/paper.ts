@@ -116,6 +116,7 @@ const MARK_MS = intEnv(process.env.RH_MARK_MS, 10_000, 10_000);
 // Penanda kohort: aturan eksekusi berubah → sampel lama tidak boleh dicampur. State membawa
 // cohort-nya sendiri dan baris log memakai nilai yang sama, jadi kohort tak pernah tercampur diam-diam.
 import { makePending, loadPending, savePending, settle, limitFilePath, type PendingLimit } from "./limit-pending.js";
+import { loadCache, livePoolOk } from "./livepool-gate.js";
 import { ALL_LIMIT_RULES, limitArmId } from "./limit-entry.js";
 const COHORT = (process.env.RH_COHORT ?? "mark10s-2026-10-09").trim();
 /** Penanda kohort-2 (varian ber-gate). Baris log memakai ini supaya perbandingan vs kohort-1 adil. */
@@ -141,12 +142,17 @@ const COHORT9 = (process.env.RH_COHORT9 ?? "tanpa-stop-harga-2026-10-13").trim()
 const COHORT10 = (process.env.RH_COHORT10 ?? "fee-nyata-2026-10-13").trim();
 /** KOHORT-11 (2026-10-13): entry LEWAT LIMIT (jarak × masa berlaku) — sampel baru; arm lama tidak disentuh. */
 const COHORT11 = (process.env.RH_COHORT11 ?? "limit-entry-2026-10-13").trim();
+/** KOHORT-12 (2026-10-19): gate v42 + syarat "punya pool WETH berlikuid" (8,3% sinyal — terukur). */
+const COHORT12 = (process.env.RH_COHORT12 ?? "livepool-2026-10-19").trim();
+const LIVEPOOL_CACHE = loadCache(join(config.logDir, "rh-routable.json"));
+const RETIRED = new Set<string>(((): string[] => { try { return (JSON.parse(readFileSync(join(config.logDir, "rh-retired.json"), "utf8")) as { retired?: string[] }).retired ?? []; } catch { return []; } })());
 /**
  * Penanda kohort SATU tempat (2026-10-10): rantai ternary 4 tingkat sebelumnya tersebar di 4 tempat
  * (open, close, perisai, jejak rug) dan mudah lupa diperbarui saat kohort baru ditambah. Fungsi ini
  * satu-satunya tempat yang tahu urutan prioritasnya.
  */
-function cohortTagOf(v: { cohort11?: boolean; cohort10?: boolean; cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+function cohortTagOf(v: { cohort12?: boolean; cohort11?: boolean; cohort10?: boolean; cohort9?: boolean; cohort8?: boolean; cohort7?: boolean; cohort6?: boolean; cohort5?: boolean; cohort4?: boolean; cohort3?: boolean; cohort2?: boolean }, st: { cohort: string }): string {
+  if (v.cohort12) return COHORT12;
   if (v.cohort11) return COHORT11;
   if (v.cohort10) return COHORT10;
   if (v.cohort9) return COHORT9;
@@ -190,6 +196,9 @@ function intEnv(v: string | undefined, def: number, min: number): number {
 interface Variant {
   /** KOHORT-11: bila diisi, arm ini TIDAK beli di pasar — ia mendaftarkan limit lalu menunggu. */
   cohort11?: boolean;
+  cohort12?: boolean;
+  /** KOHORT-12: hanya token yang punya pool WETH berlikuid (dari cache rh-routable.json, fail-closed). */
+  requireLivePool?: boolean;
   limitDistPct?: number;
   limitExpiryMin?: number;
   id: string; label: string;
@@ -426,6 +435,13 @@ const COHORT11_ARMS_ENABLED = true;
     }
   } else {
     console.error("[rh-paper] KOHORT-11: anchor v57 tidak ditemukan — arm limit TIDAK didaftarkan (tidak menebak)");
+  }
+  // KOHORT-12: salinan PERSIS gate v42 + syarat pool WETH likuid → pembanding berpasangan dengan v42 asli.
+  const anchor12 = VARIANTS.find((x) => x.id === "v42-liq25-50");
+  if (anchor12) {
+    VARIANTS.push({ ...anchor12, id: "v75-livepool-a", label: "S12 gate v42 + hanya token ber-pool WETH likuid", cohort12: true, requireLivePool: true });
+  } else {
+    console.error("[rh-paper] KOHORT-12: anchor v42 tidak ditemukan — arm v75 TIDAK didaftarkan (tidak menebak)");
   }
   console.log("[rh-paper] KOHORT-11: " + VARIANTS.filter((x) => x.cohort11).length + " arm limit terdaftar (total arm " + VARIANTS.length + ")");
 }
@@ -1373,6 +1389,11 @@ async function cycle(): Promise<void> {
             }
             continue;
           }
+        }
+        if (RETIRED.has(v.id)) continue; // aturan bunuh: arm yang dipensiunkan tidak lagi membuka posisi
+        if (v.requireLivePool && !livePoolOk(m.tokenAddress, LIVEPOOL_CACHE)) {
+          logRecord("rh-events", { type: "rh-livepool-block", variant: v.id, token: m.tokenAddress, symbol: m.symbol, cohort: COHORT12, cfg: configHash });
+          continue;
         }
         if (v.limitDistPct && v.limitExpiryMin) {
           // KOHORT-11: JANGAN beli di pasar. Daftarkan limit (target = harga × (1 − jarak)) lalu tunggu.
