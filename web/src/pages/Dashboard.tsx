@@ -46,7 +46,6 @@ export default function Dashboard() {
         <nav className="console-nav" aria-label="Navigasi lane">
           <button type="button" aria-pressed={section === "overview"} onClick={() => setSection("overview")}><LayoutDashboard size={16} />Ringkasan</button>
           {dashboardLanes.map((lane) => <button key={lane.id} type="button" aria-pressed={section === lane.id} onClick={() => setSection(lane.id)}>{lane.name}</button>)}
-          <button type="button" aria-pressed={section === "solana"} onClick={() => setSection("solana")}>Solana<span className="nav-label">S1 / S2</span></button>
         </nav>
         {!data ? <DashboardLoading /> : <div className="console-content">
           {section === "overview" && <><DashboardOverview data={data} age={age} healthy={healthy} onSelect={setSection} /><QualityCard data={data.quality} /></>}
