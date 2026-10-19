@@ -1014,6 +1014,15 @@ async function onchainExits(st: State, now: number): Promise<void> {
     const ctx = due.get(h.pool);
     if (!ctx) continue;
     if (!h.ok) {
+      // FIX 2026-10-19: revert DETERMINISTIK (pool bukan V3 normal) → skip 6 jam SEKETIKA.
+      // Alasan terukur: 1.489 log/hari, semua 'execution reverted', gagalKe selalu 1 (penghitung
+      // ter-reset) sehingga breaker 3x tak pernah trip dan pool yang sama ditembak tiap ~20 detik.
+      if (/revert/i.test(String(h.reason ?? ""))) {
+        st.onchainSkipUntil = { ...(st.onchainSkipUntil ?? {}), [h.pool]: now + ONCHAIN_SKIP_MS };
+        st.onchainFailLogged = { ...(st.onchainFailLogged ?? {}), [h.pool]: now };
+        logRecord("rh-events", { type: "rh-onchain-skip", pool: h.pool, gagal: 1, sebab: "revert (deterministik)", dilewatiJam: Number((ONCHAIN_SKIP_MS / 3_600_000).toFixed(1)), cfg: configHash });
+        continue;
+      }
       const gagal = (st.onchainFails?.[h.pool] ?? 0) + 1;
       st.onchainFails = { ...(st.onchainFails ?? {}), [h.pool]: gagal };
       // jejak waktu gagal (1 jam terakhir) untuk trip berbasis jendela
