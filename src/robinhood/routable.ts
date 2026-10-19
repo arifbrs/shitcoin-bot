@@ -54,7 +54,19 @@ async function main(): Promise<void> {
   }
   const routable: Array<{ token: string; symbol: string; why?: string }> = [];
   const unroutable: Array<{ token: string; symbol: string; why?: string }> = [];
-  for (const [token, symbol] of toks) { const r = await hasLiquidWethPool(token); (r.ok ? routable : unroutable).push({ token, symbol, why: r.why } as { token: string; symbol: string; why?: string }); }
+  // FIX 2026-10-19: SUMBER DIBATASI LAJU. Tanpa jeda, 63 panggilan beruntun = 429 + IP diblokir sementara
+  // (terbukti). Jeda 1,2 detik + simpan bertahap supaya satu kali jalan menghasilkan data, bukan ban.
+  let idx = 0;
+  for (const [token, symbol] of toks) {
+    idx++;
+    const r = await hasLiquidWethPool(token);
+    (r.ok ? routable : unroutable).push({ token, symbol, why: r.why } as { token: string; symbol: string; why?: string });
+    if (idx % 10 === 0) {
+      writeFileSync(join(config.logDir, "rh-routable.json"), JSON.stringify({ ts: Date.now(), arm, checked: idx, total: toks.size, routable, unroutable }, null, 1));
+      console.log("    … " + idx + "/" + toks.size + " diperiksa (routable: " + routable.length + ")");
+    }
+    await new Promise((res) => setTimeout(res, Number(process.env.RH_ROUTABLE_DELAY_MS ?? 1200)));
+  }
   const out = { ts: Date.now(), arm, checked: toks.size, routable, unroutable };
   writeFileSync(join(config.logDir, "rh-routable.json"), JSON.stringify(out, null, 1));
   console.log("  arm " + arm + " · token diperiksa " + toks.size + " → ROUTABLE " + routable.length + " (" + routable.slice(0, 6).map((r) => r.symbol).join(", ") + ")");
