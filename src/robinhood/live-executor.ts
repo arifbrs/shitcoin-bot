@@ -55,13 +55,28 @@ async function main(): Promise<void> {
   // FIX 2026-10-18: hasil penjualan berbentuk WETH — jadi tunai = ETH + WETH (bukan ETH saja).
   const wethRaw = (await rpc("eth_call", [{ to: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", data: "0x70a08231000000000000000000000000" + BOTW.slice(2) }, "latest"])).result as string;
   const wethNow = Number(BigInt(wethRaw ?? "0x0")) / 1e18;
-  const cashNow = ethNow + wethNow;
+  // TUNAI DALAM USD (2026-10-19): ETH+WETH dikonversi dengan harga dari quote OKX (gratis) + USDG (stable).
+  const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+  let usdgNow = 0;
+  try {
+    const ur = (await rpc("eth_call", [{ to: USDG, data: "0x70a08231000000000000000000000000" + BOTW.slice(2).toLowerCase() }, "latest"])).result as string;
+    usdgNow = Number(BigInt(ur ?? "0x0")) / 1e6;
+  } catch { usdgNow = 0; }
+  let ethUsd = 2361; // fallback (hanya jika quote gagal — dicetak sebagai perkiraan)
+  try {
+    const qp = await okx(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${WETH}&toTokenAddress=${USDG}&amount=1000000000000000000&swapMode=exactIn`, env);
+    const dp = ((qp.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
+    const out = Number(dp.toTokenAmount ?? 0) / 1e6;
+    if (qp.code === "0" && out > 0) ethUsd = out;
+  } catch { /* fallback */ }
+  const cashUsd = (ethNow + wethNow) * ethUsd + usdgNow;
+  const cashNow = cashUsd / ethUsd; // setara ETH (untuk kompatibilitas)
 
   console.log("  ══ JEMBATAN SINYAL→EKSEKUSI — arm " + strategy + " · notional $" + usd + (yes ? " · MODE: EKSEKUSI" : " · MODE: DRY-RUN") + " ══");
-  console.log("  saldo tunai: " + ethNow.toFixed(6) + " ETH + " + wethNow.toFixed(6) + " WETH ≈ $" + (cashNow * 2361).toFixed(2));
+  console.log("  saldo tunai: " + ethNow.toFixed(6) + " ETH + " + wethNow.toFixed(6) + " WETH + " + usdgNow.toFixed(4) + " USDG ≈ $" + cashUsd.toFixed(2) + " (ETH @ $" + ethUsd.toFixed(0) + ")");
   // FIX 2026-10-18: pemeriksaan tunai hanya untuk MEMBUKA posisi. Menjual tidak butuh tunai —
   // dan mode exits-only (supervisor) harus tetap bisa keluar walau saldo tunai kecil.
-  if (!exitsOnly && cashNow * 2361 < usd) { console.log("  TOLAK: tunai (ETH+WETH) < notional $" + usd + " — tidak ada posisi baru dibuka (penjualan tetap jalan)."); }
+  if (!exitsOnly && cashUsd < usd) { console.log("  TOLAK: tunai (ETH+WETH) < notional $" + usd + " — tidak ada posisi baru dibuka (penjualan tetap jalan)."); }
 
   // Sinyal dari ledger paper arm terpilih (hari ini)
   const files = readdirSync(config.logDir).filter((f) => /^rh-paper-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort().slice(-1);
@@ -139,7 +154,7 @@ async function main(): Promise<void> {
     }
   };
   let executed = 0;
-  const cukupTunai = cashNow * 2361 >= usd;
+  const cukupTunai = cashUsd >= usd;
   if (exitsOnly) { console.log("  MODE exits-only: rencana BELI 0 (semua pembukaan dilewati) · JUAL " + todoSell.length + " token"); }
   if (!cukupTunai) console.log("  (tunai kurang: hanya jalur KELUAR yang dijalankan)") ;
   for (const r of (exitsOnly || !cukupTunai ? [] : todoBuy)) {
