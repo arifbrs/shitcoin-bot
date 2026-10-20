@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   const toSym = arg("to", "USDG")!;
   const amount = arg("amount", "0.002")!;
   const amountRaw = BigInt(Math.round(Number(amount) * 1e6)) * 1_000_000_000_000n; // ETH 18 desimal
-  const slipPct = 5;
+  let slipPct = 5;
   const env = envOf();
   const { privateKeyToAccount } = await import("viem/accounts");
   const { createWalletClient, createPublicClient, http } = await import("viem");
@@ -71,6 +71,15 @@ async function main(): Promise<void> {
     steps.push({ name: "approve WETH → OKX", to: WETH, data: "0x095ea7b3" + pad(BigInt(DEX_APPROVE)) + pad(amountRaw), value: 0n });
   }
   const fromTok = wrap ? WETH : NATIVE;
+  // SLIPPAGE DINAMIS (2026-10-19): dari priceImpact quote + margin, clamp 1%..10%.
+  {
+    const qd = await okxGet(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${fromTok}&toTokenAddress=${toAddr}&amount=${amountRaw}&swapMode=exactIn`, env);
+    if (qd.code === "0") {
+      const d0 = ((qd.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
+      const imp = Number(d0.priceImpactPercentage ?? NaN);
+      if (Number.isFinite(imp)) slipPct = Math.min(10, Math.max(1, imp + 1));
+    }
+  }
   const sw = await okxGet(`/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&fromTokenAddress=${fromTok}&toTokenAddress=${toAddr}&amount=${amountRaw}&swapMode=exactIn&slippagePercent=${slipPct}&userWalletAddress=${bot.address}`, env);
   if (sw.code !== "0") { console.log("  swap API: ✗ code=" + sw.code + " " + String(sw.msg).slice(0, 100)); return; }
   const sd = (sw.data as Array<Record<string, unknown>>)[0] ?? {};

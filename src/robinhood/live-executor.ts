@@ -150,7 +150,9 @@ async function main(): Promise<void> {
     try {
       const q = await okx(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${token}&toTokenAddress=${WETH}&amount=1000000000000000000&swapMode=exactIn`, env);
       const d = ((q.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
-      sellable = q.code === "0" && Number(d.toTokenAmount ?? 0) > 0;
+      const imp = Number(d.priceImpactPercentage ?? NaN);
+      // GERBANG DIPERKETAT (2026-10-19): nilai jual > 0 DAN dampak harga wajar (<5%).
+      sellable = q.code === "0" && Number(d.toTokenAmount ?? 0) > 0 && (!Number.isFinite(imp) || imp < 5);
     } catch { sellable = false; }
     if (!sellable) {
       console.log("    ⟳ " + String(r.symbol ?? token) + ": TIDAK terbukti bisa dijual → entry DIBATALKAN");
