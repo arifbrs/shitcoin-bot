@@ -143,6 +143,20 @@ async function main(): Promise<void> {
   for (const r of (exitsOnly || !cukupTunai ? [] : todoBuy)) {
     if (executed >= max) break;
     const token = String(r.token);
+    // GERBANG "BISA KELUAR" (2026-10-19): buktikan sisi JUAL dulu — pelajaran dari gilet, yang bisa
+    // dibeli tetapi tidak bisa dijual (OKX: "input value too low"; router: "Invalid token"; pool: swap 0/0).
+    // Tanpa bukti keluar, entry tidak dijalankan (log rh-unexitable-block) agar posisi tidak terkunci.
+    let sellable = false;
+    try {
+      const q = await okx(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${token}&toTokenAddress=${WETH}&amount=1000000000000000000&swapMode=exactIn`, env);
+      const d = ((q.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
+      sellable = q.code === "0" && Number(d.toTokenAmount ?? 0) > 0;
+    } catch { sellable = false; }
+    if (!sellable) {
+      console.log("    ⟳ " + String(r.symbol ?? token) + ": TIDAK terbukti bisa dijual → entry DIBATALKAN");
+      appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "UNEXITABLE_BLOCK", strategy, token, symbol: r.symbol, note: "quote jual gagal/0 → tidak boleh entry" }) + "\n");
+      continue;
+    }
     console.log("    ▶ beli " + String(r.symbol ?? token) + " $" + usd + " via pool-swap …");
     const ok = runSwap("buy", token, Number((usd / 2361).toFixed(6)));
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_BUY", strategy, token, symbol: r.symbol, notionalUsd: usd, route: "pool-swap", ok }) + "\n");

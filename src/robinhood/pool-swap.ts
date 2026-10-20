@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 
 const RPC = process.env.ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
-const HELPER = "0xb7c640835f6250e06990cc6d9b14d3ca8554a005";
+const HELPER = "0x791945d9563f789ab437f77b62a698432ee7b323";
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 const KEY_PATH = join(config.logDir, "rh-wallet.key");
 
@@ -67,10 +67,17 @@ async function main(): Promise<void> {
   const zeroForOne = buy ? wethIsT0 : wethIsT1; // beli: WETH masuk → token keluar
   const slot0 = (await read("slot0")) as unknown[];
   const sqrtP = BigInt(slot0[0] as bigint);
-  const limit = zeroForOne ? BigInt(Math.floor(Number(sqrtP) * 0.95)) : BigInt(Math.floor(Number(sqrtP) * 1.05));
+  // FIX 2026-10-19: Number(sqrtP) kehilangan presisi (sqrtP ~1e33 > 2^53) → limit == harga → swap 0/0.
+  // Hitung batas dengan BigInt: -5% untuk zeroForOne=true, +5% untuk false (harus STRICTLY di sisi itu).
+  const limit = zeroForOne ? (sqrtP * 95n) / 100n : (sqrtP * 105n) / 100n;
+  console.log("  DIAG sqrtP=" + sqrtP.toString() + " · limit=" + limit.toString() + " · limit>sqrtP=" + (limit > sqrtP ? "YA" : "TIDAK"));
   // --all: jual seluruh saldo token; untuk beli, pakai seluruh WETH yang ada.
   const balOf = async (tok: string): Promise<bigint> => BigInt((await pub.readContract({ address: tok as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never)) as bigint);
-  const amountIn = amountAll ? await balOf(side === "buy" ? WETH : token) : BigInt(Math.round(amountEth * 1e6)) * 10n ** 12n;
+  // DIAGNOSTIK 2026-10-19: cetak angka yang benar-benar dipakai (bug: swap nol → amountIn 0).
+  const balSrc = side === "buy" ? WETH : token;
+  const balRead = await balOf(balSrc);
+  const amountIn = amountAll ? balRead : BigInt(Math.round(amountEth * 1e6)) * 10n ** 12n;
+  console.log("  DIAG amountAll=" + amountAll + " · balOf(" + (side === "buy" ? "WETH" : "token") + ")=" + balRead.toString() + " · amountIn=" + amountIn.toString());
   const steps: Array<{ name: string; to: string; data: string; value: bigint }> = [];
   const wethNow = BigInt((await pub.readContract({ address: WETH as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never)) as bigint);
   if (buy) {

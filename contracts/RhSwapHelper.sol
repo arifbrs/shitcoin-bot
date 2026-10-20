@@ -42,7 +42,7 @@ contract RhSwapHelper {
         uint256 minOut
     ) external returns (uint256 got) {
         if (msg.sender != owner) revert NotOwner();
-        IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amountIn), sqrtPriceLimitX96, abi.encode(pool));
+        IUniswapV3Pool(pool).swap(address(this), zeroForOne, -int256(amountIn), sqrtPriceLimitX96, abi.encode(pool)); // NEGATIF = exact input
         address out = zeroForOne ? IUniswapV3Pool(pool).token1() : IUniswapV3Pool(pool).token0();
         got = IERC20(out).balanceOf(address(this));
         if (got < minOut) revert TooMuchAsked();
