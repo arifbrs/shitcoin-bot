@@ -85,6 +85,10 @@ async function main(): Promise<void> {
   const sd = (sw.data as Array<Record<string, unknown>>)[0] ?? {};
   const tx = (sd.tx ?? {}) as Record<string, unknown>;
   if (!tx.to || !tx.data) { console.log("  TOLAK: data tx tak lengkap"); return; }
+  // JUAL (from = token, bukan ETH): approve token ke alamat approve resmi OKX sebelum swap.
+  if (String(fromTok).toLowerCase() !== NATIVE && !wrap) {
+    steps.push({ name: "approve token → OKX", to: String(fromTok), data: "0x095ea7b3" + pad(BigInt(DEX_APPROVE)) + pad(amountRaw), value: 0n });
+  }
   steps.push({ name: "swap → " + toSym, to: String(tx.to), data: String(tx.data), value: BigInt(String(tx.value ?? "0")) });
 
   for (const s of steps) console.log("  langkah: " + s.name.padEnd(24) + " to=" + s.to.slice(0, 10) + "… · value=" + s.value);
