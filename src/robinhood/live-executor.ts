@@ -131,7 +131,7 @@ async function main(): Promise<void> {
     try {
       const out = execFileSync("npx", side === "buy"
         ? ["tsx", "src/robinhood/live-swap.ts", "--from", "ETH", "--to", token, "--amount", String(amount), "--yes"]
-        : ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, ...amountArg, "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
+        : ["tsx", "src/robinhood/live-swap.ts", "--from", token, "--to", "ETH", "--amount", String(amount), "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
       return out.includes("selesai");
     } catch (e) {
       console.log("    ✗ " + side + " gagal: " + String((e as Error).message).slice(0, 90));
@@ -171,7 +171,14 @@ async function main(): Promise<void> {
     const held = live.find((x) => x.action === "LIVE_BUY" && x.ok && String(x.token).toLowerCase() === token.toLowerCase());
     const amount = Number(held?.notionalUsd ?? usd) / 2361; // jual seluruh posisi (nilai ETH saat beli)
     console.log("    ▶ jual " + String(r.symbol ?? token) + " (seluruh posisi) via pool-swap …");
-    const ok = runSwap("sell", token, 0); // 0 + mode --all di pool-swap
+    // JUAL via OKX: baca saldo token mentah → kirim sebagai jumlah (18 desimal) ke live-swap.
+    let jualAmt = 0;
+    try {
+      const hex = "0x70a08231000000000000000000000000" + token.slice(2).toLowerCase();
+      const rb = (await rpc("eth_call", [{ to: token, data: hex }, "latest"])).result as string;
+      jualAmt = Number(BigInt(rb ?? "0x0")) / 1e18;
+    } catch { jualAmt = 0; }
+    const ok = jualAmt > 0 ? runSwap("sell", token, jualAmt) : false;
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_SELL", strategy, token, symbol: r.symbol, route: "pool-swap", ok }) + "\n");
   }
 }
