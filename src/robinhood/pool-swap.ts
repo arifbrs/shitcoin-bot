@@ -103,6 +103,17 @@ async function main(): Promise<void> {
     if (rc.status !== "success") return;
   }
   void env;
+  // VERIFIKASI SALDO (2026-10-19): status tx "success" TIDAK cukup — pool dengan likuiditas in-range 0
+  // mengembalikan swap 0/0 tanpa revert (kasus nyata: gilet, lalu HOOT). Wajib buktikan token keluar BERTAMBAH.
+  const outTok = side === "buy" ? token : WETH;
+  const outBefore = await (pub.readContract({ address: outTok as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never) as Promise<bigint>);
+  if (outBefore === 0n) {
+    const outNow = await (pub.readContract({ address: outTok as `0x${string}`, abi: ABI as never, functionName: "balanceOf", args: [bot.address] } as never) as Promise<bigint>);
+    if (outNow === 0n) {
+      console.log("  GAGAL: saldo token keluar masih 0 → swap tidak menggerakkan dana (pool in-range 0?).");
+      process.exit(1);
+    }
+  }
   console.log("\n  selesai — ukur: npm run rh:fills --silent -- " + bot.address);
 }
 
