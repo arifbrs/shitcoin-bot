@@ -129,7 +129,9 @@ async function main(): Promise<void> {
   const runSwap = (side: "buy" | "sell", token: string, amount: number): boolean => {
     const amountArg = side === "sell" ? ["--all"] : ["--amount", String(amount)];
     try {
-      const out = execFileSync("npx", ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, ...amountArg, "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
+      const out = execFileSync("npx", side === "buy"
+        ? ["tsx", "src/robinhood/live-swap.ts", "--from", "ETH", "--to", token, "--amount", String(amount), "--yes"]
+        : ["tsx", "src/robinhood/pool-swap.ts", "--token", token, "--side", side, ...amountArg, "--yes"], { encoding: "utf8", timeout: 300_000, maxBuffer: 2e7 });
       return out.includes("selesai");
     } catch (e) {
       console.log("    ✗ " + side + " gagal: " + String((e as Error).message).slice(0, 90));
