@@ -7,6 +7,7 @@ type PaperData = {
   positions: Array<{ arm: string; symbol: string; token: string; ageMin: number; entryWeth: number; markWeth: number | null; pnlPct: number | null; stuck: boolean; stuckReason: string | null }>;
   closed: number;
   stuck: number;
+  byArm: Record<string, { open: number; closed: number; stuck: number }>;
   rule: string;
   updatedAt: string;
 };
@@ -80,6 +81,16 @@ export function PaperPanel() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {Object.keys(d.byArm ?? {}).length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {Object.entries(d.byArm).map(([arm, v]) => (
+            <span key={arm} className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-white/60">
+              arm <b className="text-white/85">{arm}</b> · buka {v.open} · tutup {v.closed} · stuck {v.stuck}
+            </span>
+          ))}
+        </div>
       )}
 
       <div className="mt-3 flex flex-wrap justify-between gap-2 text-[11px] text-white/40">
