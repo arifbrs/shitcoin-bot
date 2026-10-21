@@ -44,7 +44,7 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
           const pnlUsd = 0; // USD tidak dikarang; nilai WETH dilaporkan terpisah dari quote
           s.positions = s.positions.filter((x) => x !== p);
           s.closed++; s.pnlUsd += pnlUsd; closed++;
-          appendLedger({ ts: Date.now(), action: "CLOSE", token: p.token, symbol: p.symbol, why, pnlPct, pnlUsd, quoteRef: JSON.stringify(sell.quote) });
+          appendLedger({ ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why, pnlPct, pnlUsd, quoteRef: JSON.stringify(sell.quote) });
         }
       }
 
@@ -59,9 +59,9 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
           const wethRaw = (cfg as unknown as { wethRaw?: string }).wethRaw ?? "1000000000000000";
           const buy = await quoteBuy(c.token, wethRaw, cfg.maker);
           if (!buy.ok) { errors.push(c.symbol + ": " + (buy.reason ?? "quote beli gagal")); continue; }
-          const pos: Position = { token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut };
+          const pos: Position = { arm: ((cfg as unknown as { arm?: string }).arm ?? "A"), token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut };
           s.positions.push(pos); opened++;
-          appendLedger({ ts: Date.now(), action: "OPEN", token: c.token, symbol: c.symbol, usd: cfg.usd, qtyRaw: pos.qtyRaw, quoteRef: pos.entryQuoteRef });
+          appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, usd: cfg.usd, qtyRaw: pos.qtyRaw, quoteRef: pos.entryQuoteRef });
         }
       }
       saveState(s);

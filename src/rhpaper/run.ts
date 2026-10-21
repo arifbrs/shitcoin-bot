@@ -13,6 +13,7 @@ const cfg = {
   takePct: Number(process.env.RHPAPER_TAKE ?? 250),
   tpHoldMin: Number(process.env.RHPAPER_HOLD_MIN ?? 240),
   wethRaw: process.env.RHPAPER_WETH_RAW ?? "1000000000000000",
+  arm: process.env.RHPAPER_ARM ?? "A",
 } as Cfg;
 
 const t0 = Date.now();

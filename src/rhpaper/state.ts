@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 
 export interface Position {
-  token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; entryWethRaw: string; qtyRaw: string;
+  arm: string; token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; entryWethRaw: string; qtyRaw: string;
   peakPnlPct?: number; stuck?: boolean; stuckReason?: string;
 }
 export interface PaperState {

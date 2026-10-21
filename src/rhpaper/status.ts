@@ -23,6 +23,12 @@ export async function paperStatus(): Promise<Record<string, unknown>> {
       entryWeth: Number(p.entryWethRaw) / 1e18,
       stuck: Boolean(p.stuck), stuckReason: p.stuckReason ?? null,
     })),
+    byArm: (() => {
+      const m: Record<string, { open: number; closed: number; stuck: number }> = {};
+      for (const p of s.positions ?? []) { const a = p.arm ?? "?"; (m[a] ??= { open: 0, closed: 0, stuck: 0 }).open++; if (p.stuck) m[a].stuck++; }
+      for (const c of closes) { const a = String((c as Record<string, unknown>).arm ?? "?"); (m[a] ??= { open: 0, closed: 0, stuck: 0 }).closed++; }
+      return m;
+    })(),
     closed: s.closed,
     stuck: s.stuck,
     closes: closes.slice(-10),
