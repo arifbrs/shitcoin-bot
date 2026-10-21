@@ -4,7 +4,7 @@ type PaperData = {
   engine: string;
   cycles: number;
   candidates: number;
-  positions: Array<{ symbol: string; token: string; ageMin: number; entryWeth: number; stuck: boolean; stuckReason: string | null }>;
+  positions: Array<{ arm: string; symbol: string; token: string; ageMin: number; entryWeth: number; markWeth: number | null; pnlPct: number | null; stuck: boolean; stuckReason: string | null }>;
   closed: number;
   stuck: number;
   rule: string;
@@ -59,15 +59,20 @@ export function PaperPanel() {
         <table className="mt-3 w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-white/40">
-              <th>token</th><th>umur</th><th>WETH masuk</th><th>status</th>
+              <th>arm</th><th>token</th><th>umur</th><th>WETH masuk</th><th>nilai kini</th><th>PnL</th><th>status</th>
             </tr>
           </thead>
           <tbody>
             {d.positions.map((p) => (
               <tr key={p.token} className="border-t border-white/5">
+                <td className="text-white/50">{p.arm}</td>
                 <td className="py-1 font-semibold">{p.symbol}</td>
                 <td>{p.ageMin} mnt</td>
                 <td>{p.entryWeth.toFixed(6)}</td>
+                <td>{p.markWeth === null ? "—" : p.markWeth.toFixed(6)}</td>
+                <td className={p.pnlPct === null ? "text-white/40" : p.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                  {p.pnlPct === null ? "tanpa quote" : (p.pnlPct >= 0 ? "+" : "") + p.pnlPct.toFixed(2) + "%"}
+                </td>
                 <td className={p.stuck ? "text-amber-400" : "text-white/60"}>
                   {p.stuck ? "STUCK · " + (p.stuckReason ?? "") : "terbuka · menunggu exit sesuai aturan"}
                 </td>

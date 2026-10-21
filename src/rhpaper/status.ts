@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { ledgerPath, loadState } from "./state.js";
 import { loadCandidates } from "./scanner.js";
+import { quoteSell } from "./exec.js";
 
 export async function paperStatus(): Promise<Record<string, unknown>> {
   const s = loadState();
@@ -17,11 +18,24 @@ export async function paperStatus(): Promise<Record<string, unknown>> {
     version: s.version,
     cycles: s.cycles,
     candidates: loadCandidates().length,
-    positions: (s.positions ?? []).map((p) => ({
-      symbol: p.symbol, token: p.token,
-      ageMin: Math.round((Date.now() - p.entryTs) / 60000),
-      entryWeth: Number(p.entryWethRaw) / 1e18,
-      stuck: Boolean(p.stuck), stuckReason: p.stuckReason ?? null,
+    // PnL REALTIME = harga jual dari QUOTE (bisa dieksekusi), bukan harga mark.
+    positions: await Promise.all((s.positions ?? []).map(async (p) => {
+      const entryWeth = Number(p.entryWethRaw) / 1e18;
+      let markWeth: number | null = null;
+      let pnlPct: number | null = null;
+      try {
+        const q = await quoteSell(p.token, p.qtyRaw, process.env.BOT_WALLET || "0x629Ec42444A43A0E02A572587E3A49904542F4E8");
+        if (q.ok && q.quote) {
+          markWeth = Number(q.quote.amountOut) / 1e18;
+          if (entryWeth > 0) pnlPct = ((markWeth - entryWeth) / entryWeth) * 100;
+        }
+      } catch { /* tanpa quote = tanpa angka */ }
+      return {
+        arm: p.arm ?? "?", symbol: p.symbol, token: p.token,
+        ageMin: Math.round((Date.now() - p.entryTs) / 60000),
+        entryWeth, markWeth, pnlPct,
+        stuck: Boolean(p.stuck), stuckReason: p.stuckReason ?? null,
+      };
     })),
     byArm: (() => {
       const m: Record<string, { open: number; closed: number; stuck: number }> = {};
