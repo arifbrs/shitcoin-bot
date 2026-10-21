@@ -13,7 +13,7 @@ while true; do
   # MODE PENUH (2026-10-19, permintaan operator): bot MEMBUKA dan MENUTUP posisi otomatis.
   # Pengaman yang tetap aktif: gerbang "bisa keluar" (quote jual >0 + dampak <5%), cek tunai >= notional,
   # aturan satu-posisi, simulasi pra-kirim, dan slippage dinamis. Notional kecil bisa diatur via LIVE_USD.
-  OUT=$(npm run rh:live --silent -- --strategy v41-liq25-100 --usd ${LIVE_USD:-2.5} --max 1 --yes 2>&1)
+  OUT=$(npm run rh:live --silent -- --strategy v42-liq25-50 --usd ${LIVE_USD:-2.5} --max 1 --yes 2>&1)
   echo "[live-exits] $(date '+%H:%M:%S') $(echo "$OUT" | grep -E 'rencana|jual|TOLAK|MODE|✗|✓' | head -4 | tr '\n' ' | ')"
   sleep "$INTERVAL"
 done
