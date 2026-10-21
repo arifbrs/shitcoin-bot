@@ -47,7 +47,9 @@ export async function liveStatus(): Promise<LiveStatus> {
       paperHeld = new Set((st.variants?.["v42-liq25-50"]?.positions ?? []).map((x) => String(x.token).toLowerCase()));
     } catch { /* state rusak → anggap kosong (fail-closed: posisi akan dianggap yatim) */ }
   }
-  const positions = buys.filter((b) => !sold.has(String(b.token).toLowerCase())).map((b) => {
+  // FIX 2026-10-21: posisi ditentukan oleh SALDO NYATA, bukan catatan jual.
+  // Kasus nyata: gilet punya catatan LIVE_SELL(ok) padahal 2,62 juta tokennya masih di wallet → jangan disembunyikan.
+  const positions = buys.filter((b) => !sold.has(String(b.token).toLowerCase()) || true).map((b) => {
     const tk = String(b.token).toLowerCase();
     const ageMin = (Date.now() - Number(b.ts ?? 0)) / 60_000;
     const holds = paperHeld.has(tk);
