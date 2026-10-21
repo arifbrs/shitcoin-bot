@@ -39,12 +39,28 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
         const outWeth = Number(sell.quote!.amountOut);
         const entryWeth = Number(p.entryWethRaw);
         const pnlPct = entryWeth > 0 ? ((outWeth - entryWeth) / entryWeth) * 100 : 0;
+        // JURNAL: satu baris MARK per siklus → bisa menghitung drawdown, peak, dan lintasan tiap trade.
+        p.peakPct = Math.max(p.peakPct ?? pnlPct, pnlPct);
+        p.troughPct = Math.min(p.troughPct ?? pnlPct, pnlPct);
+        p.marks = (p.marks ?? 0) + 1;
+        appendLedger({ ts: Date.now(), action: "MARK", arm: p.arm, token: p.token, symbol: p.symbol, outWethRaw: String(sell.quote!.amountOut), pnlPct, impactPct: sell.quote!.impactPct });
         const why = shouldExit(pnlPct, (Date.now() - p.entryTs) / 60000, cfg);
         if (why) {
-          const pnlUsd = 0; // USD tidak dikarang; nilai WETH dilaporkan terpisah dari quote
+          // Biaya gas nyata RH ≈ 0,0000057 WETH per swap (terukur $0,0064–0,008) — 2 kali (masuk+keluar).
+          const GAS_WETH = 0.0000057;
+          const netPct = entryWeth > 0 ? ((outWeth - entryWeth - 2 * GAS_WETH) / entryWeth) * 100 : 0;
           s.positions = s.positions.filter((x) => x !== p);
-          s.closed++; s.pnlUsd += pnlUsd; closed++;
-          appendLedger({ ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why, pnlPct, pnlUsd, quoteRef: JSON.stringify(sell.quote) });
+          s.closed++; closed++;
+          appendLedger({
+            ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
+            heldMin: Math.round((Date.now() - p.entryTs) / 60000),
+            entryWethRaw: p.entryWethRaw, exitWethRaw: String(sell.quote!.amountOut),
+            grossPct: pnlPct, netPct, gasWeth: 2 * GAS_WETH,
+            peakPct: p.peakPct ?? pnlPct, troughPct: p.troughPct ?? pnlPct, marks: p.marks ?? 0,
+            entryImpactPct: (() => { try { return (JSON.parse(p.entryQuoteRef) as { impactPct?: number }).impactPct ?? null; } catch { return null; } })(),
+            exitImpactPct: sell.quote!.impactPct, exitSlippagePct: sell.quote!.slippagePct,
+            quoteRef: JSON.stringify(sell.quote),
+          });
         }
       }
 
@@ -61,7 +77,7 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
           if (!buy.ok) { errors.push(c.symbol + ": " + (buy.reason ?? "quote beli gagal")); continue; }
           const pos: Position = { arm: ((cfg as unknown as { arm?: string }).arm ?? "A"), token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut };
           s.positions.push(pos); opened++;
-          appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, usd: cfg.usd, qtyRaw: pos.qtyRaw, quoteRef: pos.entryQuoteRef });
+          appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, decimals: c.decimals, usd: cfg.usd, entryWethRaw: pos.entryWethRaw, qtyRaw: pos.qtyRaw, entryImpactPct: buy.quote!.impactPct, entrySlippagePct: buy.quote!.slippagePct, quoteRef: pos.entryQuoteRef });
         }
       }
       saveState(s);
