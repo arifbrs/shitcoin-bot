@@ -102,3 +102,51 @@ export async function simulate(tx: { to: string; data: string; value: string }, 
   const r = await rpc("eth_call", [{ from, to: tx.to, value: "0x" + BigInt(tx.value || "0").toString(16), data: tx.data, gas: "0xb71b0" }, "latest"]);
   return r.error ? { ok: false, reason: String(r.error.message ?? "revert").slice(0, 100) } : { ok: true };
 }
+
+export async function signer() {
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const k = readFileSync("logs/rh-wallet.key", "utf8").trim().replace(/^0x/, "");
+  return privateKeyToAccount(("0x" + k) as `0x${string}`);
+}
+
+export async function allowanceOf(token: string, owner: string): Promise<bigint> {
+  const data = "0xdd62ed3e" + owner.slice(2).toLowerCase().padStart(64, "0") + OKX_APPROVE.slice(2).toLowerCase().padStart(64, "0");
+  const r = await rpc("eth_call", [{ to: token, data }, "latest"]);
+  return BigInt((r.result as string) ?? "0x0");
+}
+
+export async function send(tx: { to: string; data: string; value: string }): Promise<{ ok: boolean; hash?: string; reason?: string }> {
+  const { createWalletClient, createPublicClient, http } = await import("viem");
+  const acct = await signer();
+  const wallet = createWalletClient({ account: acct, transport: http(RPC) });
+  try {
+    const w = wallet as unknown as { sendTransaction: (a: Record<string, unknown>) => Promise<string> };
+    const hash = await w.sendTransaction({ to: tx.to, data: tx.data, value: BigInt(tx.value || "0"), account: acct, chain: null });
+    const pub = createPublicClient({ transport: http(RPC) });
+    const rc = await pub.waitForTransactionReceipt({ hash: hash as `0x${string}` });
+    return { ok: rc.status === "success", hash };
+  } catch (e) { return { ok: false, reason: String((e as Error).message).slice(0, 120) }; }
+}
+
+export async function ensureApprove(token: string, owner: string): Promise<{ ok: boolean; hash?: string; reason?: string }> {
+  if ((await allowanceOf(token, owner)) >= 2n ** 200n) return { ok: true };
+  return send({ to: token, data: "0x095ea7b3" + OKX_APPROVE.slice(2).toLowerCase().padStart(64, "0") + "f".repeat(64), value: "0" });
+}
+
+export async function fillBuy(token: string, wethRaw: string, maker: string): Promise<{ ok: boolean; hash?: string; reason?: string; quote?: QuoteRef }> {
+  const q = await quoteBuy(token, wethRaw, maker);
+  if (!q.ok) return { ok: false, reason: q.reason };
+  const sim = await simulate(q.tx!, maker);
+  if (!sim.ok) return { ok: false, reason: "simulasi: " + (sim.reason ?? "revert") };
+  return { ...(await send(q.tx!)), quote: q.quote };
+}
+
+export async function fillSell(token: string, qtyRaw: string, maker: string): Promise<{ ok: boolean; hash?: string; reason?: string; quote?: QuoteRef }> {
+  const ap = await ensureApprove(token, maker);
+  if (!ap.ok) return { ok: false, reason: "approve: " + (ap.reason ?? "gagal") };
+  const q = await quoteSell(token, qtyRaw, maker);
+  if (!q.ok) return { ok: false, reason: q.reason };
+  const sim = await simulate(q.tx!, maker);
+  if (!sim.ok) return { ok: false, reason: "simulasi: " + (sim.reason ?? "revert") };
+  return { ...(await send(q.tx!)), quote: q.quote };
+}

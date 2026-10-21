@@ -1,3 +1,4 @@
+import { fillBuy, fillSell } from "../rhpaper/exec.js";
 /**
  * JEMBATAN SINYAL → EKSEKUSI (2b) — `npm run rh:live -- [--strategy v42-liq25-50] [--usd 25] [--yes]`.
  *
@@ -212,7 +213,7 @@ async function main(): Promise<void> {
       } catch { return 0n; }
     };
     const before = await rawBal(token);
-    const okRun = runSwap("buy", token, Number((usd / 2361).toFixed(6)));
+    const okRun = (await fillBuy(token, "1000000000000000", BOTW)).ok;
     const after = await rawBal(token);
     const filled = okRun && after > before;
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: filled ? "LIVE_FILL" : "LIVE_ATTEMPT", strategy, token, symbol: r.symbol, notionalUsd: usd, route: "okx", ok: filled, amountOutRaw: (after - before).toString() }) + "\n");
