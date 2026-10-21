@@ -18,7 +18,17 @@ export async function listTokens(): Promise<Array<{ token: string; symbol: strin
   const skip = new Set([WETH.toLowerCase(), "0x5fc5360d0400a0fd4f2af552add042d716f1d168"]);
   return rows
     .map((t) => ({ token: String(t.tokenContractAddress ?? "").toLowerCase(), symbol: String(t.tokenSymbol ?? "?") }))
-    .filter((t) => /^0x[0-9a-f]{40}$/.test(t.token) && !skip.has(t.token));
+    .filter((t) => !skip.has(t.token) && isAcceptable(t.symbol, t.token));
+}
+
+/** Penyaring kualitas kandidat: buang token yang "menumpang nama" aset mapan (kasus nyata: token bernama ETH). */
+const RESERVED = new Set(["ETH", "WETH", "USDG", "USDC", "USDT", "BTC", "WBTC"]);
+export function isAcceptable(symbol: string, token: string): boolean {
+  const sym = symbol.trim().toUpperCase();
+  if (!sym || sym.length < 2 || sym.length > 20) return false;
+  if (RESERVED.has(sym)) return false;
+  if (sym.includes("HTTP") || sym.includes("://")) return false;
+  return /^0x[0-9a-f]{40}$/i.test(token);
 }
 
 /** Uji dua arah. Gagal salah satu → TIDAK kandidat. */
