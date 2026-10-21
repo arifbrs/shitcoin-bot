@@ -90,6 +90,12 @@ async function main(): Promise<void> {
   console.log("  sinyal paper (berkas " + (files[0] ?? "-") + "): " + opens.length + " buka · " + closes.length + " tutup");
 
   const doneBuys = new Set(held.map((r) => String(r.token).toLowerCase()));
+  // FIX 2026-10-21: token yang DIBLOKIR gerbang atau GAGAL dibeli juga dianggap "sudah dicoba" —
+  // sebelumnya diulang tiap siklus (287 blokir/hari, loop berputar di token yang sama, tak pernah maju).
+  for (const r of live) {
+    const a = String(r.action);
+    if (a === "UNEXITABLE_BLOCK" || (a === "LIVE_BUY" && !r.ok)) doneBuys.add(String(r.token).toLowerCase());
+  }
   const doneSells = new Set(live.filter((r) => r.action === "LIVE_SELL").map((r) => String(r.token).toLowerCase()));
   const soldOk = new Set(live.filter((r) => r.action === "LIVE_SELL" && r.ok).map((r) => String(r.token).toLowerCase()));
   // FIX 2026-10-19: "posisi terbuka" = posisi yang TOKENNYA BENAR-BENAR ADA di wallet.
