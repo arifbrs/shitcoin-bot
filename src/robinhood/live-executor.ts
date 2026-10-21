@@ -86,8 +86,31 @@ async function main(): Promise<void> {
     if (!l.includes('"' + strategy + '"')) continue;
     try { rows.push(JSON.parse(l) as Record<string, unknown>); } catch { /* baris rusak dilewati */ }
   }
-  const opens = rows.filter((r) => r.action === "RH_OPEN");
-  const closes = rows.filter((r) => r.action === "RH_CLOSE");
+  // SUMBER BARU (2026-10-21): engine paper 1:1 (logs/rhpaper). Bila ada, itulah sumbernya.
+  // Engine membuka HANYA token yang lolos quote beli+jual dan menutup HANYA dengan quote jual.
+  // Ledger paper lama tetap dipakai sebagai cadangan sampai engine terbukti 24 jam.
+  const engineDir = "logs/rhpaper";
+  let opens: Array<Record<string, unknown>>;
+  let closes: Array<Record<string, unknown>>;
+  const engineState = existsSync(join(engineDir, "state.json"))
+    ? (JSON.parse(readFileSync(join(engineDir, "state.json"), "utf8")) as { positions?: Array<Record<string, unknown>> })
+    : null;
+  if (engineState) {
+    const ec: Array<Record<string, unknown>> = [];
+    const ef = join(engineDir, "ledger-" + new Date().toISOString().slice(0, 10) + ".jsonl");
+    if (existsSync(ef)) {
+      for (const l of readFileSync(ef, "utf8").split("\n")) {
+        if (!l.trim()) continue;
+        try { const j = JSON.parse(l) as Record<string, unknown>; if (j.action === "CLOSE") ec.push(j); } catch { /* lewati */ }
+      }
+    }
+    opens = (engineState.positions ?? []).map((p) => ({ action: "RH_OPEN", token: p.token, symbol: p.symbol, variant: "v42-liq25-50" }));
+    closes = ec.map((j) => ({ action: "RH_CLOSE", token: j.token, symbol: j.symbol }));
+    if (rows.length) console.log("  [sumber] engine paper 1:1 (logs/rhpaper)");
+  } else {
+    opens = rows.filter((r) => r.action === "RH_OPEN");
+    closes = rows.filter((r) => r.action === "RH_CLOSE");
+  }
   console.log("  sinyal paper (berkas " + (files[0] ?? "-") + "): " + opens.length + " buka · " + closes.length + " tutup");
 
   const doneBuys = new Set(held.map((r) => String(r.token).toLowerCase()));
