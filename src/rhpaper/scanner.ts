@@ -2,7 +2,7 @@
  * SCANNER paper 1:1 — kandidat HANYA dari token yang lolos QUOTE BELI + QUOTE JUAL.
  * Aturan plan: jika salah satu arah tidak punya rute, token TIDAK masuk kandidat (tidak ada mark).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { CHAIN, WETH, decimalsOf, envOf, okxGet, quoteBuy, quoteSell } from "./exec.js";
 import { dir } from "./state.js";
 
@@ -57,6 +57,14 @@ export async function scanCandidates(maker: string, want = 5, limit = 40): Promi
   mkdirSync(dir(), { recursive: true });
   writeFileSync(cachePath(), JSON.stringify({ ts: Date.now(), candidates: out }));
   return out;
+}
+
+/** Cache dianggap basi bila lebih tua dari `min` menit (default 30) — tanpa ini kandidat tak pernah diperbarui. */
+export function cacheStale(min = 30, date = new Date().toISOString().slice(0, 10)): boolean {
+  try {
+    if (!existsSync(cachePath(date))) return true;
+    return (Date.now() - statSync(cachePath(date)).mtimeMs) / 60000 >= min;
+  } catch { return true; }
 }
 
 export function loadCandidates(date = new Date().toISOString().slice(0, 10)): Candidate[] {

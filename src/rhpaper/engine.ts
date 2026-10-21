@@ -3,7 +3,7 @@
  * Harga fill = harga quote (exec.ts), biaya = fee pool 0,01% + gas nyata (dihitung saat laporan).
  */
 import { quoteBuy, quoteSell } from "./exec.js";
-import { loadCandidates, scanCandidates } from "./scanner.js";
+import { cacheStale, loadCandidates, scanCandidates } from "./scanner.js";
 import { appendLedger, loadState, saveState, withLockAsync, type Position } from "./state.js";
 
 export interface Cfg { maker: string; usd: number; maxPositions: number; stopPct: number; tpHoldMin: number; takePct: number }
@@ -51,7 +51,7 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
       // 2) ENTRY — hanya kandidat dua-arah, dan hanya bila quote beli ada
       if (s.positions.length < cfg.maxPositions) {
         let cands = loadCandidates();
-        if (cands.length === 0) cands = await scanCandidates(cfg.maker, Math.max(1, cfg.maxPositions));
+        if (cands.length === 0 || cacheStale(30)) cands = await scanCandidates(cfg.maker, Math.max(1, cfg.maxPositions));
         for (const c of cands) {
           if (s.positions.length >= cfg.maxPositions) break;
           if (s.positions.some((p) => p.token === c.token)) continue;
