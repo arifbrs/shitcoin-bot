@@ -69,7 +69,15 @@ export async function liveStatus(): Promise<LiveStatus> {
       if (BigInt(r ?? "0x0") === 0n) zeroBal.add(p.token.toLowerCase());
     } catch { /* jika tak terbaca, biarkan tampil (fail-visible) */ }
   }
-  const positionsLive = positions.filter((p) => !zeroBal.has(p.token.toLowerCase()));
+  const positionsLive0 = positions.filter((p) => !zeroBal.has(p.token.toLowerCase()));
+  // DEDUPE (2026-10-21): satu token bisa punya beberapa catatan beli (retry/hari berbeda) → satu baris saja.
+  const seenTok = new Set<string>();
+  const positionsLive = positionsLive0.filter((p) => {
+    const t = p.token.toLowerCase();
+    if (seenTok.has(t)) return false;
+    seenTok.add(t);
+    return true;
+  });
   return { wallet: WALLET, balances: { eth, weth, usdg }, positions: positionsLive, sells, costs: { poolFeePct: 0.01, gasPerSwapUsd: 0.007, note: "terukur 2026-10-18/19: fee pool 0,01% (fee()=100), gas nyata $0,0064–0,0080 per swap" }, generatedAt: Date.now() };
 }
 
