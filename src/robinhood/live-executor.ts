@@ -202,9 +202,21 @@ async function main(): Promise<void> {
       continue;
     }
     console.log("    ▶ beli " + String(r.symbol ?? token) + " $" + usd + " via pool-swap …");
-    const ok = runSwap("buy", token, Number((usd / 2361).toFixed(6)));
-    appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_BUY", strategy, token, symbol: r.symbol, notionalUsd: usd, route: "pool-swap", ok }) + "\n");
-    if (ok) executed++;
+    // SKEMA BARU (2026-10-21): pisahkan NIAT vs KENYATAAN.
+    //  LIVE_ATTEMPT = percobaan (gagal/sukses) — TIDAK pernah dihitung posisi.
+    //  LIVE_FILL    = hanya bila saldo token TERVERIFIKASI bertambah (transaksi nyata).
+    const rawBal = async (tok: string): Promise<bigint> => {
+      try {
+        const r = (await rpc("eth_call", [{ to: tok, data: "0x70a08231000000000000000000000000" + BOTW.slice(2).toLowerCase() }, "latest"])).result as string;
+        return BigInt(r ?? "0x0");
+      } catch { return 0n; }
+    };
+    const before = await rawBal(token);
+    const okRun = runSwap("buy", token, Number((usd / 2361).toFixed(6)));
+    const after = await rawBal(token);
+    const filled = okRun && after > before;
+    appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: filled ? "LIVE_FILL" : "LIVE_ATTEMPT", strategy, token, symbol: r.symbol, notionalUsd: usd, route: "okx", ok: filled, amountOutRaw: (after - before).toString() }) + "\n");
+    if (filled) executed++;
   }
   for (const r of todoSell) {
     const token = String(r.token);
