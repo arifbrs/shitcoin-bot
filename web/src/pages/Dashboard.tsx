@@ -12,6 +12,7 @@ import { DiagnosticsDialog } from "@/components/panels/DiagnosticsDialog";
 import { RobinhoodChainPanel } from "@/components/panels/RobinhoodChainPanel";
 import { LaneRobinhood } from "@/components/panels/LaneRobinhood";
 import { LivePanel } from "@/components/panels/LivePanel";
+import { PaperPanel } from "@/components/panels/PaperPanel";
 import { LaneGmgn } from "@/components/panels/LaneGmgn";
 import { LaneDex } from "@/components/panels/LaneDex";
 import { QualityCard } from "@/components/panels/QualityCard";
@@ -49,7 +50,7 @@ export default function Dashboard() {
         </nav>
         {!data ? <DashboardLoading /> : <div className="console-content">
           {section === "overview" && <><DashboardOverview data={data} age={age} healthy={healthy} onSelect={setSection} /><QualityCard data={data.quality} /></>}
-          {section === "robinhood" && <><LaneRobinhood data={data.laneRobinhood} /><LivePanel /><RobinhoodChainPanel /></>}
+          {section === "robinhood" && <><LaneRobinhood data={data.laneRobinhood} /><LivePanel /><PaperPanel /><RobinhoodChainPanel /></>}
           {section === "gmgn" && <LaneGmgn />}
           {section === "dex" && <LaneDex data={data.laneDex} />}
         </div>}
