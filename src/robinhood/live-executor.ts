@@ -187,6 +187,14 @@ async function main(): Promise<void> {
       const imp = Number(d.priceImpactPercentage ?? NaN);
       // GERBANG DIPERKETAT (2026-10-19): nilai jual > 0 DAN dampak harga wajar (<5%).
       sellable = q.code === "0" && Number(d.toTokenAmount ?? 0) > 0 && (!Number.isFinite(imp) || imp < 5);
+      // GERBANG DUA-ARAH (2026-10-21): buktikan juga sisi BELI lewat endpoint SWAP yang akan dipakai.
+      // Bukti: Kimchi lolos quote JUAL tetapi swap BELI ditolak "Insufficient liquidity" → harus disaring di sini.
+      if (sellable) {
+        const sb = await okx(`/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&fromTokenAddress=${WETH}&toTokenAddress=${token}&amount=1000000000000000&swapMode=exactIn&slippagePercent=5&userWalletAddress=${BOTW}`, env);
+        const sbd = ((sb.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
+        const stx = (sbd.tx ?? {}) as Record<string, unknown>;
+        sellable = sb.code === "0" && Boolean(stx.to) && Boolean(stx.data);
+      }
     } catch { sellable = false; }
     if (!sellable) {
       console.log("    ⟳ " + String(r.symbol ?? token) + ": TIDAK terbukti bisa dijual → entry DIBATALKAN");
