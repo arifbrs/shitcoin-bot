@@ -225,13 +225,23 @@ async function main(): Promise<void> {
     const amount = Number(held?.notionalUsd ?? usd) / 2361; // jual seluruh posisi (nilai ETH saat beli)
     console.log("    ▶ jual " + String(r.symbol ?? token) + " (seluruh posisi) via pool-swap …");
     // JUAL via OKX: baca saldo token mentah → kirim sebagai jumlah (18 desimal) ke live-swap.
-    let jualAmt = 0;
+    // SATU MESIN (2026-10-21): jual lewat exec.fillSell (approve→quote→simulasi→kirim), bukan CLI.
+    let qtyRaw = 0n;
     try {
       const hex = "0x70a08231000000000000000000000000" + token.slice(2).toLowerCase();
       const rb = (await rpc("eth_call", [{ to: token, data: hex }, "latest"])).result as string;
-      jualAmt = Number(BigInt(rb ?? "0x0")) / 1e18;
-    } catch { jualAmt = 0; }
-    const ok = jualAmt > 0 ? runSwap("sell", token, jualAmt) : false;
+      qtyRaw = BigInt(rb ?? "0x0");
+    } catch { qtyRaw = 0n; }
+    let ok = false;
+    if (qtyRaw > 0n) {
+      const sr = await fillSell(token, qtyRaw.toString(), BOTW);
+      let after = qtyRaw;
+      try {
+        const hex2 = "0x70a08231000000000000000000000000" + token.slice(2).toLowerCase();
+        after = BigInt(((await rpc("eth_call", [{ to: token, data: hex2 }, "latest"])).result as string) ?? "0x0");
+      } catch { after = qtyRaw; }
+      ok = sr.ok && after < qtyRaw; // verifikasi saldo, bukan percaya status tx
+    }
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_SELL", strategy, token, symbol: r.symbol, route: "pool-swap", ok }) + "\n");
   }
 }
