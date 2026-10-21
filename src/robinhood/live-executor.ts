@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
   const liveLog = join(config.logDir, "rh-live-" + day + ".jsonl");
   const live = existsSync(liveLog) ? readFileSync(liveLog, "utf8").trim().split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return {}; } }) : [];
-  const held = live.filter((r) => r.action === "LIVE_BUY" && r.ok);
+  const held = live.filter((r) => (r.action === "LIVE_FILL" || r.action === "LIVE_BUY") && r.ok);
   const BOTW = process.env.BOT_WALLET ?? "0x629Ec42444A43A0E02A572587E3A49904542F4E8";
   const ethNow = Number(BigInt((await rpc("eth_getBalance", [BOTW, "latest"])).result as string)) / 1e18;
   // FIX 2026-10-18: hasil penjualan berbentuk WETH — jadi tunai = ETH + WETH (bukan ETH saja).
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   const stj = JSON.parse(readFileSync(join(config.logDir, "rh-paper-state.json"), "utf8")) as { variants?: Record<string, { positions?: Array<{ token: string }> }> };
   const heldPaper = new Set((stj.variants?.[strategy]?.positions ?? []).map((x) => String(x.token).toLowerCase()));
   const MAX_AGE_MS = Number(process.env.LIVE_MAX_POSITION_HOURS ?? 24) * 3_600_000;
-  const buys = live.filter((r) => r.action === "LIVE_BUY" && r.ok);
+  const buys = live.filter((r) => (r.action === "LIVE_FILL" || r.action === "LIVE_BUY") && r.ok);
   const yatim: Array<Record<string, unknown>> = [];
   for (const b of buys) {
     const tk = String(b.token).toLowerCase();
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   }
   for (const r of todoSell) {
     const token = String(r.token);
-    const held = live.find((x) => x.action === "LIVE_BUY" && x.ok && String(x.token).toLowerCase() === token.toLowerCase());
+    const held = live.find((x) => (x.action === "LIVE_FILL" || x.action === "LIVE_BUY") && x.ok && String(x.token).toLowerCase() === token.toLowerCase());
     const amount = Number(held?.notionalUsd ?? usd) / 2361; // jual seluruh posisi (nilai ETH saat beli)
     console.log("    ▶ jual " + String(r.symbol ?? token) + " (seluruh posisi) via pool-swap …");
     // JUAL via OKX: baca saldo token mentah → kirim sebagai jumlah (18 desimal) ke live-swap.

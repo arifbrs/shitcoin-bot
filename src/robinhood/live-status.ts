@@ -38,7 +38,7 @@ export async function liveStatus(): Promise<LiveStatus> {
   for (const f of files) for (const l of readFileSync(join(config.logDir, f), "utf8").split("\n")) { try { if (l.trim()) rows.push(JSON.parse(l) as Record<string, unknown>); } catch { /* lewati */ } }
   const sells = rows.filter((r) => r.action === "LIVE_SELL" && r.ok).map((r) => ({ token: String(r.token), symbol: r.symbol as string | undefined, ts: Number(r.ts ?? 0) }));
   const sold = new Set(sells.map((s) => s.token.toLowerCase()));
-  const buys = rows.filter((r) => r.action === "LIVE_BUY" && r.ok);
+  const buys = rows.filter((r) => (r.action === "LIVE_FILL" || r.action === "LIVE_BUY") && r.ok);
   let paperHeld = new Set<string>();
   const stPath = join(config.logDir, "rh-paper-state.json");
   if (existsSync(stPath)) {
