@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 
 export interface Position {
-  token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; qtyRaw: string;
+  token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; entryWethRaw: string; qtyRaw: string;
   peakPnlPct?: number; stuck?: boolean; stuckReason?: string;
 }
 export interface PaperState {
@@ -55,6 +55,24 @@ export function withLock<T>(fn: () => T): T {
     }
     writeFileSync(lock, String(process.pid));
     try { return fn(); } finally { try { unlinkSync(lock); } catch { /* sudah lepas */ } }
+  } catch (e) { throw e; }
+}
+
+/** Lock untuk pekerjaan ASYNC: lock ditahan sampai promise selesai (withLock sinkron tidak bisa). */
+export async function withLockAsync<T>(fn: () => Promise<T>): Promise<T> {
+  mkdirSync(dir(), { recursive: true });
+  const lock = dir() + "/.lock";
+  try {
+    if (existsSync(lock)) {
+      const pid = Number(readFileSync(lock, "utf8").trim());
+      if (pid && pid !== process.pid) {
+        let alive = true;
+        try { process.kill(pid, 0); } catch { alive = false; }
+        if (alive) throw new Error("lane lain masih hidup (pid " + pid + ")");
+      }
+    }
+    writeFileSync(lock, String(process.pid));
+    try { return await fn(); } finally { try { unlinkSync(lock); } catch { /* sudah lepas */ } }
   } catch (e) { throw e; }
 }
 

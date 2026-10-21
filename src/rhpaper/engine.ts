@@ -4,7 +4,7 @@
  */
 import { quoteBuy, quoteSell } from "./exec.js";
 import { loadCandidates, scanCandidates } from "./scanner.js";
-import { appendLedger, emptyState, loadState, saveState, withLock, type Position } from "./state.js";
+import { appendLedger, loadState, saveState, withLockAsync, type Position } from "./state.js";
 
 export interface Cfg { maker: string; usd: number; maxPositions: number; stopPct: number; tpHoldMin: number; takePct: number }
 
@@ -17,9 +17,8 @@ export function shouldExit(pnlPct: number, ageMin: number, cfg: Pick<Cfg, "stopP
 
 export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number; stuck: number; errors: string[] }> {
   const errors: string[] = [];
-  return withLock(() => {
-    // catatan: isi fungsi ini async → dibungkus promise agar lock tetap dilepas setelah selesai
-    return (async () => {
+  return withLockAsync(async () => {
+    {
       const s = loadState();
       s.cycles++;
       const today = new Date().toISOString().slice(0, 10);
@@ -36,12 +35,13 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
           appendLedger({ ts: Date.now(), action: "STUCK", token: p.token, symbol: p.symbol, reason: p.stuckReason });
           continue;
         }
-        const outWeth = Number(sell.quote!.amountOut) / 1e18;
-        const entryWeth = p.entryUsd / 2361; // nilai WETH saat entry (dicatat di entryQuoteRef)
+        // PnL dihitung DALAM WETH (masuk vs keluar) — tidak ada harga tebakan.
+        const outWeth = Number(sell.quote!.amountOut);
+        const entryWeth = Number(p.entryWethRaw);
         const pnlPct = entryWeth > 0 ? ((outWeth - entryWeth) / entryWeth) * 100 : 0;
         const why = shouldExit(pnlPct, (Date.now() - p.entryTs) / 60000, cfg);
         if (why) {
-          const pnlUsd = (outWeth - entryWeth) * 2361;
+          const pnlUsd = 0; // USD tidak dikarang; nilai WETH dilaporkan terpisah dari quote
           s.positions = s.positions.filter((x) => x !== p);
           s.closed++; s.pnlUsd += pnlUsd; closed++;
           appendLedger({ ts: Date.now(), action: "CLOSE", token: p.token, symbol: p.symbol, why, pnlPct, pnlUsd, quoteRef: JSON.stringify(sell.quote) });
@@ -55,16 +55,17 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
         for (const c of cands) {
           if (s.positions.length >= cfg.maxPositions) break;
           if (s.positions.some((p) => p.token === c.token)) continue;
-          const usdRaw = String(BigInt(Math.floor((cfg.usd / 2361) * 1e18)));
-          const buy = await quoteBuy(c.token, usdRaw, cfg.maker);
+          // Notional dalam WETH (bukan USD) → tidak butuh harga ETH untuk membuka posisi.
+          const wethRaw = (cfg as unknown as { wethRaw?: string }).wethRaw ?? "1000000000000000";
+          const buy = await quoteBuy(c.token, wethRaw, cfg.maker);
           if (!buy.ok) { errors.push(c.symbol + ": " + (buy.reason ?? "quote beli gagal")); continue; }
-          const pos: Position = { token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, qtyRaw: buy.quote!.amountOut };
+          const pos: Position = { token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut };
           s.positions.push(pos); opened++;
           appendLedger({ ts: Date.now(), action: "OPEN", token: c.token, symbol: c.symbol, usd: cfg.usd, qtyRaw: pos.qtyRaw, quoteRef: pos.entryQuoteRef });
         }
       }
       saveState(s);
       return { opened, closed, stuck, errors };
-    })().finally(() => { /* lock dilepas oleh withLock */ }) as unknown as { opened: number; closed: number; stuck: number; errors: string[] };
+    }
   });
 }
