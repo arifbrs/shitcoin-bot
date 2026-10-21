@@ -58,7 +58,17 @@ export async function liveStatus(): Promise<LiveStatus> {
   const eth = Number(BigInt(await rpc("eth_getBalance", [WALLET, "latest"]))) / 1e18;
   const weth = await erc20(WETH, 18);
   const usdg = await erc20(USDG, 6);
-  return { wallet: WALLET, balances: { eth, weth, usdg }, positions, sells, costs: { poolFeePct: 0.01, gasPerSwapUsd: 0.007, note: "terukur 2026-10-18/19: fee pool 0,01% (fee()=100), gas nyata $0,0064–0,0080 per swap" }, generatedAt: Date.now() };
+  // FIX 2026-10-21: buang posisi ber-saldo 0 (HANTU) — HOOT tampil 15 jam padahal 0 token.
+  // Panel harus menampilkan posisi NYATA saja; token yang tak ada di wallet tidak bisa dijual siapa pun.
+  const zeroBal = new Set<string>();
+  for (const p of positions) {
+    try {
+      const r = await rpc("eth_call", [{ to: p.token, data: "0x70a08231000000000000000000000000" + WALLET.slice(2).toLowerCase() }, "latest"]);
+      if (BigInt(r ?? "0x0") === 0n) zeroBal.add(p.token.toLowerCase());
+    } catch { /* jika tak terbaca, biarkan tampil (fail-visible) */ }
+  }
+  const positionsLive = positions.filter((p) => !zeroBal.has(p.token.toLowerCase()));
+  return { wallet: WALLET, balances: { eth, weth, usdg }, positions: positionsLive, sells, costs: { poolFeePct: 0.01, gasPerSwapUsd: 0.007, note: "terukur 2026-10-18/19: fee pool 0,01% (fee()=100), gas nyata $0,0064–0,0080 per swap" }, generatedAt: Date.now() };
 }
 
 void (async () => {
