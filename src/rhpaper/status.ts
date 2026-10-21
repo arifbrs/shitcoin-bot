@@ -1,6 +1,7 @@
 /** Status paper 1:1 untuk dashboard — dibaca dari engine (bukan dari angka yang dikarang). */
 import { existsSync, readFileSync } from "node:fs";
 import { ledgerPath, loadState } from "./state.js";
+import { loadCandidates } from "./scanner.js";
 
 export async function paperStatus(): Promise<Record<string, unknown>> {
   const s = loadState();
@@ -15,6 +16,7 @@ export async function paperStatus(): Promise<Record<string, unknown>> {
     engine: "rhpaper-1to1",
     version: s.version,
     cycles: s.cycles,
+    candidates: loadCandidates().length,
     positions: (s.positions ?? []).map((p) => ({
       symbol: p.symbol, token: p.token,
       ageMin: Math.round((Date.now() - p.entryTs) / 60000),
