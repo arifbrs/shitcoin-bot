@@ -57,7 +57,12 @@ async function main(): Promise<void> {
   const pub = createPublicClient({ transport: http(RPC) }) as unknown as { waitForTransactionReceipt: (a: { hash: `0x${string}` }) => Promise<{ status: string }> };
 
   const tokens = (await okxGet(`/api/v6/dex/aggregator/all-tokens?chainIndex=${CHAIN}`, env)).data as Array<Record<string, unknown>>;
-  const toTok = tokens.find((t) => String(t.tokenSymbol).toUpperCase() === toSym.toUpperCase());
+  // FIX 2026-10-21: dukung ALAMAT MENTAH (bukan hanya simbol). Bukti: 11 beli gagal karena `--to 0x…`
+  // tidak pernah cocok dengan daftar simbol → "tidak ada di daftar OKX", padahal quote jualnya berhasil.
+  const isAddr = /^0x[0-9a-fA-F]{40}$/.test(toSym);
+  const toTok = isAddr
+    ? ({ tokenContractAddress: toSym, tokenSymbol: toSym.slice(0, 8) } as Record<string, unknown>)
+    : tokens.find((t) => String(t.tokenSymbol).toUpperCase() === toSym.toUpperCase());
   if (!toTok) { console.log("  token " + toSym + " tidak ada di daftar OKX"); return; }
   const toAddr = String(toTok.tokenContractAddress);
 
