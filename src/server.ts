@@ -3081,6 +3081,15 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     }
     return;
   }
+  if (path === "/api/paper") {
+    try {
+      const { paperStatus } = await import("./rhpaper/status.js");
+      res.end(JSON.stringify(await paperStatus()));
+    } catch (error) {
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
   if (path === "/api/okx/status") {
     if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
