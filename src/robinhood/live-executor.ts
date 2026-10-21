@@ -92,7 +92,18 @@ async function main(): Promise<void> {
   const doneBuys = new Set(held.map((r) => String(r.token).toLowerCase()));
   const doneSells = new Set(live.filter((r) => r.action === "LIVE_SELL").map((r) => String(r.token).toLowerCase()));
   const soldOk = new Set(live.filter((r) => r.action === "LIVE_SELL" && r.ok).map((r) => String(r.token).toLowerCase()));
-  const openLive = held.filter((r) => !soldOk.has(String(r.token).toLowerCase())).length;
+  // FIX 2026-10-19: "posisi terbuka" = posisi yang TOKENNYA BENAR-BENAR ADA di wallet.
+  // Bug nyata: HOOT tercatat LIVE_BUY tetapi saldonya 0 (swap 0/0 di pool kosong) → posisi hantu
+  // memblokir semua entry berikutnya lewat aturan satu-posisi.
+  let openLive = 0;
+  for (const r of held) {
+    const tk = String(r.token).toLowerCase();
+    if (soldOk.has(tk)) continue;
+    try {
+      const b = (await rpc("eth_call", [{ to: r.token as string, data: "0x70a08231000000000000000000000000" + BOTW.slice(2).toLowerCase() }, "latest"])).result as string;
+      if (BigInt(b ?? "0x0") > 0n) openLive++;
+    } catch { /* gagal baca → anggap tidak terbuka (fail-open untuk entry, tapi gerbang+cash tetap menjaga) */ }
+  }
   let todoBuy = opens.filter((r) => !doneBuys.has(String(r.token).toLowerCase()));
   if (openLive >= 1) { console.log("  ATURAN SATU-POSISI: ada " + openLive + " posisi live terbuka → tidak buka posisi baru dulu."); todoBuy = []; }
   todoBuy = todoBuy.slice(0, Math.max(max, 25)); // PINDAI jendela luas; eksekusi tetap dibatasi max
