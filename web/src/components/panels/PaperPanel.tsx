@@ -36,7 +36,7 @@ export function PaperPanel() {
       }
     };
     void load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, 2000); // realtime 2s (server meng-cache quote 60s agar tidak 429)
     return () => { alive = false; controller.abort(); clearInterval(t); };
   }, [attempt]);
   const retry = () => setAttempt((value) => value + 1);

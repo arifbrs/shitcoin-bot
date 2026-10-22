@@ -31,7 +31,7 @@ export function LivePanel() {
       }
     };
     void load();
-    const t = setInterval(load, 30_000);
+    const t = setInterval(load, 2000); // realtime 2s
     return () => { on = false; controller.abort(); clearInterval(t); };
   }, [attempt]);
   const retry = () => setAttempt((value) => value + 1);
