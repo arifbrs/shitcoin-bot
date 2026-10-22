@@ -13,14 +13,24 @@ export function gmgnApi(args: string[], timeoutMs = 45_000): Record<string, unkn
 }
 
 /** heliusGetTransactions: HANYA Solana (Helius tidak melayani Robinhood Chain). Butuh HELIUS_API_KEY. */
+let heliusIdx = 0;
+
 export async function heliusGetTransactions(address: string, limit = 50): Promise<{ ok: boolean; reason?: string; txs?: unknown[] }> {
-  const key = envKey("HELIUS_API_KEY");
-  if (!key) return { ok: false, reason: "HELIUS_API_KEY belum ada di .env" };
-  try {
-    const r = await fetch(`https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${key}&limit=${limit}`);
-    if (!r.ok) return { ok: false, reason: "helius HTTP " + r.status };
-    return { ok: true, txs: (await r.json()) as unknown[] };
-  } catch (e) { return { ok: false, reason: String((e as Error).message).slice(0, 100) }; }
+  // Satu nilai HELIUS_API_KEY boleh berisi BEBERAPA kunci dipisah koma → dipakai bergiliran (rotasi).
+  const raw = envKey("HELIUS_API_KEY");
+  const keys = (raw ?? "").split(",").map((k) => k.trim()).filter((k) => k.length > 15);
+  if (keys.length === 0) return { ok: false, reason: "HELIUS_API_KEY belum ada di .env" };
+  let lastReason = "tidak dicoba";
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[(heliusIdx + i) % keys.length];
+    try {
+      const r = await fetch(`https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${key}&limit=${limit}`);
+      if (r.ok) { heliusIdx = (heliusIdx + i + 1) % keys.length; return { ok: true, txs: (await r.json()) as unknown[] }; }
+      lastReason = "helius HTTP " + r.status;
+      if (r.status !== 401 && r.status !== 429) break;
+    } catch (e) { lastReason = String((e as Error).message).slice(0, 100); }
+  }
+  return { ok: false, reason: lastReason };
 }
 
 function envKey(name: string): string | null {
