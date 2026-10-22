@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlink
 
 export interface Position {
   arm: string; token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; entryWethRaw: string; qtyRaw: string;
-  peakPct?: number; troughPct?: number; marks?: number; stuck?: boolean; stuckReason?: string;
+  peakPct?: number; troughPct?: number; marks?: number; stuckCount?: number; stuck?: boolean; stuckReason?: string;
 }
 export interface PaperState {
   version: 2; cycles: number; day: string; positions: Position[]; closed: number; pnlUsd: number; stuck: number;

@@ -23,7 +23,7 @@ export interface QuoteRef { ts: number; route: string; amountIn: string; amountO
 export interface QuoteResult { ok: boolean; reason?: string; quote?: QuoteRef; tx?: { to: string; data: string; value: string } }
 
 let lastCall = 0;
-export async function throttle(ms = 1200): Promise<void> {
+export async function throttle(ms = 2000): Promise<void> {
   const wait = lastCall + ms - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastCall = Date.now();

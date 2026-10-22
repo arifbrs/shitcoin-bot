@@ -30,11 +30,21 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
         if (p.stuck) continue;
         const sell = await quoteSell(p.token, p.qtyRaw, cfg.maker);
         if (!sell.ok) {
-          p.stuck = true; p.stuckReason = sell.reason ?? "quote jual gagal";
-          s.stuck++; stuck++;
-          appendLedger({ ts: Date.now(), action: "STUCK", token: p.token, symbol: p.symbol, reason: p.stuckReason });
+          // GALAT SEMENTARA (429/timeout/rate/chainIndex) ≠ tidak ada pembeli. Jangan cap STUCK permanen.
+          const reason = sell.reason ?? "quote jual gagal";
+          const transient = /too many|rate|timeout|fetch failed|chainIndex|502|503|504|econn/i.test(reason);
+          p.stuckCount = (p.stuckCount ?? 0) + 1;
+          if (transient && p.stuckCount < 6) {
+            appendLedger({ ts: Date.now(), action: "RETRY", arm: p.arm, token: p.token, symbol: p.symbol, reason, attempt: p.stuckCount });
+            continue;
+          }
+          if (!p.stuck) { s.stuck++; stuck++; }
+          p.stuck = true; p.stuckReason = reason;
+          appendLedger({ ts: Date.now(), action: "STUCK", arm: p.arm, token: p.token, symbol: p.symbol, reason, attempt: p.stuckCount });
           continue;
         }
+        if (p.stuck) { p.stuck = false; p.stuckReason = undefined; p.stuckCount = 0; appendLedger({ ts: Date.now(), action: "UNSTUCK", arm: p.arm, token: p.token, symbol: p.symbol }); }
+        p.stuckCount = 0;
         // PnL dihitung DALAM WETH (masuk vs keluar) — tidak ada harga tebakan.
         const outWeth = Number(sell.quote!.amountOut);
         const entryWeth = Number(p.entryWethRaw);
@@ -65,12 +75,14 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
       }
 
       // 2) ENTRY — hanya kandidat dua-arah, dan hanya bila quote beli ada
-      if (s.positions.length < cfg.maxPositions) {
+      const armName = (cfg as unknown as { arm?: string }).arm ?? "A";
+      const armOpen = s.positions.filter((p) => p.arm === armName).length;
+      if (armOpen < cfg.maxPositions) {
         let cands = loadCandidates();
         if (cands.length === 0 || cacheStale(30)) cands = await scanCandidates(cfg.maker, Math.max(1, cfg.maxPositions));
         for (const c of cands) {
-          if (s.positions.length >= cfg.maxPositions) break;
-          if (s.positions.some((p) => p.token === c.token)) continue;
+          if (s.positions.filter((p) => p.arm === armName).length >= cfg.maxPositions) break;
+          if (s.positions.some((p) => p.token === c.token && p.arm === armName)) continue;
           // Notional dalam WETH (bukan USD) → tidak butuh harga ETH untuk membuka posisi.
           const wethRaw = (cfg as unknown as { wethRaw?: string }).wethRaw ?? "1000000000000000";
           const buy = await quoteBuy(c.token, wethRaw, cfg.maker);
