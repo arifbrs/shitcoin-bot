@@ -54,6 +54,7 @@ export function useLocalPaper(tokens: TokenView[]) {
     ...state,
     submit: (token: TokenView, side: PaperSide, amount: string, quote: QuoteView | null, now: number) => apply((ledger) => fillPaperOrder(ledger, token, side, amount, quote, now), `${side === "buy" ? "Buy" : "Sell"} ${token.symbol} dicatat di ledger lokal.`),
     topUp: (amount: string) => apply((ledger) => addPaperCash(ledger, amount), "Kas virtual ditambahkan ke ledger lokal."),
+    clearMessage: () => setState((previous) => previous.message ? { ...previous, message: null } : previous),
     reset: () => setState((previous) => ({ ...previous, ledger: createPaperLedger(), message: "Ledger lokal direset ke $10,000 virtual." })),
   };
 }

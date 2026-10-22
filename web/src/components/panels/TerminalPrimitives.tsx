@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { CSSProperties, ReactNode, RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { Dialog as RadixDialog } from "radix-ui";
 import { X } from "lucide-react";
 import { finite, numericTone } from "@/lib/terminal";
@@ -7,7 +7,7 @@ import type { PanelState, TokenView } from "@/lib/terminal";
 
 export function LiveNumber({ value, children, width = 8, signed = false }: { value: number | null; children: ReactNode; width?: number; signed?: boolean }) {
   const element = useRef<HTMLSpanElement>(null);
-  const previous = useRef(value);
+  const previous = useRef<number | null>(value);
   useEffect(() => {
     if (previous.current === value) return;
     previous.current = value;
@@ -34,7 +34,7 @@ export function TerminalDrawer({ open, onOpenChange, title, description, kind = 
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  kind?: "scanner" | "ticket" | "right";
+   kind?: "scanner" | "ticket" | "lane" | "right";
   children: ReactNode;
   footer?: ReactNode;
   initialFocusRef?: RefObject<HTMLElement | null>;
@@ -47,5 +47,3 @@ export function TerminalDrawer({ open, onOpenChange, title, description, kind = 
     onCloseAutoFocus={(event) => { if (restoreFocusRef.current?.isConnected) { event.preventDefault(); restoreFocusRef.current.focus(); } }}
   >{kind === "ticket" && <span className="terminal-sheet-handle" aria-hidden="true" />}<header className="terminal-drawer-header"><div><RadixDialog.Title>{title}</RadixDialog.Title>{description && <RadixDialog.Description>{description}</RadixDialog.Description>}</div><RadixDialog.Close asChild><button type="button" className="terminal-icon" aria-label={kind === "scanner" ? "Tutup scanner" : kind === "ticket" ? "Tutup ticket simulasi" : "Tutup panel"}><X size={18} /></button></RadixDialog.Close></header><div className="terminal-drawer-body">{children}</div>{footer && <footer className="terminal-drawer-footer">{footer}</footer>}</RadixDialog.Content></div></RadixDialog.Portal></RadixDialog.Root>;
 }
-
-export const terminalStyle = (variables: Record<string, string | number>): CSSProperties => variables as CSSProperties;

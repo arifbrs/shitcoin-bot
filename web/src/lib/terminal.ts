@@ -114,7 +114,7 @@ export function quoteProblem(token: Pick<TokenView, "chain" | "contract" | "asse
   if (!validTokenIdentity(token) || quote.tokenKey !== token.assetKey) return "Identitas kontrak token belum tersedia atau tidak cocok dengan quote.";
   if (!quote.eligible) return quote.reason ?? "Quote belum layak untuk simulasi lokal.";
   if (finite(quote.unitPriceUsd) === null || quote.unitPriceUsd! <= 0) return "Harga unit harus positif dan finite.";
-  if (!quote.source.trim() || timestamp(quote.quotedAt) === null) return "Sumber atau waktu quote belum terverifikasi.";
+  if (typeof quote.source !== "string" || !quote.source.trim() || timestamp(quote.quotedAt) === null) return "Sumber atau waktu quote belum terverifikasi.";
   const age = now - quote.quotedAt!;
   if (!Number.isFinite(age) || age < 0 || age > MAX_QUOTE_AGE_MS) return "Quote sudah tertinggal. Menunggu harga unit baru (maksimal 60 detik).";
   return null;
@@ -189,7 +189,8 @@ export function serverPositions(data: Partial<StatsResponse> | null): ServerPosi
     token.marketCapUsd = finite(position.marketCap);
     token.holders = finite(position.holders);
     token.quote = { tokenKey: token.assetKey ?? token.key, unitPriceUsd: null, quotedAt: null, source: "Strategy 2 · harga sintetis", kind: "synthetic", eligible: false, reason: "Harga Strategy 2 sintetis, bukan harga unit token." };
-    rows.push({ key: `strategy2:${token.key}`, token, notionalUsd: null, entryCostUsd: finite(position.entryCostUsd), pnlUsd: null, pnlPct: finite(position.unrealizedPnl), markPriceUsd: null, marketCapUsd: token.marketCapUsd, heldSeconds: finite(position.heldSec), markAgeSeconds: null, detectedAt: null, noManualClose: true });
+    const sameLedger = data.strategy2Paper?.openPositions?.find((row) => row.mint === position.mint);
+    rows.push({ key: `strategy2:${token.key}`, token, notionalUsd: null, entryCostUsd: finite(position.entryCostUsd) ?? finite(sameLedger?.entryCostUsd), pnlUsd: null, pnlPct: finite(position.unrealizedPnl), markPriceUsd: null, marketCapUsd: token.marketCapUsd, heldSeconds: finite(position.heldSec), markAgeSeconds: null, detectedAt: null, noManualClose: position.noManualClose !== false });
   }
   for (const position of data.strategy2Paper?.openPositions ?? []) {
     if (s2Mints.has(position.mint)) continue;
@@ -199,16 +200,20 @@ export function serverPositions(data: Partial<StatsResponse> | null): ServerPosi
     rows.push({ key: `strategy2:${token.key}`, token, notionalUsd: null, entryCostUsd: finite(position.entryCostUsd), pnlUsd: null, pnlPct: finite(position.unrealizedPct), markPriceUsd: null, marketCapUsd: token.marketCapUsd, heldSeconds: finite(position.heldHours) === null ? null : position.heldHours * 3600, markAgeSeconds: null, detectedAt: null, noManualClose: true });
   }
   for (const variant of data.laneRobinhood?.variants ?? []) {
-    for (const [index, position] of (variant.positions ?? []).entries()) {
+    const occurrences = new Map<string, number>();
+    for (const position of variant.positions ?? []) {
+      const occurrence = occurrences.get(position.symbol) ?? 0;
+      occurrences.set(position.symbol, occurrence + 1);
       const origin = provenance("robinhood", "Robinhood", timestamp(data.laneRobinhood?.updatedAt), `robinhood:${variant.id}`, variant.id, variant.cohort);
-      const token = tokenView(position.symbol, "robinhood", null, origin, "positions", String(index));
+      const token = tokenView(position.symbol, "robinhood", null, origin, "positions", String(occurrence));
       const markAge = finite(position.markAgeSec);
       token.quote = { tokenKey: token.key, unitPriceUsd: finite(position.lastPrice), quotedAt: snapshot !== null && markAge !== null ? snapshot - markAge * 1000 : null, source: `Robinhood · ${variant.id} · mark`, kind: "unit-quote", eligible: false, reason: "Robinhood menyediakan simbol dan mark, tanpa alamat token. Identitas kontrak belum tersedia." };
       rows.push({ key: token.key, token, notionalUsd: finite(position.notionalUsd), entryCostUsd: null, pnlUsd: null, pnlPct: null, markPriceUsd: finite(position.lastPrice), marketCapUsd: null, heldSeconds: null, markAgeSeconds: markAge, detectedAt: null, noManualClose: true });
     }
   }
   for (const position of data.laneOkxPaper?.open ?? []) {
-    const token = tokenView(position.symbol, null, null, provenance("overview", `OKX paper${position.policyVersion == null ? "" : ` · policy ${position.policyVersion}`}`, timestamp(data.laneOkxPaper?.updatedAt), "okx-paper"), "positions", position.id);
+    const policy = finite(position.policyVersion);
+    const token = tokenView(position.symbol, null, null, provenance("overview", `OKX paper${position.source ? ` · ${position.source}` : ""}${policy === null ? "" : ` · policy ${policy}`}`, timestamp(data.laneOkxPaper?.updatedAt), "okx-paper"), "positions", position.id);
     rows.push({ key: `okx:${position.id}`, token, notionalUsd: null, entryCostUsd: null, pnlUsd: null, pnlPct: null, markPriceUsd: null, marketCapUsd: null, heldSeconds: null, markAgeSeconds: null, detectedAt: timestamp(position.detectedAt), noManualClose: true });
   }
   return rows;
@@ -223,6 +228,8 @@ export function terminalTokens(data: Partial<StatsResponse> | null): TokenView[]
     const metricFields = ["marketCapUsd", "change24h", "change1h", "change4h", "volume24hUsd", "liquidityUsd", "holders", "top10Pct", "riskScore"] as const;
     for (const field of metricFields) if (existing[field] === null && token[field] !== null) existing[field] = token[field];
     existing.image ??= token.image;
+    existing.name ??= token.name;
+    existing.rugged ??= token.rugged;
     existing.twitterUrl ??= token.twitterUrl;
     existing.quote ??= token.quote;
     existing.sources.push(...token.sources.filter((source) => !existing.sources.some((old) => sourceLabel(old) === sourceLabel(source) && old.ledgerId === source.ledgerId)));
@@ -260,15 +267,21 @@ export function filterTokens(tokens: TokenView[], query: string, filter: Scanner
 export function serverTrades(data: Partial<StatsResponse> | null): ServerTradeView[] {
   if (!data) return [];
   const rows: ServerTradeView[] = [];
-  for (const [index, trade] of (data.strategy2Primary?.recentTrades ?? []).entries()) {
-    rows.push({ key: `s2:${trade.ts}:${trade.symbol}:${index}`, symbol: trade.symbol, provenance: provenance("solana", "Strategy 2", timestamp(trade.ts), "strategy2"), action: "Tutup", reason: trade.reason ?? null, timestamp: timestamp(trade.ts), pnlUsd: finite(trade.pnlUsd), pnlSol: null, pnlPct: finite(trade.pnlPct), entryPriceUsd: null, exitPriceUsd: null, heldSeconds: finite(trade.heldHours) === null ? null : trade.heldHours * 3600 });
+  const occurrences = new Map<string, number>();
+  const rowKey = (key: string) => {
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    return `${key}:${occurrence}`;
+  };
+  for (const trade of data.strategy2Primary?.recentTrades ?? []) {
+    rows.push({ key: rowKey(`s2:${trade.ts}:${trade.symbol}`), symbol: trade.symbol, provenance: provenance("solana", "Strategy 2", timestamp(trade.ts), "strategy2"), action: "Tutup", reason: trade.reason ?? null, timestamp: timestamp(trade.ts), pnlUsd: finite(trade.pnlUsd), pnlSol: null, pnlPct: finite(trade.pnlPct), entryPriceUsd: null, exitPriceUsd: null, heldSeconds: finite(trade.heldHours) === null ? null : trade.heldHours * 3600 });
   }
-  for (const [index, trade] of (data.laneRobinhood?.recent ?? []).entries()) {
+  for (const trade of data.laneRobinhood?.recent ?? []) {
     const cohort = data.laneRobinhood?.variants?.find((variant) => variant.id === trade.variant)?.cohort ?? null;
-    rows.push({ key: `rh:${trade.ts}:${trade.variant}:${index}`, symbol: trade.symbol, provenance: provenance("robinhood", "Robinhood", timestamp(trade.ts), `robinhood:${trade.variant}`, trade.variant, cohort), action: trade.action === "RH_OPEN" ? "Buka" : trade.action === "RH_CLOSE" ? "Tutup" : trade.action, reason: trade.reason, timestamp: timestamp(trade.ts), pnlUsd: finite(trade.pnlUsd), pnlSol: null, pnlPct: finite(trade.pnlPct), entryPriceUsd: finite(trade.entryPriceUsd), exitPriceUsd: finite(trade.exitPriceUsd), heldSeconds: null });
+    rows.push({ key: rowKey(`rh:${trade.ts}:${trade.variant}:${trade.symbol}:${trade.action}`), symbol: trade.symbol, provenance: provenance("robinhood", "Robinhood", timestamp(trade.ts), `robinhood:${trade.variant}`, trade.variant, cohort), action: trade.action === "RH_OPEN" ? "Buka" : trade.action === "RH_CLOSE" ? "Tutup" : trade.action, reason: trade.reason, timestamp: timestamp(trade.ts), pnlUsd: finite(trade.pnlUsd), pnlSol: null, pnlPct: finite(trade.pnlPct), entryPriceUsd: finite(trade.entryPriceUsd), exitPriceUsd: finite(trade.exitPriceUsd), heldSeconds: null });
   }
-  for (const [index, trade] of (data.laneOkxPaper?.recentCloses ?? []).entries()) {
-    rows.push({ key: `okx:${trade.ts}:${index}`, symbol: trade.symbol, provenance: provenance("overview", "OKX paper", timestamp(trade.ts), "okx-paper"), action: "Tutup", reason: trade.trigger, timestamp: timestamp(trade.ts), pnlUsd: null, pnlSol: finite(trade.pnlSol), pnlPct: null, entryPriceUsd: null, exitPriceUsd: null, heldSeconds: null });
+  for (const trade of data.laneOkxPaper?.recentCloses ?? []) {
+    rows.push({ key: rowKey(`okx:${trade.ts}:${trade.symbol}:${trade.trigger ?? ""}`), symbol: trade.symbol, provenance: provenance("overview", "OKX paper", timestamp(trade.ts), "okx-paper"), action: "Tutup", reason: trade.trigger, timestamp: timestamp(trade.ts), pnlUsd: null, pnlSol: finite(trade.pnlSol), pnlPct: null, entryPriceUsd: null, exitPriceUsd: null, heldSeconds: null });
   }
   return rows.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 }

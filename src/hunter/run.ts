@@ -6,7 +6,7 @@
  * Aturan  : mcap <1jt · liq <50rb · top trader ROI >300% & winrate >60% (90 hari)
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { RULES, passesToken, scoreToken, type Scored, type TokenSnap, type TraderSnap } from "./filters.js";
+import { RULES, passesToken, scoreToken, tierOf, type Scored, type TokenSnap, type TraderSnap } from "./filters.js";
 
 const dir = "logs/hunter";
 const date = new Date().toISOString().slice(0, 10);
@@ -23,7 +23,23 @@ function main(): void {
   const scored: Scored[] = rows.map((r) => scoreToken(r, r.traders ?? [])).filter((s) => passesToken(s.token));
   scored.sort((a, b) => b.score - a.score);
 
-  const out = { ts: Date.now(), rules: RULES, chains: [...new Set(scored.map((s) => s.token.chain))], tokens: scored };
+  // PEMBANDING: tiga varian aturan dihitung pada data yang sama, agar keputusan bisa diambil
+  // setelah data cukup — bukan dari tiga token. Label utama tetap aturan ketat (RULES).
+  const ruleSets: Record<string, (t: TraderSnap) => boolean> = {
+    or: (t) => t.windowDays >= RULES.windowDays && (t.roiPct > RULES.roiMinPct || t.winratePct > RULES.winrateMinPct),
+    soft: (t) => t.windowDays >= RULES.windowDays && t.roiPct > 150 && t.winratePct > 55,
+    strict: (t) => t.windowDays >= RULES.windowDays && t.roiPct > RULES.roiMinPct && t.winratePct > RULES.winrateMinPct,
+  };
+  const variants: Record<string, Array<{ symbol: string; smart: number; tier: string; best: { roiPct: number; winratePct: number } | null }>> = {};
+  for (const [name, fn] of Object.entries(ruleSets)) {
+    variants[name] = scored.map((s) => {
+      const smart = s.traders.filter(fn).sort((a, b) => b.roiPct - a.roiPct);
+      const score = smart.length ? smart.length * (smart.reduce((x, y) => x + y.roiPct, 0) / smart.length) : 0;
+      const best = smart[0] ? { roiPct: smart[0].roiPct, winratePct: smart[0].winratePct } : null;
+      return { symbol: s.token.symbol, smart: smart.length, tier: tierOf(smart.length, score), best };
+    });
+  }
+  const out = { ts: Date.now(), rules: RULES, chains: [...new Set(scored.map((s) => s.token.chain))], tokens: scored, variants };
   writeFileSync(`${dir}/gmgnimportall-${date}.json`, JSON.stringify(out, null, 2));
   for (const tier of ["S", "A", "B", "C"] as const) {
     const list = scored.filter((s) => s.tier === tier);

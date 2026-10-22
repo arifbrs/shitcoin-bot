@@ -1,4 +1,4 @@
-import { assetIdentity, finite, quoteProblem, validTokenIdentity } from "@/lib/terminal";
+import { assetIdentity, finite, MAX_QUOTE_AGE_MS, quoteProblem, validTokenIdentity } from "@/lib/terminal";
 import type { PaperSide, QuoteView, TokenView } from "@/lib/terminal";
 
 export const PAPER_STORAGE_KEY = "shitcoin:local-paper:v1";
@@ -80,10 +80,12 @@ export function fillPaperOrder(ledger: PaperLedger, token: TokenView, side: Pape
 export function addPaperCash(ledger: PaperLedger, amount: string): PaperResult {
   const value = parsePaperAmount(amount);
   if (value === null || !Number.isSafeInteger(Math.round((ledger.depositedUsd + value) * 100))) return { ok: false, error: "Masukkan jumlah kas virtual yang valid." };
-  return { ok: true, ledger: { ...ledger, cashUsd: money(ledger.cashUsd + value), depositedUsd: money(ledger.depositedUsd + value) } };
+  const cashUsd = money(ledger.cashUsd + value);
+  if (!Number.isSafeInteger(Math.round(cashUsd * 100))) return { ok: false, error: "Jumlah kas virtual terlalu besar." };
+  return { ok: true, ledger: { ...ledger, cashUsd, depositedUsd: money(ledger.depositedUsd + value) } };
 }
 function genuineMark(position: LocalPosition, quote: QuoteView | null): boolean {
-  return Boolean(quote && quote.kind === "unit-quote" && quote.tokenKey === position.tokenKey && finite(quote.unitPriceUsd) !== null && quote.unitPriceUsd! > 0 && finite(quote.quotedAt) !== null && quote.quotedAt! > 0 && quote.source.trim());
+  return Boolean(quote && quote.kind === "unit-quote" && quote.tokenKey === position.tokenKey && finite(quote.unitPriceUsd) !== null && quote.unitPriceUsd! > 0 && finite(quote.quotedAt) !== null && quote.quotedAt! > 0 && typeof quote.source === "string" && quote.source.trim());
 }
 export function updatePaperMarks(ledger: PaperLedger, tokens: TokenView[]): PaperLedger {
   let changed = false;
@@ -101,7 +103,7 @@ export function paperPortfolio(ledger: PaperLedger, now: number) {
   const positions = ledger.positions.map((position) => {
     const mark = genuineMark(position, position.markQuote) ? position.markQuote : null;
     const valueUsd = mark ? finite(position.quantity * mark.unitPriceUsd!) : null;
-    const isStale = !mark || now - mark.quotedAt! > 60_000 || now < mark.quotedAt!;
+    const isStale = !mark || now - mark.quotedAt! > MAX_QUOTE_AGE_MS || now < mark.quotedAt!;
     stale ||= isStale;
     equityUsd = valueUsd === null || equityUsd === null ? null : finite(equityUsd + valueUsd);
     const pnlUsd = valueUsd === null ? null : finite(valueUsd - position.costBasisUsd);
@@ -114,7 +116,7 @@ export function paperPortfolio(ledger: PaperLedger, now: number) {
 export function restorePaperLedger(value: unknown): PaperLedger | null {
   if (!value || typeof value !== "object") return null;
   const ledger = value as PaperLedger;
-  if (ledger.version !== 1 || finite(ledger.cashUsd) === null || ledger.cashUsd < 0 || finite(ledger.depositedUsd) === null || ledger.depositedUsd <= 0 || finite(ledger.realizedPnlUsd) === null || !Array.isArray(ledger.positions) || !Array.isArray(ledger.fills)) return null;
+  if (ledger.version !== 1 || finite(ledger.cashUsd) === null || ledger.cashUsd < 0 || !Number.isSafeInteger(Math.round(ledger.cashUsd * 100)) || finite(ledger.depositedUsd) === null || ledger.depositedUsd <= 0 || !Number.isSafeInteger(Math.round(ledger.depositedUsd * 100)) || finite(ledger.realizedPnlUsd) === null || !Array.isArray(ledger.positions) || !Array.isArray(ledger.fills)) return null;
   const keys = new Set<string>();
   for (const position of ledger.positions) {
     if (!position || typeof position.symbol !== "string" || typeof position.chain !== "string" || typeof position.contract !== "string" || !validTokenIdentity({ ...position, assetKey: position.tokenKey }) || position.id !== position.tokenKey || keys.has(position.tokenKey) || finite(position.quantity) === null || position.quantity <= 0 || finite(position.costBasisUsd) === null || position.costBasisUsd < 0 || (position.markQuote !== null && !genuineMark(position, position.markQuote))) return null;
@@ -126,4 +128,10 @@ export function restorePaperLedger(value: unknown): PaperLedger | null {
   const booked = ledger.cashUsd + ledger.positions.reduce((sum, position) => sum + position.costBasisUsd, 0);
   if (!Number.isFinite(booked) || Math.abs(booked - ledger.depositedUsd - ledger.realizedPnlUsd) > 0.01) return null;
   return { ...ledger, positions: ledger.positions.map((position) => ({ ...position, tokenKey: assetIdentity(position.chain, position.contract)! })), fills: ledger.fills.slice(-500) };
+}
+
+/** A saved local position can be inspected, but cannot stand in for a new server quote. */
+export function localPositionToken(position: LocalPosition): TokenView {
+  const provenance = { lane: "overview" as const, ledgerId: "local-browser", variantId: null, cohortId: null, source: "Mark terakhir · ledger lokal", updatedAt: position.markQuote?.quotedAt ?? null };
+  return { key: position.tokenKey, assetKey: position.tokenKey, symbol: position.symbol, name: null, image: null, chain: position.chain, contract: position.contract, provenance, sources: [provenance], categories: [], marketCapUsd: null, change24h: null, change1h: null, change4h: null, volume24hUsd: null, liquidityUsd: null, holders: null, top10Pct: null, riskScore: null, rugged: null, twitterUrl: null, quote: position.markQuote ? { ...position.markQuote, eligible: false, reason: "Token tidak tersedia di sumber saat ini. Menunggu quote server baru." } : null };
 }
