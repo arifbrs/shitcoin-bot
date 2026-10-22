@@ -79,7 +79,7 @@ export async function cycle(cfg: Cfg): Promise<{ opened: number; closed: number;
       const armOpen = s.positions.filter((p) => p.arm === armName).length;
       if (armOpen < cfg.maxPositions) {
         let cands = loadCandidates();
-        if (cands.length === 0 || cacheStale(30)) cands = await scanCandidates(cfg.maker, Math.max(10, cfg.maxPositions));
+        if (cands.length === 0 || cacheStale(30)) cands = await scanCandidates(cfg.maker, Math.max(40, cfg.maxPositions));
         for (const c of cands) {
           if (s.positions.filter((p) => p.arm === armName).length >= cfg.maxPositions) break;
           if (s.positions.some((p) => p.token === c.token && p.arm === armName)) continue;

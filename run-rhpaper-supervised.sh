@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")"
 run_arm() {
   local arm="$1" stop="$2" take="$3" hold="$4"
-  RHPAPER_ARM="$arm" RHPAPER_STOP="$stop" RHPAPER_TAKE="$take" RHPAPER_HOLD_MIN="$hold" RHPAPER_MAX="${RHPAPER_MAX:-6}" \
+  RHPAPER_ARM="$arm" RHPAPER_STOP="$stop" RHPAPER_TAKE="$take" RHPAPER_HOLD_MIN="$hold" RHPAPER_MAX="${RHPAPER_MAX:-20}" \
     npx tsx src/rhpaper/run.ts 2>&1 | sed "s/^/[rhpaper-$arm] /"
 }
 while true; do
