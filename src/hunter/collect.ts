@@ -53,7 +53,9 @@ for (const t of list) {
   const row: Row = {
     chain, token: addr,
     symbol: String(pick(t, ["symbol", "token_symbol"]) ?? pick(inf, ["symbol", "token_symbol"]) ?? "?"),
-    mcapUsd: num(pick(inf, ["market_cap", "mcap", "marketCap", "fdv"])),
+    // TERVERIFIKASI dari respons nyata: token info TIDAK punya field market cap.
+    // mcap = price.price × circulating_supply (contoh: 0,00028493 × 1e9 ≈ $284.929).
+    mcapUsd: num((inf.price as Record<string, unknown> | undefined)?.price) * num(pick(inf, ["circulating_supply", "total_supply"])),
     liquidityUsd: num(pick(inf, ["liquidity", "liquidity_usd", "pool_liquidity"])),
     traders,
   };
