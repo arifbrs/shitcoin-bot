@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ChartCandleView, ChartResponse } from "@/types/stats";
+import { finite } from "@/lib/terminal";
 
 /**
  * GRAFIK PER KOIN (2026-10-08) — muncul saat sebuah koin DIKLIK, bukan polling.
@@ -13,32 +14,43 @@ import type { ChartCandleView, ChartResponse } from "@/types/stats";
 const fmtPrice = (v: number): string => (v >= 1 ? `$${v.toFixed(4)}` : `$${v.toPrecision(4)}`);
 const fmtUsd = (v: number): string => `$${Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : Math.abs(v) >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : v.toFixed(0)}`;
 
-export function ChartBars({ candles, height = 150 }: { candles: ChartCandleView[]; height?: number }) {
-  const rows = candles.slice(-60);
+export function validCandles(candles: ChartCandleView[]): ChartCandleView[] {
+  const byTime = new Map<number, ChartCandleView>();
+  for (const candle of candles) {
+    if (!candle || [candle.t, candle.o, candle.h, candle.l, candle.c, candle.v].some((value) => finite(value) === null) || candle.t <= 0 || candle.l < 0 || candle.v < 0 || candle.h < Math.max(candle.o, candle.c, candle.l) || candle.l > Math.min(candle.o, candle.c)) continue;
+    byTime.set(candle.t, candle);
+  }
+  return [...byTime.values()].sort((a, b) => a.t - b.t).slice(-60);
+}
+
+export function ChartBars({ candles, height = 150, terminal = false, label = "grafik lilin" }: { candles: ChartCandleView[]; height?: number; terminal?: boolean; label?: string }) {
+  const rows = validCandles(candles);
   if (rows.length < 2) return <p className="mt-2 text-xs text-muted-foreground">Lilin tidak cukup untuk digambar.</p>;
   const min = Math.min(...rows.map((c) => c.l));
   const max = Math.max(...rows.map((c) => c.h));
   const span = max - min || max || 1;
   const vmax = Math.max(...rows.map((c) => c.v), 1);
-  const W = 600, H = height, volH = 28;
+  const W = 600, H = height, volH = terminal ? 52 : 28;
   const bw = W / rows.length;
   const y = (p: number): number => H - volH - ((p - min) / span) * (H - volH - 4);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="mt-2 w-full" role="img" aria-label="grafik lilin">
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio={terminal ? "none" : undefined} className={terminal ? "terminal-candles" : "mt-2 w-full"} role="img" aria-label={label}>
+      {terminal && <g stroke="var(--terminal-line)" strokeWidth={1}>{[0.1, 0.35, 0.6, 0.85].map((part) => <line key={part} x1={0} x2={W} y1={(H - volH) * part} y2={(H - volH) * part} />)}{[0.15, 0.35, 0.55, 0.75, 0.95].map((part) => <line key={part} x1={W * part} x2={W * part} y1={0} y2={H} />)}<line x1={0} x2={W} y1={H - volH} y2={H - volH} /></g>}
       {rows.map((c, i) => {
         const x = i * bw;
         const up = c.c >= c.o;
         const bodyTop = y(Math.max(c.o, c.c));
         const bodyBot = y(Math.min(c.o, c.c));
-        const cls = up ? "text-up" : "text-down";
+        const cls = terminal ? up ? "terminal-gain" : "terminal-loss" : up ? "text-up" : "text-down";
         return (
           <g key={c.t} className={cls}>
             <line x1={x + bw / 2} x2={x + bw / 2} y1={y(c.h)} y2={y(c.l)} stroke="currentColor" strokeWidth={1} opacity={0.6} />
             <rect x={x + bw * 0.15} width={Math.max(1, bw * 0.7)} y={bodyTop} height={Math.max(1, bodyBot - bodyTop)} fill="currentColor" />
-            <rect x={x + bw * 0.15} width={Math.max(1, bw * 0.7)} y={H - (c.v / vmax) * volH} height={Math.max(1, (c.v / vmax) * volH)} fill="currentColor" opacity={0.35} />
+            <rect x={x + bw * 0.15} width={Math.max(1, bw * 0.7)} y={H - (c.v / vmax) * volH} height={(c.v / vmax) * volH} fill="currentColor" opacity={0.35} />
           </g>
         );
       })}
+      {terminal && <line x1={0} x2={W} y1={y(rows.at(-1)!.c)} y2={y(rows.at(-1)!.c)} stroke="var(--terminal-secondary)" strokeDasharray="4 4" />}
     </svg>
   );
 }

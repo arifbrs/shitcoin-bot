@@ -5,9 +5,14 @@
  * bentuk mentah respons pertama dicatat ke logs/hunter/raw-sample.json agar bisa diverifikasi.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { gmgnApi } from "./tools.js";
 
 const chain = process.argv[2] ?? "robinhood";
+// TERVERIFIKASI dari `portfolio stats --help`: --period hanya 7d / 30d. Jendela 90 hari TIDAK tersedia,
+// jadi tidak diklaim: windowDays=30 dan aturan 90 hari otomatis tidak lolos (jujur, bukan diasumsikan).
+const STATS_PERIOD = "30d";
+const STATS_WINDOW_DAYS = 30;
 const limit = Number(process.argv[3] ?? 20);
 
 type Row = { chain: string; token: string; symbol: string; mcapUsd: number; liquidityUsd: number; traders: Array<{ address: string; roiPct: number; winratePct: number; windowDays: number }> };
@@ -42,14 +47,28 @@ for (const t of list) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) continue;
   const info = gmgnApi(["token", "info", "--chain", chain, "--address", addr]) ?? {};
   const inf = ((info.data ?? info) as Record<string, unknown>) ?? {};
+  // PACING: gmgn-cli membalas 429 RATE_LIMIT_EXCEEDED bila dipanggil beruntun (ban bisa memanjang).
+  execFileSync("sleep", ["2"]);
   const tradersRes = gmgnApi(["token", "traders", "--chain", chain, "--address", addr, "--order-by", "profit", "--limit", "20"]);
   const traderRows = tokenList(tradersRes);
-  const traders = traderRows.map((x) => ({
-    address: String(pick(x, ["address", "wallet", "maker", "trader"]) ?? ""),
-    roiPct: num(pick(x, ["roi", "roi_pct", "roiPercent", "profit_pct", "realized_profit_pct"])),
-    winratePct: num(pick(x, ["winrate", "win_rate", "winrate_pct", "win_rate_pct"])) * (num(pick(x, ["winrate", "win_rate"])) <= 1 ? 100 : 1),
-    windowDays: num(pick(x, ["window_days", "period_days", "days"])) || 90,
-  })).filter((x) => x.address);
+  // ROI & winrate TIDAK ada di `token traders` — diambil dari `portfolio stats` per wallet (terverifikasi):
+  //   roiPct = realized_profit_pnl × 100 · winratePct = pnl_stat.winrate × 100
+  // Ambil 3 trader teratas (list sudah urut --order-by profit) agar tidak kena 429.
+  const traders: Row["traders"] = [];
+  for (const x of traderRows.slice(0, 3)) {
+    const wa = String(pick(x, ["address", "wallet", "maker", "trader"]) ?? "");
+    if (!wa) continue;
+    execFileSync("sleep", ["2"]);
+    const st = gmgnApi(["portfolio", "stats", "--chain", chain, "--wallet", wa, "--period", STATS_PERIOD]);
+    const stData = ((st?.data ?? st) as Record<string, unknown>) ?? {};
+    const pnlStat = (stData.pnl_stat ?? {}) as Record<string, unknown>;
+    traders.push({
+      address: wa,
+      roiPct: num(pick(stData, ["realized_profit_pnl"])) * 100,
+      winratePct: num(pick(pnlStat, ["winrate"])) * 100,
+      windowDays: STATS_WINDOW_DAYS, // 30 hari = maksimum yang benar-benar tersedia
+    });
+  }
   const row: Row = {
     chain, token: addr,
     symbol: String(pick(t, ["symbol", "token_symbol"]) ?? pick(inf, ["symbol", "token_symbol"]) ?? "?"),
