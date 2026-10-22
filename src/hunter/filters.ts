@@ -2,7 +2,9 @@
 export interface TokenSnap { chain: string; token: string; symbol: string; mcapUsd: number; liquidityUsd: number }
 export interface TraderSnap { address: string; roiPct: number; winratePct: number; windowDays: number }
 
-export const RULES = { mcapMax: 1_000_000, liqMax: 50_000, roiMinPct: 300, winrateMinPct: 60, windowDays: 90 } as const;
+// Jendela 90 hari TIDAK bisa diukur: `portfolio stats --period` hanya 7d/30d (terverifikasi).
+// Karena itu aturan memakai 30 hari — angka yang BENAR-BENAR tersedia, bukan diklaim.
+export const RULES = { mcapMax: 1_000_000, liqMax: 50_000, roiMinPct: 300, winrateMinPct: 60, windowDays: 30 } as const;
 
 export function passesToken(t: TokenSnap): boolean {
   return t.mcapUsd > 0 && t.mcapUsd < RULES.mcapMax && t.liquidityUsd > 0 && t.liquidityUsd < RULES.liqMax;

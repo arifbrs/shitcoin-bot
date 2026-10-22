@@ -10,11 +10,11 @@ test("hunter: filter token mcap<1M & liq<50k", () => {
   eq(passesToken(tok(0, 10_000)), false, "mcap 0 ditolak");
 });
 
-test("hunter: trader ROI>300 & winrate>60 dalam 90 hari", () => {
-  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 65, windowDays: 90 }), true, "lolos");
-  eq(passesTrader({ address: "a", roiPct: 250, winratePct: 65, windowDays: 90 }), false, "ROI kurang");
-  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 55, windowDays: 90 }), false, "winrate kurang");
-  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 65, windowDays: 30 }), false, "window kurang");
+test("hunter: trader ROI>300 & winrate>60 dalam 30 hari", () => {
+  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 65, windowDays: 30 }), true, "lolos");
+  eq(passesTrader({ address: "a", roiPct: 250, winratePct: 65, windowDays: 30 }), false, "ROI kurang");
+  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 55, windowDays: 30 }), false, "winrate kurang");
+  eq(passesTrader({ address: "a", roiPct: 350, winratePct: 65, windowDays: 7 }), false, "window kurang");
 });
 
 test("hunter: skor & tier", () => {
