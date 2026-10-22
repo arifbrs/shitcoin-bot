@@ -24,7 +24,12 @@ function tokenList(res: Record<string, unknown> | null): Array<Record<string, un
   return [];
 }
 
-const trend = gmgnApi(["market", "trending", "--chain", chain, "--limit", String(limit)]);
+// Filter di sisi server (opsi terverifikasi): mcap <1jt · likuiditas <50rb · bukan honeypot.
+const trend = gmgnApi([
+  "market", "trending", "--chain", chain, "--interval", "5m", "--limit", String(Math.max(limit, 20)),
+  "--max-marketcap", "1000000", "--max-liquidity", "50000",
+  ...(chain === "sol" ? [] : ["--filter", "not_honeypot"]),
+]);
 mkdirSync("logs/hunter", { recursive: true });
 writeFileSync("logs/hunter/raw-sample.json", JSON.stringify({ trending: trend }, null, 2).slice(0, 20000));
 
@@ -37,7 +42,7 @@ for (const t of list) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) continue;
   const info = gmgnApi(["token", "info", "--chain", chain, "--address", addr]) ?? {};
   const inf = ((info.data ?? info) as Record<string, unknown>) ?? {};
-  const tradersRes = gmgnApi(["token", "traders", "--chain", chain, "--address", addr]);
+  const tradersRes = gmgnApi(["token", "traders", "--chain", chain, "--address", addr, "--order-by", "profit", "--limit", "20"]);
   const traderRows = tokenList(tradersRes);
   const traders = traderRows.map((x) => ({
     address: String(pick(x, ["address", "wallet", "maker", "trader"]) ?? ""),
