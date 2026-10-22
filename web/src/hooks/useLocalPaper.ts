@@ -27,8 +27,9 @@ export function useLocalPaper(tokens: TokenView[]) {
   }, [state.ledger]);
   useEffect(() => {
     const receive = (event: StorageEvent) => {
-      if (event.key !== PAPER_STORAGE_KEY || event.storageArea !== window.localStorage) return;
+      if (event.key !== PAPER_STORAGE_KEY) return;
       try {
+        if (event.storageArea !== window.localStorage) return;
         const ledger = event.newValue === null ? createPaperLedger() : restorePaperLedger(JSON.parse(event.newValue));
         if (ledger) setState((previous) => ({ ...previous, ledger, message: "Ledger lokal diperbarui dari tab lain." }));
         else setState((previous) => ({ ...previous, storageError: "Perubahan ledger dari tab lain tidak valid; saldo terakhir dipertahankan." }));

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { fetchAnalytics, fetchCohorts } from "@/lib/api";
 import type { AnalyticsResponse, CohortsResponse, StatsResponse } from "@/types/stats";
@@ -7,6 +8,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   data: StatsResponse | null;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
@@ -26,7 +28,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-export function DiagnosticsDialog({ open, onOpenChange, data }: Props) {
+export function DiagnosticsDialog({ open, onOpenChange, data, restoreFocusRef }: Props) {
   const [cfgScope, setCfgScope] = useState<"current" | "all">("current");
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
   const [cohorts, setCohorts] = useState<CohortsResponse | null>(null);
@@ -48,7 +50,7 @@ export function DiagnosticsDialog({ open, onOpenChange, data }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto font-mono">
+      <DialogContent className={`${restoreFocusRef ? "terminal-system-dialog " : ""}max-h-[85vh] max-w-3xl overflow-y-auto font-mono`} onCloseAutoFocus={(event) => { if (restoreFocusRef?.current?.isConnected) { event.preventDefault(); restoreFocusRef.current.focus(); } }}>
         <DialogHeader>
           <DialogTitle className="font-mono text-sm tracking-widest">◎ DIAGNOSTICS</DialogTitle>
         </DialogHeader>

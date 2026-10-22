@@ -9,8 +9,9 @@ run_arm() {
     npx tsx src/rhpaper/run.ts 2>&1 | sed "s/^/[rhpaper-$arm] /"
 }
 while true; do
-  run_arm A 40 250 240
-  run_arm B 30 150 120
-  run_arm C 50 400 360
+  # KALIBRASI 2026-10-22: TP/stop pada skala gerakan nyata (bukan 150–400% yang tak pernah kena).
+  run_arm A 1.5 2.0 240
+  run_arm B 1.0 3.0 240
+  run_arm C 2.0 5.0 240
   sleep 300
 done

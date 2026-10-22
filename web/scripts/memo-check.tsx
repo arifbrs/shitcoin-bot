@@ -11,12 +11,13 @@
  * penjelasan, sehingga kegagalan harness tampak seperti kegagalan panel.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { StatsResponse } from "../src/types/stats";
 
 // FIXTURE BERLAPIS (2026-10-13): /tmp hilang saat reboot → check merah karena berkas sementara.
 // Cadangan = REKAMAN NYATA yang ikut di-commit (bukan frame karangan); kalau keduanya tak ada,
 // check tetap GAGAL seperti semula (fail-closed dipertahankan sesuai niat desain).
-const FIXTURE_PATHS = ["/tmp/pushes.json", "web/scripts/fixtures/pushes.json"];
+const FIXTURE_PATHS = ["/tmp/pushes.json", fileURLToPath(new URL("./fixtures/pushes.json", import.meta.url))];
 const FIXTURE_USED = FIXTURE_PATHS.find((f) => existsSync(f));
 if (!FIXTURE_USED) {
   console.error("FIXTURE HILANG: /tmp/pushes.json dan web/scripts/fixtures/pushes.json belum ada.");

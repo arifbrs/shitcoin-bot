@@ -12,6 +12,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { EquityCurve } from "../src/components/panels/EquityCurve";
 import { Hero } from "../src/components/panels/Hero";
 import { LaneDex } from "../src/components/panels/LaneDex";
@@ -29,7 +30,7 @@ const FIXTURE_MINIMAL = {
   paper: { balanceSol: 0, floatSol: 0 },
   laneDex: null, laneOkxPaper: null, quality: null, strategy2: null, cohorts: null,
 };
-const FIXTURE_REPO = "web/scripts/fixtures/st.json";
+const FIXTURE_REPO = fileURLToPath(new URL("./fixtures/st.json", import.meta.url));
 const data = ((): any => {
   for (const src of ["/tmp/st.json", FIXTURE_REPO]) {
     try { return JSON.parse(readFileSync(src, "utf8")); } catch { /* coba berikutnya */ }

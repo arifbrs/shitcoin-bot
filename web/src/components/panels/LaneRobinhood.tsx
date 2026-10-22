@@ -18,8 +18,8 @@ const ago = (iso: string): string => {
 };
 const markAgo = (sec: number | null): string => (sec == null ? "?" : sec < 90 ? `${sec}s` : `${Math.round(sec / 60)}m`);
 
-export function LaneRobinhood({ data }: { data: RobinhoodPaperResponse | null | undefined }) {
-  const [query, setQuery] = useState("");
+export function LaneRobinhood({ data, initialQuery = "" }: { data: RobinhoodPaperResponse | null | undefined; initialQuery?: string }) {
+  const [query, setQuery] = useState(initialQuery);
   const [onlyOpen, setOnlyOpen] = useState(false);
   const variants = filterVariants(data?.variants ?? [], query, onlyOpen);
   return (
@@ -29,7 +29,7 @@ export function LaneRobinhood({ data }: { data: RobinhoodPaperResponse | null | 
           <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-scout">Ethereum L2 · chain 4663 · paper · nol wallet · nol eksekusi · push realtime</p>
           <h2 className="mt-1 text-lg font-semibold text-foreground">Robinhood · {data?.variants.length ?? "—"} varian forward test</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Risk $5/trade · modal awal {data ? `$${data.startEquityUsd.toFixed(0)}` : "$100"}/varian · kriteria lulus: ≥7 hari & ≥10 trade tertutup per varian.
+            Risk $5/trade · modal awal {data ? `$${data.startEquityUsd.toFixed(0)}` : "—"}/varian · kriteria lulus: ≥7 hari & ≥10 trade tertutup per varian.
           </p>
         </div>
         {data && (

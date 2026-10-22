@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,11 +12,12 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   data: StatsResponse | null;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 type WithdrawStep = "form" | "confirm" | "sending" | "done";
 
-export function ControlDialog({ open, onOpenChange, data }: Props) {
+export function ControlDialog({ open, onOpenChange, data, restoreFocusRef }: Props) {
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [dest, setDest] = useState("");
   const [amount, setAmount] = useState("");
@@ -97,7 +99,7 @@ export function ControlDialog({ open, onOpenChange, data }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md font-mono">
+      <DialogContent className={`${restoreFocusRef ? "terminal-system-dialog " : ""}max-w-md font-mono`} onCloseAutoFocus={(event) => { if (restoreFocusRef?.current?.isConnected) { event.preventDefault(); restoreFocusRef.current.focus(); } }}>
         <DialogHeader>
           <DialogTitle className="font-mono text-sm tracking-widest">◈ CONTROL</DialogTitle>
         </DialogHeader>

@@ -34,7 +34,7 @@ export function TerminalDrawer({ open, onOpenChange, title, description, kind = 
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-   kind?: "scanner" | "ticket" | "lane" | "right";
+  kind?: "scanner" | "ticket" | "lane" | "right";
   children: ReactNode;
   footer?: ReactNode;
   initialFocusRef?: RefObject<HTMLElement | null>;
@@ -42,7 +42,7 @@ export function TerminalDrawer({ open, onOpenChange, title, description, kind = 
 }) {
   return <RadixDialog.Root open={open} onOpenChange={onOpenChange}><RadixDialog.Portal><div className="terminal-portal"><RadixDialog.Overlay className="terminal-scrim" /><RadixDialog.Content
     className={`terminal-drawer terminal-drawer-${kind}`}
-    aria-describedby={description ? undefined : undefined}
+    {...(description ? {} : { "aria-describedby": undefined })}
     onOpenAutoFocus={(event) => { if (initialFocusRef?.current) { event.preventDefault(); initialFocusRef.current.focus(); } }}
     onCloseAutoFocus={(event) => { if (restoreFocusRef.current?.isConnected) { event.preventDefault(); restoreFocusRef.current.focus(); } }}
   >{kind === "ticket" && <span className="terminal-sheet-handle" aria-hidden="true" />}<header className="terminal-drawer-header"><div><RadixDialog.Title>{title}</RadixDialog.Title>{description && <RadixDialog.Description>{description}</RadixDialog.Description>}</div><RadixDialog.Close asChild><button type="button" className="terminal-icon" aria-label={kind === "scanner" ? "Tutup scanner" : kind === "ticket" ? "Tutup ticket simulasi" : "Tutup panel"}><X size={18} /></button></RadixDialog.Close></header><div className="terminal-drawer-body">{children}</div>{footer && <footer className="terminal-drawer-footer">{footer}</footer>}</RadixDialog.Content></div></RadixDialog.Portal></RadixDialog.Root>;

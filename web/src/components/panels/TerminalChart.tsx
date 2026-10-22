@@ -33,7 +33,10 @@ export function TerminalChart({ token, now }: { token: TokenView | null; now: nu
       })
       .then((data) => {
         if (controller.signal.aborted) return;
-        setState((previous) => ({ key: requestKey, data: data.error && !data.candles.length && previous.key === requestKey && previous.data?.candles.length ? previous.data : data, error: data.error || null, loading: false, receivedAt: Date.now() }));
+        setState((previous) => {
+          const retainHistory = Boolean(data.error && !data.candles.length && previous.key === requestKey && previous.data?.candles.length);
+          return { key: requestKey, data: retainHistory ? previous.data : data, error: data.error || null, loading: false, receivedAt: retainHistory ? previous.receivedAt : Date.now() };
+        });
       })
       .catch((error: Error) => {
         if (controller.signal.aborted) return;
@@ -53,15 +56,15 @@ export function TerminalChart({ token, now }: { token: TokenView | null; now: nu
   const source = current?.data?.source === "geckoterminal" ? "GeckoTerminal" : current?.data?.source === "gmgn-kline" ? "GMGN kline" : "—";
   const loading = Boolean(requestKey && (!current || current.loading));
   const fullScreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void figure.current?.requestFullscreen().catch(() => {});
+    if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+    else void figure.current?.requestFullscreen?.().catch(() => {});
   };
   return <section ref={figure} className="terminal-chart" aria-label="Riwayat candle token">
     <div className="terminal-chart-toolbar"><div className="terminal-intervals" aria-label="Interval candle">{intervals.map((value) => <button key={value} type="button" aria-pressed={interval === value} onClick={() => setInterval(value)}>{value}</button>)}</div><span className="terminal-chart-source">{source}<span className="terminal-badge">{current?.data ? current.data.cached ? "CACHE" : "HISTORI" : "—"}</span></span><button type="button" className="terminal-icon" aria-label="Muat ulang riwayat chart" disabled={!requestKey || loading} onClick={() => setRetry((value) => value + 1)}><RefreshCw size={14} /></button><button type="button" className="terminal-icon terminal-chart-expand" aria-label="Perbesar chart" onClick={fullScreen}><Maximize2 size={14} /></button></div>
     <div className="terminal-ohlc"><span>{token?.symbol ?? "—"} / USD · {interval}</span>{(["o", "h", "l", "c"] as const).map((field) => <span key={field}>{field.toUpperCase()} <b>{formatPrice(last?.[field])}</b></span>)}</div>
     {current?.error && <div className="terminal-inline-note" role="alert"><span>{current.error}{rows.length ? " · menampilkan riwayat valid terakhir" : ""}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>Coba lagi</button></div>}
     <figure className="terminal-chart-figure" aria-busy={loading}>
-      {rows.length >= 2 ? <><div className="terminal-chart-plot"><ChartBars candles={rows} height={330} terminal label={`Riwayat ${token?.symbol ?? "token"} · ${interval}, candle dan volume, bukan harga unit live`} /></div><div className="terminal-price-axis">{[0.1, 0.35, 0.6, 0.85].map((fraction) => <span key={fraction} style={{ top: `${fraction * 84}%` }}>{formatPrice(min + span * (1 - fraction)).replace("$", "")}</span>)}<div className="terminal-cache-close" style={{ top: `${Math.max(3, Math.min(79, closePercent))}%` }}><span>{formatPrice(last?.c).replace("$", "")}</span><small>CLOSE · {current?.data?.cached ? "CACHE" : "HISTORI"}</small></div><small>Vol.</small></div><div className="terminal-chart-times">{[rows[0], rows[Math.floor(rows.length / 3)], rows[Math.floor(rows.length * 2 / 3)], last].map((candle, index) => <span key={index}>{formatUtc(candle.t).slice(0, 5)}</span>)}</div></> : <PanelFeedback state={loading ? "loading" : current?.error ? "error" : "empty"} title={loading ? "Memuat riwayat candle…" : !token ? "Pilih token dari scanner" : !requestKey ? "Kontrak token belum tersedia" : "Belum ada riwayat candle"} message={!requestKey && token ? "Chart memerlukan chain dan kontrak dari sumber." : "Data candle terpisah dari feed dashboard dan quote unit."} onRetry={requestKey && !loading ? () => setRetry((value) => value + 1) : undefined} />}
+      {rows.length >= 2 ? <><div className="terminal-chart-plot"><ChartBars candles={rows} height={330} terminal label={`Riwayat ${token?.symbol ?? "token"} · ${interval}, candle dan volume, bukan harga unit live`} /></div><div className="terminal-price-axis">{[0.1, 0.35, 0.6, 0.85].map((fraction) => <span key={fraction} style={{ top: `${fraction * 84}%` }}>{formatPrice(min + span * (1 - fraction)).replace("$", "")}</span>)}<div className="terminal-cache-close" style={{ top: `${Math.max(3, Math.min(79, closePercent))}%` }}><span>{formatPrice(last?.c).replace("$", "")}</span><small>CLOSE · {current?.data?.cached ? "CACHE" : "HISTORI"}</small></div><small>Vol.</small></div><div className="terminal-chart-times">{[rows[0], rows[Math.floor(rows.length / 3)], rows[Math.floor(rows.length * 2 / 3)], last].map((candle, index) => <span key={index}>{formatUtc(candle?.t).slice(0, 5)}</span>)}</div></> : <PanelFeedback state={loading ? "loading" : current?.error ? "error" : "empty"} title={loading ? "Memuat riwayat candle…" : !token ? "Pilih token dari scanner" : !requestKey ? "Kontrak token belum tersedia" : "Belum ada riwayat candle"} message={!requestKey && token ? "Chart memerlukan chain dan kontrak dari sumber." : "Data candle terpisah dari feed dashboard dan quote unit."} onRetry={requestKey && !loading ? () => setRetry((value) => value + 1) : undefined} />}
       <figcaption className="sr-only">Chart candle historis. Close cache tidak digunakan untuk order simulasi lokal.</figcaption>
       {loading && rows.length >= 2 && <span className="terminal-chart-updating" role="status">Memperbarui riwayat…</span>}
     </figure>

@@ -73,7 +73,7 @@ export function fillPaperOrder(ledger: PaperLedger, token: TokenView, side: Pape
     if (remaining > existing!.quantity * Number.EPSILON * 4) positions = [...positions, { ...existing!, quantity: remaining, costBasisUsd: Math.max(0, existing!.costBasisUsd - costSold), markQuote: { ...quote! } }];
   }
   const cashUsd = money(ledger.cashUsd + (side === "buy" ? -amountUsd : amountUsd));
-  if (!Number.isFinite(cashUsd) || cashUsd < 0 || !Number.isFinite(realizedPnlUsd)) return { ok: false, error: "Saldo lokal tidak valid." };
+  if (!Number.isFinite(cashUsd) || cashUsd < 0 || !Number.isSafeInteger(Math.round(cashUsd * 100)) || !Number.isFinite(realizedPnlUsd)) return { ok: false, error: "Saldo lokal tidak valid." };
   const fill: PaperFill = { tokenKey: token.assetKey!, symbol: token.symbol, side, amountUsd, quantity, priceUsd, quotedAt: quote!.quotedAt!, source: quote!.source, timestamp: now };
   return { ok: true, ledger: { ...ledger, cashUsd, realizedPnlUsd, positions, fills: [...ledger.fills, fill].slice(-500) } };
 }

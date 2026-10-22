@@ -147,6 +147,12 @@ export function formatCount(value: unknown): string {
   const number = finite(value);
   return number === null ? "—" : number.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
+export function formatQuantity(value: unknown): string {
+  const number = finite(value);
+  if (number === null) return "—";
+  const decimals = number === 0 ? 0 : Math.min(18, Math.max(6, 3 - Math.floor(Math.log10(Math.abs(number)))));
+  return number.toLocaleString("en-US", { maximumFractionDigits: decimals });
+}
 export function formatDuration(value: unknown): string {
   const number = finite(value);
   if (number === null) return "—";
@@ -190,7 +196,7 @@ export function serverPositions(data: Partial<StatsResponse> | null): ServerPosi
     token.holders = finite(position.holders);
     token.quote = { tokenKey: token.assetKey ?? token.key, unitPriceUsd: null, quotedAt: null, source: "Strategy 2 · harga sintetis", kind: "synthetic", eligible: false, reason: "Harga Strategy 2 sintetis, bukan harga unit token." };
     const sameLedger = data.strategy2Paper?.openPositions?.find((row) => row.mint === position.mint);
-    rows.push({ key: `strategy2:${token.key}`, token, notionalUsd: null, entryCostUsd: finite(position.entryCostUsd) ?? finite(sameLedger?.entryCostUsd), pnlUsd: null, pnlPct: finite(position.unrealizedPnl), markPriceUsd: null, marketCapUsd: token.marketCapUsd, heldSeconds: finite(position.heldSec), markAgeSeconds: null, detectedAt: null, noManualClose: position.noManualClose !== false });
+    rows.push({ key: `strategy2:${token.key}`, token, notionalUsd: null, entryCostUsd: finite(position.entryCostUsd) ?? finite(sameLedger?.entryCostUsd), pnlUsd: null, pnlPct: finite(position.unrealizedPnl), markPriceUsd: null, marketCapUsd: token.marketCapUsd, heldSeconds: finite(position.heldSec), markAgeSeconds: null, detectedAt: null, noManualClose: true });
   }
   for (const position of data.strategy2Paper?.openPositions ?? []) {
     if (s2Mints.has(position.mint)) continue;

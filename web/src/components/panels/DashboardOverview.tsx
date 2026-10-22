@@ -51,11 +51,11 @@ export function DashboardOverview(props: Props) {
   ];
   return <>
     <dl className="overview-metrics">{metrics.map((metric) => <div key={metric.label}><dt>{metric.label}</dt><dd>{metric.value ?? "—"}</dd><p>{metric.note}</p></div>)}</dl>
-    <div className="section-heading"><div><p className="eyebrow">Workspace</p><h2>Empat lane. Satu pandangan.</h2></div><span className="section-caption">Pilih lane untuk membuka detail</span></div>
+    <div className="section-heading"><div><p className="eyebrow">Workspace</p><h2>Ringkasan lane monitoring</h2></div><span className="section-caption">Pilih lane untuk membuka detail</span></div>
     <LaneCards {...props} />
     <div className="overview-bottom">
       <RecentActivity data={data} onSelect={onSelect} />
-      <aside className="monitoring-note"><span className="eyebrow">Tentang data</span><h2>Pantau sinyal.<br />Pahami konteksnya.</h2><p>Status lane mengikuti aktivitas berkas di server. Feed tersambung menunjukkan koneksi dashboard, bukan jaminan proses trading berjalan.</p><div><span className="status-dot text-up" /><span>Robinhood & OKX memiliki ledger paper terpisah.</span></div><div><span className="status-dot text-gold" /><span>Panel GMGN dan OKX Web3 memperbarui data secara berkala saat dibuka.</span></div><button type="button" className="text-action" onClick={() => onSelect("solana")}>Buka panel Solana<ChevronRight size={15} /></button></aside>
+      <aside className="monitoring-note"><span className="eyebrow">Tentang data</span><h2>Provenansi & ledger</h2><p>Status lane mengikuti aktivitas berkas di server. Feed tersambung menunjukkan koneksi dashboard, bukan jaminan proses trading berjalan.</p><div><span>Setiap paper server, wallet live, dan simulasi lokal memakai ledger terpisah.</span></div><div><span>Overview GMGN diperbarui secara berkala saat panel atau tabel sinyal dibuka.</span></div><button type="button" className="text-action" onClick={() => onSelect("solana")}>Kompatibilitas Solana / Strategy 2<ChevronRight size={15} /></button></aside>
     </div>
   </>;
 }

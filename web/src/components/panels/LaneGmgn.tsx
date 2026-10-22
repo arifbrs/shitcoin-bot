@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
-import { fetchGmgnOverview } from "@/lib/api";
-import type { GmgnOverviewResponse } from "@/types/stats";
+import { useGmgnOverview } from "@/hooks/useGmgnOverview";
+import { finite, formatCount, formatUsd } from "@/lib/terminal";
 
 const SIGNAL_LABEL: Record<number, string> = { 12: "smart-money buy", 20: "KOL buy" };
-const fmtUsd = (v: number | null): string => (v == null ? "—" : `$${Math.round(v).toLocaleString("en-US")}`);
+const fmtUsd = (v: number | null): string => formatUsd(v, true);
 const short = (w: string): string => `${w.slice(0, 6)}…${w.slice(-4)}`;
 const ago = (iso: string): string => {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
@@ -11,27 +10,10 @@ const ago = (iso: string): string => {
 };
 
 /** Lane GMGN: sinyal 24 jam, kualitas wallet (state permanen), trade terpantau, laporan harian. */
-export function LaneGmgn() {
-  const [data, setData] = useState<GmgnOverviewResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    const load = async (): Promise<void> => {
-      try {
-        setData(await fetchGmgnOverview(ctrl.signal));
-        setError(null);
-      } catch (e) {
-        if (e instanceof Error && e.message === "session-expired") { window.location.href = "/login"; return; }
-        if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : String(e));
-      }
-    };
-    void load();
-    const t = window.setInterval(() => { if (!document.hidden) void load(); }, 60_000);
-    return () => { ctrl.abort(); window.clearInterval(t); };
-  }, []);
-
-  const signalTotal = data?.signals24h.reduce((a, s) => a + s.count, 0) ?? 0;
+export function LaneGmgn({ overview }: { overview?: ReturnType<typeof useGmgnOverview> } = {}) {
+  const ownOverview = useGmgnOverview(!overview);
+  const { data, error, loading, retry } = overview ?? ownOverview;
+  const signalTotal = data ? finite(data.signals24h.reduce((a, s) => a + s.count, 0)) : null;
 
   return (
     <section className="rounded-xl border border-border bg-card p-4" aria-label="GMGN lane">
@@ -40,14 +22,14 @@ export function LaneGmgn() {
           <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-gold">OpenAPI resmi · read-only · pace 10s/call</p>
           <h2 className="mt-1 text-lg font-semibold text-foreground">GMGN · sinyal &amp; kualitas wallet</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Sinyal 24 jam: {signalTotal} · wallet terskor: {data?.walletsScored ?? 0} · trade terpantau 24 jam: {data?.watchedTrades24h ?? 0}
+            Sinyal 24 jam: {formatCount(signalTotal)} · wallet terskor: {formatCount(data?.walletsScored)} · trade terpantau 24 jam: {formatCount(data?.watchedTrades24h)}
             {data?.lastCycle && ` · siklus terakhir: ${data.lastCycle.calls} call ${(data.lastCycle.ms / 1000).toFixed(1)}s (${ago(data.lastCycle.ts)} lalu)`}
           </p>
         </div>
         {data && <span className="font-mono text-[10px] text-muted-foreground">update {ago(data.updatedAt)} lalu</span>}
       </div>
-      {error && <p role="alert" className="mt-2 text-xs text-down">{error}</p>}
-      {!data ? <p className="mt-4 text-xs text-muted-foreground">Memuat lane…</p> : (
+      {error && <div role="alert" className="mt-2 text-xs text-muted-foreground">{error}{data ? " · menampilkan data valid terakhir" : ""}<button type="button" className="terminal-button" onClick={retry}>Coba lagi</button></div>}
+      {!data ? <p className="mt-4 text-xs text-muted-foreground">{loading ? "Memuat lane…" : "Data GMGN belum tersedia —"}</p> : (
         <div className="mt-3 grid gap-3 lg:grid-cols-3">
           <div className="rounded-lg border border-border bg-background/30 p-3">
             <h4 className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground">Sinyal terbaru</h4>
