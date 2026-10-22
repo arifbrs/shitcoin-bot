@@ -4,6 +4,21 @@ import { ledgerPath, loadState } from "./state.js";
 import { loadCandidates } from "./scanner.js";
 import { quoteSell } from "./exec.js";
 
+// CACHE 60s: panel me-refresh 30s; tanpa cache, tiap refresh menembak quote untuk SEMUA posisi → 429.
+const markCache = new Map<string, { ts: number; markWeth: number | null }>();
+async function cachedSellMark(token: string, qtyRaw: string, maker: string): Promise<number | null> {
+  const key = token.toLowerCase() + ":" + qtyRaw;
+  const hit = markCache.get(key);
+  if (hit && Date.now() - hit.ts < 60_000) return hit.markWeth;
+  let markWeth: number | null = null;
+  try {
+    const q = await quoteSell(token, qtyRaw, maker);
+    if (q.ok && q.quote) markWeth = Number(q.quote.amountOut) / 1e18;
+  } catch { /* tanpa quote */ }
+  markCache.set(key, { ts: Date.now(), markWeth });
+  return markWeth;
+}
+
 export async function paperStatus(): Promise<Record<string, unknown>> {
   const s = loadState();
   let closes: Array<Record<string, unknown>> = [];
@@ -23,13 +38,8 @@ export async function paperStatus(): Promise<Record<string, unknown>> {
       const entryWeth = Number(p.entryWethRaw) / 1e18;
       let markWeth: number | null = null;
       let pnlPct: number | null = null;
-      try {
-        const q = await quoteSell(p.token, p.qtyRaw, process.env.BOT_WALLET || "0x629Ec42444A43A0E02A572587E3A49904542F4E8");
-        if (q.ok && q.quote) {
-          markWeth = Number(q.quote.amountOut) / 1e18;
-          if (entryWeth > 0) pnlPct = ((markWeth - entryWeth) / entryWeth) * 100;
-        }
-      } catch { /* tanpa quote = tanpa angka */ }
+      markWeth = await cachedSellMark(p.token, p.qtyRaw, process.env.BOT_WALLET || "0x629Ec42444A43A0E02A572587E3A49904542F4E8");
+      if (markWeth !== null && entryWeth > 0) pnlPct = ((markWeth - entryWeth) / entryWeth) * 100;
       return {
         arm: p.arm ?? "?", symbol: p.symbol, token: p.token,
         ageMin: Math.round((Date.now() - p.entryTs) / 60000),
