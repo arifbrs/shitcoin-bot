@@ -2,6 +2,7 @@ import { useState } from "react";
 import { filterVariants } from "@/lib/dashboard";
 import { Search } from "lucide-react";
 import type { RobinhoodPaperResponse } from "@/types/stats";
+import { finite, formatPrice, formatSignedUsd, formatDuration } from "@/lib/terminal";
 
 /**
  * Lane Robinhood (Ethereum L2, chain 4663): 10 varian paper, risk $5/trade.
@@ -10,13 +11,14 @@ import type { RobinhoodPaperResponse } from "@/types/stats";
  * `/api/stream` (lihat Dashboard → useLiveStats). Server mengirim frame baru setiap ada tulisan di
  * log-dir (mark posisi tiap 30 detik), jadi panel ini update begitu state berubah — bukan timer.
  */
-const fmtPnl = (v: number | null): string => (v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`);
-const fmtPrice = (v: number | null): string => (v == null ? "—" : `$${v.toLocaleString("en-US", { maximumFractionDigits: v < 1 ? 6 : 2 })}`);
+const fmtPnl = (v: number | null): string => formatSignedUsd(v);
+const fmtPrice = (v: number | null): string => formatPrice(v);
 const ago = (iso: string): string => {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (finite(s) === null) return "—";
   return s < 90 ? `${s.toFixed(0)}s` : s < 5_400 ? `${(s / 60).toFixed(0)}m` : `${(s / 3_600).toFixed(1)}j`;
 };
-const markAgo = (sec: number | null): string => (sec == null ? "?" : sec < 90 ? `${sec}s` : `${Math.round(sec / 60)}m`);
+const markAgo = (sec: number | null): string => formatDuration(sec);
 
 export function LaneRobinhood({ data, initialQuery = "" }: { data: RobinhoodPaperResponse | null | undefined; initialQuery?: string }) {
   const [query, setQuery] = useState(initialQuery);

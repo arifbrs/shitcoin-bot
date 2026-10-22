@@ -14,6 +14,7 @@ import { TokenScanner } from "../src/components/panels/TokenScanner";
 import { TerminalWorkspace } from "../src/components/panels/TerminalWorkspace";
 import { TerminalStatus } from "../src/components/panels/TerminalChrome";
 import { validCandles } from "../src/components/panels/CoinChart";
+import Dashboard from "../src/pages/Dashboard";
 
 const now = Date.parse("2026-10-22T10:00:00Z");
 const contract = "So11111111111111111111111111111111111111112";
@@ -166,6 +167,18 @@ test("empty terminal panels render with lane access and server/local separation"
   for (const lane of ["Robinhood", "GMGN", "DexScreener", "Solana"]) assert.ok(html.includes(`Buka lane ${lane}`));
   assert.ok(html.includes("LOKAL"));
   assert.ok(!/PRATINJAU|DATA CONTOH|Stable|NaN|undefined|Infinity/.test(html));
+});
+
+test("the actual /app dashboard mounts the terminal and local ticket during first-snapshot loading", () => {
+  const html = renderToStaticMarkup(<Dashboard />);
+  assert.ok(html.includes('class="terminal-shell"'));
+  assert.ok(html.includes('id="dashboard-content"'));
+  assert.ok(html.includes('aria-label="Shitcoin terminal"'));
+  assert.ok(html.includes('aria-label="Ledger paper server"'));
+  assert.ok(html.includes("SIMULASI LOKAL · tidak dikirim ke server"));
+  assert.ok(html.includes("Menunggu snapshot pertama"));
+  assert.ok(!html.includes('class="console-shell"'));
+  assert.ok(!/NaN|undefined|Infinity|PRATINJAU|DATA CONTOH/.test(html));
 });
 
 test("chart validation rejects malformed OHLC and keeps chronological unique history", () => {

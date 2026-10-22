@@ -6,6 +6,7 @@ const fmtUsd = (v: number | null): string => formatUsd(v, true);
 const short = (w: string): string => `${w.slice(0, 6)}…${w.slice(-4)}`;
 const ago = (iso: string): string => {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (finite(s) === null) return "—";
   return s < 90 ? `${s.toFixed(0)}s` : s < 5_400 ? `${(s / 60).toFixed(0)}m` : `${(s / 3_600).toFixed(1)}j`;
 };
 

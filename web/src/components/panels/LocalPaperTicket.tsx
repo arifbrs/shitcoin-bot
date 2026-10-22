@@ -28,6 +28,7 @@ export function LocalPaperTicket(props: LocalTicketProps) {
   const quoteError = token ? quoteProblem(token, quote, now) : "Pilih token dari scanner terlebih dahulu.";
   const amountUsd = parsePaperAmount(amount);
   const quantity = quoteError || amountUsd === null ? null : amountUsd / quote!.unitPriceUsd!;
+  const orderError = paperOrderProblem(ledger, token, side, amount, quote, now);
   const owned = ledger.positions.find((position) => position.tokenKey === token?.assetKey)?.quantity ?? 0;
   return <form id={id} className="terminal-ticket-form" onSubmit={(event) => { event.preventDefault(); onSubmit(); }} aria-label="Form simulasi lokal">
     <div className="terminal-section-title"><h2>Paper ticket <span>/ {token?.symbol ?? "—"}</span></h2><span className="terminal-badge">BROWSER</span></div>
@@ -38,7 +39,7 @@ export function LocalPaperTicket(props: LocalTicketProps) {
     <div className="terminal-presets">{["10", "100", "500", "1000"].map((value) => <button key={value} type="button" aria-pressed={Number(amount) === Number(value)} onClick={() => onAmountChange(value)}>{formatUsd(Number(value)).replace(".00", "")}</button>)}</div>
     <dl className="terminal-ticket-estimate"><div><dt>Harga unit layak</dt><dd>{quoteError ? "—" : formatPrice(quote?.unitPriceUsd)}</dd></div><div><dt>{side === "buy" ? "Estimasi token diterima" : "Estimasi token dijual"}</dt><dd>{formatQuantity(quantity)} {token?.symbol ?? "—"}</dd></div><div><dt>Sumber quote</dt><dd>{quote?.source ?? "—"}</dd></div></dl>
     <div id={`${id}-quote-note`} className="terminal-quote-note"><strong>{quoteError ? "Menunggu harga unit yang valid" : "Quote unit untuk simulasi lokal"}</strong><p>{quoteError ?? `Quote ${formatDuration((now - quote!.quotedAt!) / 1000)} lalu. Buy/Sell hanya dicatat di browser ini.`}</p></div>
-    {paperOrderProblem(ledger, token, side, amount, quote, now) && !quoteError && <p className="terminal-inline-note" role="status">{paperOrderProblem(ledger, token, side, amount, quote, now)}</p>}
+    {orderError && !quoteError && <p className="terminal-inline-note" role="status">{orderError}</p>}
     {storageError && <p className="terminal-inline-note" role="alert">{storageError}</p>}
     {message && <p className="terminal-inline-note" role="status">{message}</p>}
     <p className="terminal-note">Saldo awal $10,000 virtual · tersimpan di browser ini</p>

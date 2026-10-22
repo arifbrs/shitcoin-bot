@@ -197,11 +197,11 @@ export function DiagnosticsDialog({ open, onOpenChange, data, restoreFocusRef }:
           <Section label="DATA INTEGRITY">
             {data.dataIntegrity ? (
               <div className="space-y-1">
-                <Row k="ok" v={data.dataIntegrity.ok ? "yes" : "NO"} />
+                <Row k="ok" v={data.dataIntegrity.ok == null ? "—" : data.dataIntegrity.ok ? "yes" : "NO"} />
                 <Row k="drift" v={`${data.dataIntegrity.driftSol ?? "—"} SOL`} />
               </div>
             ) : (
-              <p className="text-[10px] text-up">✓ sehat — belum ada audit yang gagal</p>
+              <p className="text-[10px] text-muted-foreground">— · hasil audit belum tersedia</p>
             )}
           </Section>
 

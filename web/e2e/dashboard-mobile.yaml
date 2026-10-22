@@ -1,0 +1,21 @@
+url: http://127.0.0.1:4317/app
+name: Dashboard terminal mobile drawers
+---
+- launchApp
+- assertVisible: 'a[aria-label="Shitcoin terminal"]'
+- assertVisible: '.terminal-mobile-actions'
+- takeScreenshot: terminal-workspace-mobile
+- tapOn: 'button[aria-label="Buka pencarian dan scanner"]'
+- assertVisible: '.terminal-drawer-scanner .terminal-search input'
+- takeScreenshot: terminal-scanner-mobile
+- tapOn: '.terminal-drawer-scanner button[aria-label="Buka lane Robinhood"]'
+- assertVisible: 'section[aria-label="Robinhood Chain paper lane"]'
+- takeScreenshot: terminal-robinhood-mobile
+- tapOn: 'button[aria-label="Tutup panel"]'
+- tapOn: 'button.terminal-open-buy'
+- assertVisible: '.terminal-drawer-ticket'
+- assertVisible: '.terminal-drawer-ticket .terminal-submit[disabled]'
+- assertVisible: '.terminal-drawer-ticket .terminal-drawer-footer'
+- takeScreenshot: terminal-local-ticket-mobile
+- tapOn: 'button[aria-label="Tutup ticket simulasi"]'
+- assertVisible: '.terminal-mobile-actions'

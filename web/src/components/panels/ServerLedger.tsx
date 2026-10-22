@@ -20,7 +20,7 @@ export function ServerLedger({ tab, onTabChange, positions, trades, signals, sta
 }) {
   const count = tab === "positions" ? positions.length : tab === "trades" ? trades.length : signals.length;
   return <section className="terminal-server-ledger" aria-label="Ledger paper server">
-    <div className="terminal-tabs" aria-label="Tabel server">{([{ id: "positions", label: "Posisi" }, { id: "trades", label: "Trade" }, { id: "signals", label: "Sinyal" }] as const).map((item) => <button key={item.id} type="button" aria-pressed={tab === item.id} onClick={() => onTabChange(item.id)}>{item.label}{tab === item.id && <span>{count}</span>}</button>)}<span className="terminal-badge">PAPER SERVER</span></div>
+    <div className="terminal-tabs" aria-label="Tabel server">{([{ id: "positions", label: "Posisi" }, { id: "trades", label: "Trade" }, { id: "signals", label: "Sinyal" }] as const).map((item) => <button key={item.id} type="button" aria-label={`Tampilkan ${item.label.toLowerCase()} server`} aria-pressed={tab === item.id} onClick={() => onTabChange(item.id)}>{item.label}{tab === item.id && <span>{count}</span>}</button>)}<span className="terminal-badge">PAPER SERVER</span></div>
     {(state === "stale" || state === "error") && <div className="terminal-ledger-warning" role="status">Snapshot terakhir · {formatDuration(age)} · belum terverifikasi<button type="button" onClick={onRetry}>Hubungkan ulang</button></div>}
     {tab === "signals" && signalError && <div className="terminal-ledger-warning" role="alert">{signalError}<button type="button" onClick={onRetry}>Coba lagi</button></div>}
     <div className="terminal-table-scroll">

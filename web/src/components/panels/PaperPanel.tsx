@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { finite, formatCount, formatDuration, formatPercent, formatQuantity, formatUtc, numericTone } from "@/lib/terminal";
 
 type PaperData = {
   engine: string;
@@ -14,89 +15,85 @@ type PaperData = {
 
 export function PaperPanel() {
   const [d, setD] = useState<PaperData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    const controller = new AbortController();
     const load = async () => {
       try {
-        const r = await fetch("/api/paper");
+        const r = await fetch("/api/paper", { signal: controller.signal });
+        if (r.status === 401) throw new Error("session-expired");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = (await r.json()) as PaperData;
-        if (alive) setD(j);
-      } catch {
-        /* biarkan data terakhir */
+        if (!Array.isArray(j.positions)) throw new Error("Format snapshot paper tidak valid.");
+        if (alive) { setD(j); setError(null); }
+      } catch (cause) {
+        if (!alive) return;
+        if (cause instanceof Error && cause.message === "session-expired") { window.location.replace("/login"); return; }
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     };
     void load();
     const t = setInterval(load, 30000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+    return () => { alive = false; controller.abort(); clearInterval(t); };
+  }, [attempt]);
+  const retry = () => setAttempt((value) => value + 1);
 
-  if (!d) return null;
+  if (!d) return <section className="terminal-panel-card" aria-label="Paper 1:1 server"><p role={error ? "alert" : "status"}>PAPER 1:1 SERVER · {error ? `galat membaca /api/paper — ${error}` : "memuat…"}</p>{error && <button type="button" className="terminal-button" onClick={retry}>Coba lagi</button>}</section>;
   const idle = d.positions.length === 0 && d.closed === 0;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-black/20 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-xs font-bold text-black">PAPER 1:1</span>
-          <span className="text-xs text-white/60">lolos uji dua arah</span>
-        </div>
-        <div className="flex gap-3 text-xs text-white/50">
-          <span>siklus <b className="text-white/80">{d.cycles}</b></span>
-          <span>kandidat <b className="text-white/80">{d.candidates}</b></span>
-          <span>tutup <b className="text-emerald-400">{d.closed}</b></span>
-          <span>stuck <b className={d.stuck > 0 ? "text-amber-400" : "text-white/80"}>{d.stuck}</b></span>
-        </div>
-      </div>
+    <section className="terminal-panel-card" aria-label="Paper 1:1 server">
+      {error && <p className="terminal-inline-note" role="alert">Galat membaca /api/paper — {error} · menampilkan snapshot terakhir<button type="button" onClick={retry}>Coba lagi</button></p>}
+      <div className="terminal-panel-summary"><span className="terminal-badge">PAPER 1:1 SERVER</span><span>Ledger engine · bukan simulasi lokal</span><span>siklus {formatCount(d.cycles)}</span><span>kandidat {formatCount(d.candidates)}</span><span>tutup {formatCount(d.closed)}</span><span>stuck {formatCount(d.stuck)}</span></div>
 
       {idle && (
-        <p className="mt-3 text-sm text-white/50">
-          Engine berjalan, belum ada posisi. Ia hanya masuk ke token yang <b className="text-white/80">terbukti bisa dibeli dan dijual</b> —
-          hari ini {d.candidates} kandidat lolos dari seluruh token yang dipindai.
+        <p className="terminal-note">
+          Snapshot engine belum memiliki posisi. Kandidat yang lolos uji beli/jual dari server: {formatCount(d.candidates)}.
         </p>
       )}
 
       {!idle && (
-        <table className="mt-3 w-full text-sm">
+        <div className="terminal-lane-table-scroll"><table className="terminal-table terminal-lane-table">
           <thead>
-            <tr className="text-left text-xs text-white/40">
-              <th>arm</th><th>token</th><th>umur</th><th>WETH masuk</th><th>nilai kini</th><th>PnL</th><th>status</th>
+            <tr>
+              <th>Arm</th><th>Token</th><th>Umur</th><th>WETH masuk</th><th>Quote jual · WETH</th><th>PnL</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
             {d.positions.map((p) => (
-              <tr key={p.token} className="border-t border-white/5">
-                <td className="text-white/50">{p.arm}</td>
-                <td className="py-1 font-semibold">{p.symbol}</td>
-                <td>{p.ageMin} mnt</td>
-                <td>{p.entryWeth.toFixed(6)}</td>
-                <td>{p.markWeth === null ? "—" : p.markWeth.toFixed(6)}</td>
-                <td className={p.pnlPct === null ? "text-white/40" : p.pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"}>
-                  {p.pnlPct === null ? "tanpa quote" : (p.pnlPct >= 0 ? "+" : "") + p.pnlPct.toFixed(2) + "%"}
-                </td>
-                <td className={p.stuck ? "text-amber-400" : "text-white/60"}>
+              <tr key={`${p.arm}:${p.token}`}>
+                <td>{p.arm ?? "—"}</td>
+                <td>{p.symbol ?? "—"}</td>
+                <td>{formatDuration(finite(p.ageMin) === null ? null : p.ageMin * 60)}</td>
+                <td>{formatQuantity(p.entryWeth)}</td>
+                <td>{formatQuantity(p.markWeth)}</td>
+                <td className={numericTone(p.pnlPct)}>{formatPercent(p.pnlPct)}</td>
+                <td>
                   {p.stuck ? "STUCK · " + (p.stuckReason ?? "") : "terbuka · menunggu exit sesuai aturan"}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
 
       {Object.keys(d.byArm ?? {}).length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="terminal-panel-summary">
           {Object.entries(d.byArm).map(([arm, v]) => (
-            <span key={arm} className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-white/60">
-              arm <b className="text-white/85">{arm}</b> · buka {v.open} · tutup {v.closed} · stuck {v.stuck}
+            <span key={arm} className="terminal-badge">
+              arm {arm} · buka {formatCount(v.open)} · tutup {formatCount(v.closed)} · stuck {formatCount(v.stuck)}
             </span>
           ))}
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap justify-between gap-2 text-[11px] text-white/40">
-        <span>{d.rule}</span>
-        <span>diperbarui {new Date(d.updatedAt).toLocaleTimeString()}</span>
+      <div className="terminal-panel-summary terminal-note">
+        <span>{d.rule ?? "—"}</span>
+        <span>diperbarui {formatUtc(Date.parse(d.updatedAt))}</span>
       </div>
-    </div>
+    </section>
   );
 }

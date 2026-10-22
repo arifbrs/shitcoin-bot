@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { finite, formatDuration, formatQuantity, formatUsd } from "@/lib/terminal";
 
 type Live = {
   wallet: string;
@@ -11,54 +12,62 @@ type Live = {
 export function LivePanel() {
   const [s, setS] = useState<Live | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let on = true;
+    const controller = new AbortController();
     const load = async () => {
       try {
-        const r = await fetch("/api/live");
+        const r = await fetch("/api/live", { signal: controller.signal });
+        if (r.status === 401) throw new Error("session-expired");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = (await r.json()) as Live;
+        if (!Array.isArray(j.positions) || !Array.isArray(j.sells)) throw new Error("Format snapshot live tidak valid.");
         if (on) { setS(j); setErr(null); }
-      } catch (e) { if (on) setErr(e instanceof Error ? e.message : String(e)); }
+      } catch (e) {
+        if (!on) return;
+        if (e instanceof Error && e.message === "session-expired") { window.location.replace("/login"); return; }
+        setErr(e instanceof Error ? e.message : String(e));
+      }
     };
     void load();
     const t = setInterval(load, 30_000);
-    return () => { on = false; clearInterval(t); };
-  }, []);
-  if (err) return <div style={{ padding: 12, border: "1px solid #444", borderRadius: 10 }}>LIVE: galat membaca /api/live — {err}</div>;
-  if (!s) return <div style={{ padding: 12, border: "1px solid #444", borderRadius: 10 }}>LIVE: memuat…</div>;
+    return () => { on = false; controller.abort(); clearInterval(t); };
+  }, [attempt]);
+  const retry = () => setAttempt((value) => value + 1);
+  if (!s) return <section className="terminal-panel-card" aria-label="Wallet dan posisi live server"><p role={err ? "alert" : "status"}>LIVE SERVER · {err ? `galat membaca /api/live — ${err}` : "memuat…"}</p>{err && <button type="button" className="terminal-button" onClick={retry}>Coba lagi</button>}</section>;
   const open = s.positions.length;
   return (
-    <div style={{ padding: 14, border: "1px solid #2a7", borderRadius: 12, marginBottom: 14 }}>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ background: "#0a7", color: "#fff", padding: "2px 10px", borderRadius: 999, fontWeight: 700, letterSpacing: 0.5 }}>LIVE</span>
-        <span style={{ opacity: 0.75, fontSize: 12 }}>{s.wallet.slice(0, 10)}…{s.wallet.slice(-4)}</span>
-        <span>ETH {s.balances.eth.toFixed(6)}</span>
-        <span>WETH {s.balances.weth.toFixed(6)}</span>
-        <span>USDG {s.balances.usdg.toFixed(4)}</span>
-        <span style={{ marginLeft: "auto", opacity: 0.8 }}>{open} posisi live · {s.sells.length} terjual</span>
+    <section className="terminal-panel-card" aria-label="Wallet dan posisi live server">
+      {err && <p className="terminal-inline-note" role="alert">Galat membaca /api/live — {err} · menampilkan snapshot terakhir<button type="button" onClick={retry}>Coba lagi</button></p>}
+      <div className="terminal-panel-summary">
+        <span className="terminal-badge">LIVE SERVER</span>
+        <span title={s.wallet}>{s.wallet ? `${s.wallet.slice(0, 10)}…${s.wallet.slice(-4)}` : "Wallet —"}</span>
+        <span>ETH {formatQuantity(s.balances?.eth)}</span>
+        <span>WETH {formatQuantity(s.balances?.weth)}</span>
+        <span>USDG {formatQuantity(s.balances?.usdg)}</span>
+        <span>{open} posisi live · {s.sells.length} terjual</span>
       </div>
-      <div style={{ marginTop: 10 }}>
+      <div className="terminal-lane-table-scroll">
         {open === 0 ? (
-          <div style={{ opacity: 0.7 }}>Tidak ada posisi live terbuka.</div>
+          <p className="terminal-note">Tidak ada posisi live terbuka.</p>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead><tr style={{ textAlign: "left", opacity: 0.7 }}><th>token</th><th>notional</th><th>umur</th><th>alasan belum dijual</th></tr></thead>
+          <table className="terminal-table terminal-lane-table">
+            <thead><tr><th>Token</th><th>Notional USD</th><th>Umur posisi</th><th>Alasan belum dijual</th></tr></thead>
             <tbody>
               {s.positions.map((p) => (
-                <tr key={p.token} style={{ borderTop: "1px solid #333" }}>
-                  <td style={{ padding: "4px 0" }}>{p.symbol ?? p.token.slice(0, 10)}</td>
-                  <td>${Number(p.notionalUsd ?? 0).toFixed(2)}</td>
-                  <td>{p.ageMin >= 60 ? (p.ageMin / 60).toFixed(1) + " jam" : p.ageMin.toFixed(0) + " menit"}</td>
-                  <td style={{ color: p.paperHolds ? "#8ab" : "#fb7" }}>{p.reason}</td>
+                <tr key={p.token}>
+                  <td>{p.symbol ?? p.token.slice(0, 10)}</td>
+                  <td>{formatUsd(p.notionalUsd)}</td>
+                  <td>{formatDuration(finite(p.ageMin) === null ? null : p.ageMin * 60)}</td>
+                  <td>{p.reason ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
-      <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-        biaya nyata: fee pool {(s.costs.poolFeePct * 100).toFixed(2)}% · gas ${s.costs.gasPerSwapUsd.toFixed(4)}/swap — {s.costs.note}
-      </div>
-    </div>
+      <p className="terminal-note">Biaya nyata: fee pool {finite(s.costs?.poolFeePct) === null ? "—" : `${(s.costs.poolFeePct * 100).toFixed(2)}%`} · gas {formatUsd(s.costs?.gasPerSwapUsd)}/swap — {s.costs?.note ?? "—"}</p>
+    </section>
   );
 }

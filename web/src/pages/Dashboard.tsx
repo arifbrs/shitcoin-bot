@@ -155,15 +155,21 @@ export default function Dashboard() {
         const text = query.trim().toLowerCase();
         const lane = dashboardLanes.find((item) => `${item.id} ${item.name}`.toLowerCase().includes(text));
         if (text && lane) selectLane(lane.id);
+        else if (text === "overview" || text === "ringkasan") selectLane("overview");
+        else if (text === "solana" || text === "strategy 2" || text === "strategy2") selectLane("solana");
         else if (text && data?.laneRobinhood?.variants.some((variant) => `${variant.id} ${variant.cohort ?? ""}`.toLowerCase().includes(text))) selectLane("robinhood", query);
       }
     }
   };
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || overlay || controlOpen || diagOpen) return;
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || controlOpen || diagOpen) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") || target.isContentEditable)) return;
+      if (overlay) {
+        if (overlay === "ticket" && ["b", "s"].includes(event.key.toLowerCase())) { event.preventDefault(); setSide(event.key.toLowerCase() === "b" ? "buy" : "sell"); local.clearMessage(); }
+        return;
+      }
       if (event.key === "/") { event.preventDefault(); openScanner(); }
       else if (event.key.toLowerCase() === "b" || event.key.toLowerCase() === "s") { event.preventDefault(); openTicket(event.key.toLowerCase() === "b" ? "buy" : "sell"); }
       else if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.key === "ArrowDown" ? 1 : -1); }
@@ -180,6 +186,7 @@ export default function Dashboard() {
   const localPositions = <LocalPositions ledger={local.ledger} now={now} onSelect={selectToken} onReset={() => openOverlay("reset")} />;
   const operational = <OperationalContext data={data} age={age} onOpen={() => openSystemDialog("control")} />;
   const modalOpen = Boolean(overlay || controlOpen || diagOpen);
+  const topUpResult = addPaperCash(local.ledger, topUpAmount);
 
   return <div className="terminal-shell">
     <div className="terminal-surface" inert={modalOpen}>
@@ -196,7 +203,7 @@ export default function Dashboard() {
             {!availableToken && token && <p className="terminal-inline-note" role="status">Token tidak ada di snapshot saat ini · data terakhir, bukan quote baru.</p>}
             <TerminalWorkspace token={token} quote={quote} now={now} onScanner={() => openScanner()} onContext={() => openTicket()} />
           </main>
-          <ServerLedger tab={serverTab} onTabChange={setServerTab} positions={positions} trades={trades} signals={signals} state={serverTab === "signals" && gmgn.loading && !signals.length ? "loading" : state} age={age} onSelectToken={selectToken} onSelectLane={selectLane} onRetry={() => { reconnect(); if (serverTab === "signals") gmgn.retry(); }} signalError={gmgn.error} />
+          <ServerLedger tab={serverTab} onTabChange={setServerTab} positions={positions} trades={trades} signals={signals} state={serverTab === "signals" && !signals.length ? gmgn.error ? "error" : gmgn.loading ? "loading" : state : state} age={age} onSelectToken={selectToken} onSelectLane={selectLane} onRetry={() => { reconnect(); if (serverTab === "signals") gmgn.retry(); }} signalError={gmgn.error} />
           <section className="terminal-mobile-actions" aria-label="Buka ticket simulasi lokal"><div><span>Kas lokal {formatUsd(local.ledger.cashUsd)}</span><span>{token && quoteProblem(token, quote, now) === null ? "Quote unit terpisah" : "Quote unit belum ada"}</span></div><div><button type="button" className="terminal-open-buy" onClick={() => openTicket("buy")}>Buka Buy {token?.symbol ?? "token"}</button><button type="button" className="terminal-open-sell" onClick={() => openTicket("sell")}>Buka Sell {token?.symbol ?? "token"}</button></div></section>
         </div>
         <aside className="terminal-context-rail" aria-label="Simulasi lokal dan konteks token"><div className="terminal-ticket-block"><LocalPaperTicket {...ticket} /><PaperSubmit {...ticket} /></div><TokenContext token={token} />{localPositions}{operational}</aside>
@@ -216,7 +223,7 @@ export default function Dashboard() {
       </>}
     </div></TerminalDrawer>
     <TerminalDrawer open={overlay === "account"} onOpenChange={(open) => setOverlay(open ? "account" : null)} title="Akun & workspace" restoreFocusRef={restoreFocus}><div className="terminal-account-menu"><p>Kas virtual · lokal <b>{formatUsd(local.ledger.cashUsd)}</b></p><p>Exec mode server <b>{data?.control?.execMode ?? "—"}</b></p>{data?.liveBridge?.wallet && <p className="terminal-account-wallet">Wallet server <span>{data.liveBridge.wallet}</span></p>}<button type="button" className="terminal-button" onClick={() => openOverlay("topup")}>Tambah kas virtual</button><button type="button" className="terminal-button" onClick={() => openOverlay("reset")}>Reset ledger lokal</button><button type="button" className="terminal-button" onClick={() => openSystemDialog("diagnostics")} disabled={!data}><Activity size={16} />Diagnostik sistem</button><button type="button" className="terminal-button" onClick={() => openSystemDialog("control")}><Settings2 size={16} />Kontrol operasional server</button><a href="/logout" className="terminal-button"><LogOut size={16} />Keluar</a></div></TerminalDrawer>
-    <TerminalDrawer open={overlay === "topup"} onOpenChange={(open) => setOverlay(open ? "topup" : null)} title="Tambah kas virtual" description="Hanya saldo simulasi lokal di browser ini" initialFocusRef={topUpInput} restoreFocusRef={restoreFocus}><form className="terminal-cash-form" onSubmit={(event) => { event.preventDefault(); const result = addPaperCash(local.ledger, topUpAmount); if (result.ok) { local.topUp(topUpAmount); setOverlay(null); } }}><label htmlFor="local-topup-amount">Jumlah USD virtual</label><div className="terminal-amount"><span>$</span><input ref={topUpInput} id="local-topup-amount" inputMode="decimal" value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)} /></div><p className="terminal-note">Kas saat ini {formatUsd(local.ledger.cashUsd)}. Top-up ini bukan setoran wallet.</p>{!addPaperCash(local.ledger, topUpAmount).ok && parsePaperAmount(topUpAmount) !== null && <p className="terminal-note" role="status">Jumlah kas virtual terlalu besar.</p>}<button type="submit" className="terminal-button" disabled={!addPaperCash(local.ledger, topUpAmount).ok}>Tambah ke ledger lokal</button></form></TerminalDrawer>
+    <TerminalDrawer open={overlay === "topup"} onOpenChange={(open) => setOverlay(open ? "topup" : null)} title="Tambah kas virtual" description="Hanya saldo simulasi lokal di browser ini" initialFocusRef={topUpInput} restoreFocusRef={restoreFocus}><form className="terminal-cash-form" onSubmit={(event) => { event.preventDefault(); if (addPaperCash(local.ledger, topUpAmount).ok) { local.topUp(topUpAmount); setOverlay(null); } }}><label htmlFor="local-topup-amount">Jumlah USD virtual</label><div className="terminal-amount"><span>$</span><input ref={topUpInput} id="local-topup-amount" inputMode="decimal" value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)} /></div><p className="terminal-note">Kas saat ini {formatUsd(local.ledger.cashUsd)}. Top-up ini bukan setoran wallet.</p>{!topUpResult.ok && parsePaperAmount(topUpAmount) !== null && <p className="terminal-note" role="status">Jumlah kas virtual terlalu besar.</p>}<button type="submit" className="terminal-button" disabled={!topUpResult.ok}>Tambah ke ledger lokal</button></form></TerminalDrawer>
     <TerminalDrawer open={overlay === "reset"} onOpenChange={(open) => setOverlay(open ? "reset" : null)} title="Reset simulasi lokal" description="Kas virtual kembali ke $10,000; posisi dan riwayat lokal dihapus" restoreFocusRef={restoreFocus}><div className="terminal-reset"><p>Reset ledger pada browser ini?</p><button type="button" className="terminal-button" onClick={() => setOverlay(null)}>Batal</button><button type="button" className="terminal-button" onClick={() => { local.reset(); setOverlay(null); }}>Reset ledger lokal</button></div></TerminalDrawer>
     <ControlDialog open={controlOpen} onOpenChange={setControlOpen} data={data} restoreFocusRef={restoreFocus} />
     <DiagnosticsDialog open={diagOpen} onOpenChange={setDiagOpen} data={data} restoreFocusRef={restoreFocus} />

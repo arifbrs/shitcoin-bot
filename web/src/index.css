@@ -885,6 +885,12 @@
 .terminal-system-dialog [data-slot="dialog-close"] { width: 44px; height: 44px; }
 .terminal-lane-content { display: grid; gap: 16px; min-width: 0; padding: 12px; }
 .terminal-lane-content > * { min-width: 0; }
+.terminal-lane-content :is(.rounded-lg, .rounded-xl, .rounded-2xl), .terminal-system-dialog .rounded-lg { border-radius: 6px; }
+.terminal-panel-card { min-width: 0; padding: 12px; border: 1px solid var(--terminal-line); border-radius: 6px; background: var(--terminal-panel); }
+.terminal-panel-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: 11px; }
+.terminal-panel-summary + .terminal-panel-summary { margin-top: 12px; }
+.terminal-lane-table-scroll { min-width: 0; margin-top: 12px; overflow-x: auto; }
+.terminal-lane-table { min-width: 600px; }
 .terminal-lane-content .overview-metrics { padding: 0 0 12px; margin: 0; }
 .terminal-lane-content .overview-metrics > div { padding: 0 12px; }
 .terminal-lane-content .overview-metrics dd { font-family: var(--font-mono); font-size: 24px; letter-spacing: -.5px; }
@@ -901,13 +907,13 @@
 .terminal-lane-content .monitoring-note > p { color: var(--terminal-secondary); }
 .terminal-lane-content .text-action { color: var(--terminal-support); font-size: 11px; }
 .terminal-lane-content .section-heading h2 { font-size: 15px; }
-.terminal-lane-content .dash-grid { display: grid; grid-template-columns: 1fr; grid-template-areas: none; grid-template-rows: none; }
-.terminal-lane-content .dash-grid > * { grid-area: auto; max-height: 400px; min-height: 200px; }
+.terminal-lane-content .dash-grid { display: flex; flex-direction: column; }
+.terminal-lane-content .dash-grid > * { flex-shrink: 0; max-height: 400px; min-height: 200px; }
 .terminal-lane-content :is(.agent-aura, .agent-aura2) { display: none; }
 .terminal-shell .skip-link { z-index: 70; left: 12px; border-radius: 4px; background: var(--terminal-fg); color: var(--terminal-bg); }
 @media (min-width: 640px) {
   .terminal-header { gap: 10px; }
-  .terminal-header-search, .terminal-header-cash { display: block; }
+  .terminal-header-search { display: block; }
   .terminal-header-scanner { display: none; }
   .terminal-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .terminal-stat-pair { display: contents; }
@@ -926,6 +932,7 @@
 }
 @media (min-width: 768px) {
   .terminal-header-diagnostics { display: inline-flex; }
+  .terminal-header-cash { display: block; }
 }
 @media (min-width: 1024px) {
   .terminal-body { grid-template-columns: 320px minmax(0, 1fr); }
@@ -973,12 +980,18 @@
   .terminal-table-token small { max-width: 19ch; }
   .terminal-table td > .terminal-number { min-width: 7ch; }
   .terminal-server-ledger > .terminal-tabs { height: 36px; }
+  .terminal-presets button { min-width: 0; }
   .terminal-context-footer button, .terminal-search button { min-height: 44px; }
   .terminal-scanner-mobile .terminal-search button { border: 0; background: transparent; }
   .terminal-scanner-mobile .terminal-search kbd { display: none; }
   .terminal-ticket-form > .terminal-section-title, .terminal-drawer-ticket .terminal-ticket-form > .terminal-local-label { display: none; }
   .terminal-lane-content .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .terminal-lane-content .overview-bottom { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 374px) {
+  .terminal-brand strong { font-size: 16px; }
+  .terminal-header { gap: 6px; }
+  .terminal-status { gap: 6px; font-size: 8px; }
 }
 @media (max-height: 620px) and (max-width: 1023px) {
   .terminal-center { grid-template-rows: minmax(0, 1fr) 132px 76px; }
