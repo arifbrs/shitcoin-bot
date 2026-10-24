@@ -56,3 +56,40 @@ export function withdrawPolicyFromEnv(env: Record<string, string | undefined>, o
   for (const a of allowlist) if (!isSolanaAddress(a)) return { error: `WITHDRAW_ALLOWLIST memuat alamat tidak sah: ${a}` };
   return { allowlist, maxSol, origin, expectedOrigin };
 }
+
+/**
+ * MODE (round-4 A4-audit): kebenaran eksplisit tentang apa yang bisa jalan HARI INI.
+ *   "deny"   → SEMUA withdraw ditolak. Default-deny sesungguhnya.
+ *   "policy" → wajib allowlist terisi (fail-closed bila kosong); plafon & harian tetap opsional.
+ *   "legacy" → perilaku lama: auth cookie saja; tanpa allowlist/plafon, withdraw MANA PUN bisa
+ *              jalan. INI DEFAULT SAAT INI — dipilih agar tidak mengubah jalur dana tanpa
+ *              otorisasi operator (aturan auditor). Operator memindahkan default ke "deny"/"policy"
+ *              lewat SATU env; rollback = hapus env.
+ */
+export type WithdrawMode = "deny" | "policy" | "legacy";
+export function withdrawModeFromEnv(env: Record<string, string | undefined>): WithdrawMode | { error: string } {
+  const raw = (env.WITHDRAW_MODE ?? "legacy").trim();
+  if (raw === "deny" || raw === "policy" || raw === "legacy") return raw;
+  return { error: `WITHDRAW_MODE tidak sah: ${raw} (deny|policy|legacy)` };
+}
+
+export function applyWithdrawMode(mode: WithdrawMode, decision: WithdrawDecision, policy: WithdrawPolicy): WithdrawDecision {
+  if (mode === "deny") return { ok: false, reason: "WITHDRAW_MODE=deny — semua penarikan ditolak (default-deny)" };
+  if (mode === "policy" && policy.allowlist.length === 0) {
+    return { ok: false, reason: "WITHDRAW_MODE=policy tanpa WITHDRAW_ALLOWLIST — fail-closed (isi allowlist atau pindah mode)" };
+  }
+  return decision;
+}
+
+/** Plafon harian opsional: total SENT hari ini (dari baris audit withdraw-audit) + rencana. */
+export function withdrawnTodaySol(auditRowsText: string): number {
+  let sum = 0;
+  for (const line of auditRowsText.split("\n")) {
+    if (!line.includes('"withdraw-audit"') || !line.includes('"SENT"')) continue;
+    try {
+      const row = JSON.parse(line) as { sentSol?: number };
+      if (typeof row.sentSol === "number" && Number.isFinite(row.sentSol) && row.sentSol > 0) sum += row.sentSol;
+    } catch { /* baris rusak dihitung nol — audit bukan sumber dana */ }
+  }
+  return sum;
+}

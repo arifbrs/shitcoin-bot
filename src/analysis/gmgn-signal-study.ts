@@ -18,6 +18,22 @@ const med = (a: number[]): number | null => (a.length ? [...a].sort((x, y) => x 
 const mean = (a: number[]): number | null => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const f2 = (v: number | null): string => (v == null ? "—" : v.toFixed(2) + "%");
 
+/** Bootstrap 95% CI (LCG ber-seed → deterministik & dapat direproduksi). */
+export function bootstrapCi(values: number[], resamples = 2000, seed = 42): { meanLo: number; meanHi: number; medLo: number; medHi: number } {
+  let s = seed >>> 0;
+  const rnd = (): number => (s = (s * 1_664_525 + 1_013_904_223) >>> 0) / 2 ** 32;
+  const means: number[] = [], meds: number[] = [];
+  for (let i = 0; i < resamples; i++) {
+    const sample: number[] = [];
+    for (let k = 0; k < values.length; k++) sample.push(values[Math.floor(rnd() * values.length)]!);
+    means.push(sample.reduce((x, y) => x + y, 0) / sample.length);
+    meds.push([...sample].sort((x, y) => x - y)[Math.floor(sample.length / 2)]!);
+  }
+  means.sort((x, y) => x - y); meds.sort((x, y) => x - y);
+  const q = (arr: number[], p: number): number => arr[Math.floor(p * (arr.length - 1))]!;
+  return { meanLo: q(means, 0.025), meanHi: q(means, 0.975), medLo: q(meds, 0.025), medHi: q(meds, 0.975) };
+}
+
 export function study(now = Date.now(), dir = observationDir()): string[] {
   const j = readObservationJournal(dir, false);
   const lines: string[] = ["═══ B2 STUDI SINYAL — reproduksi + kontrol (harga, bukan profit) ═══", "",
@@ -36,10 +52,22 @@ export function study(now = Date.now(), dir = observationDir()): string[] {
   for (const [name, signals] of groups) {
     const marks = new Map(j.marks.map((m) => [m.markId, m]));
     lines.push(`── ${name}: n=${signals.length}, token unik=${new Set(signals.map((s) => s.mint)).size}, UTC-hari=${new Set(signals.map((s) => new Date(s.observedAt).toISOString().slice(0, 10))).size}`);
-    // C2: kelayakan entry riil
-    const delays = signals.map((s) => s.observationDelayMs).filter((v): v is number => v != null && v >= 0);
-    const feas5m = delays.filter((d) => d <= 300_000).length;
-    lines.push(`   delay observasi (observedAt − triggerAt): med=${delays.length ? (med(delays)! / 60_000).toFixed(1) + "m" : "?"} · ≤5m (bisa dieksekusi): ${feas5m}/${delays.length} (${delays.length ? ((feas5m / delays.length) * 100).toFixed(0) : "?"}%)`);
+    // DEKOMPOSISI delay (round-4): delay total = usia-kejadian-saat-request + antrean lokal.
+    // cycle 15 menit TIDAK bisa menjelaskan delay berjam-jam → bila ageAtRequest dominan, usia
+    // itu ada di SISI PROVIDER (kejadian tua saat diterbitkan / daftar bergerak lambat / truncation).
+    const ages: number[] = [], queues: number[] = [];
+    for (const s of signals) {
+      if (s.triggerAt != null) {
+        const age = s.requestStartedAt - s.triggerAt;
+        if (age >= 0) ages.push(age);
+      }
+      const q = s.observedAt - s.requestStartedAt;
+      if (q >= 0) queues.push(q);
+    }
+    const totalDelay = signals.map((s) => s.observationDelayMs).filter((v): v is number => v != null && v >= 0);
+    const feasibleByAge = ages.filter((d) => d <= 300_000).length;
+    lines.push(`   delay total (observedAt−triggerAt) med=${totalDelay.length ? (med(totalDelay)! / 60_000).toFixed(1) + "m" : "?"} — DEKOMPOSISI: usia-saat-request med=${ages.length ? (med(ages)! / 60_000).toFixed(1) + "m" : "?"} (≤5m: ${feasibleByAge}/${ages.length}) · antrean-lokal med=${queues.length ? (med(queues)! / 1000).toFixed(1) + "s" : "?"} (≤5m: ${queues.filter((d) => d <= 300_000).length}/${queues.length})`,
+      `   → bila usia-saat-request dominan: keterlambatan SISI PROVIDER/daftar-bergerak-lambat, bukan polling lokal (siklus kita 15m tak mungkin menghasilkan jam).`);
     // C3: konsentrasi
     const byToken = new Map<string, number>();
     for (const s of signals) byToken.set(s.mint, (byToken.get(s.mint) ?? 0) + 1);
@@ -69,8 +97,12 @@ export function study(now = Date.now(), dir = observationDir()): string[] {
       }
       const dedup = [...retPerToken.values()].map((arr) => arr.reduce((x, y) => x + y, 0) / arr.length); // rata-rata token → bobot setara token
       const due = signals.filter((s) => now >= s.observedAt + h * 60_000).length;
-      const stats = h === 0 ? `mark entry OBSERVED=${marksObserved}` : `semua: med=${f2(med(ret))} mean=${f2(mean(ret))} · C1 dedupe-token: med=${f2(med(dedup))} mean=${f2(mean(dedup))}`;
-      lines.push(`   ${(h ? h + "m" : "entry").padEnd(6)} due=${due} observed=${h === 0 ? marksObserved : ret.length} · ${stats}`);
+      if (h === 0) {
+        lines.push(`   entry  due=${due} mark-entry-OBSERVED=${marksObserved}`);
+        continue;
+      }
+      const ci = ret.length >= 5 ? ` · CI95 mean=[${bootstrapCi(ret).meanLo.toFixed(2)}, ${bootstrapCi(ret).meanHi.toFixed(2)}] med=[${bootstrapCi(ret).medLo.toFixed(2)}, ${bootstrapCi(ret).medHi.toFixed(2)}]` : " · CI: n<5 belum bermakna";
+      lines.push(`   ${(h ? h + "m" : "entry").padEnd(6)} due=${due} (matured) observed=${ret.length} missing=${due - ret.length - signals.filter((s) => now < s.observedAt + h * 60_000 && marks.has(`${s.signalId}:${s.policy.id}:${h}`)).length} · semua: med=${f2(med(ret))} mean=${f2(mean(ret))} · C1 dedupe-token: med=${f2(med(dedup))} mean=${f2(mean(dedup))}${ci}`);
     }
     lines.push("");
   }

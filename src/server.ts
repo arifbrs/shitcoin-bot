@@ -9,7 +9,7 @@ import { readControl, writeControl } from "./control.js";
 import { buildQualityView } from "./quality-view.js";
 import { summarizeTraces } from "./robinhood/mark-trace.js";
 import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
-import { validateWithdraw, withdrawPolicyFromEnv } from "./execution/withdraw-gate.js";
+import { validateWithdraw, withdrawPolicyFromEnv, withdrawModeFromEnv, applyWithdrawMode, withdrawnTodaySol } from "./execution/withdraw-gate.js";
 import { logRecord } from "./util/log.js";
 import { applyExecutionRealism } from "./execution/exec-realism.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
@@ -3336,12 +3336,31 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
       audit({ outcome: "REJECTED", reason: policy.error });
       res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: policy.error })); return;
     }
+    // MODE eksplisit (round-4): deny = semua ditolak; policy = wajib allowlist; legacy = perilaku lama.
+    const mode = withdrawModeFromEnv(process.env);
+    if (typeof mode !== "string") {
+      audit({ outcome: "REJECTED", reason: mode.error });
+      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: mode.error })); return;
+    }
     let balance = Number.NaN;
     try { balance = await balanceSol(config.rpcUrl); } catch { /* gagal baca → validateWithdraw menolak fail-closed */ }
-    const decision = validateWithdraw(
+    let decision = validateWithdraw(
       { destination: String(b.destination ?? ""), amount: b.amount === "all" ? "all" : Number(b.amount), balanceSol: balance, feeSol: 5_000 / 1e9 },
       policy,
     );
+    decision = applyWithdrawMode(mode, decision, policy);
+    // Plafon harian opsional (replay protection praktis): total SENT hari ini dari baris audit.
+    if (decision.ok && mode !== "legacy") {
+      const dailyMax = Number(process.env.WITHDRAW_DAILY_MAX_SOL ?? "");
+      if (process.env.WITHDRAW_DAILY_MAX_SOL && Number.isFinite(dailyMax) && dailyMax > 0) {
+        let sentToday = 0;
+        try { sentToday = withdrawnTodaySol(readFileSync(join(config.logDir, `events-${new Date().toISOString().slice(0, 10)}.jsonl`), "utf8")); } catch { /* tanpa berkas = 0 */ }
+        if (sentToday + decision.amountSol > dailyMax) {
+          audit({ outcome: "REJECTED", reason: `plafon harian: ${sentToday} + ${decision.amountSol} > WITHDRAW_DAILY_MAX_SOL ${dailyMax}` });
+          res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `daily limit: ${sentToday.toFixed(4)} SOL already sent today` })); return;
+        }
+      }
+    }
     if (!decision.ok) {
       audit({ outcome: "REJECTED", reason: decision.reason, balanceSol: Number.isFinite(balance) ? balance : null });
       res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: decision.reason })); return;

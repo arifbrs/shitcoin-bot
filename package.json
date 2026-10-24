@@ -32,6 +32,7 @@
     "gmgn:signal-study": "tsx src/analysis/gmgn-signal-study.ts",
     "rh:paper": "tsx src/robinhood/paper.ts",
     "rh:reconcile": "tsx src/robinhood/reconcile-report.ts",
+    "rh:cohort-stats": "tsx src/rhpaper/cohort-stats.ts",
     "rh:audit": "tsx src/robinhood/audit.ts",
     "rh:backtest": "tsx src/robinhood/backtest.ts",
     "rh:study": "tsx src/robinhood/study.ts",

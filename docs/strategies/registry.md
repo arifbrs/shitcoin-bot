@@ -18,12 +18,27 @@ bukti prospektif (≥14 hari, ≥100 trade selesai, CI tidak melewati nol).
 - **Anti-kebocoran**: keputusan hanya dari quote saat keputusan; likuiditas DexScreener dibaca saat
   entry dan disimpan; tak ada data masa depan.
 
+### Batas kohort & versi (round-4 #6) — WAJIB dipisah saat analisis
+- **Kohort keputusan** (`rhpaper-units-arm-v3`): TIDAK berubah sejak 2026-10-22 — `shouldExit`,
+  `quotePnl`, ambang TP/stop, dan urutan siklus identik (bukti: diff commit round-3/4 hanya
+  menambah baris ledger, kolom `liquidityUsd`, dan REJECT; TIDAK menyentuh logika keputusan).
+- **Overlay akuntansi** (`rhpaper-fillmodel-v1`, operasional 2026-10-24): baris ledger yang membawa
+  `fillModelVersion` = kohort overlay; baris tanpa itu = kohort QUOTE-ONLY. `npm run rh:cohort-stats`
+  melaporkan keduanya TERPISAH dan tidak pernah menggabungkan. Mark harga/quote lama TIDAK pernah
+  diberi label ulang menjadi fill; overlay hanya di baris baru sejak versinya aktif.
+- Implikasi: perbandingan lintas-batas hanya boleh pada METRIK KEPUTUSAN (netPct quote), bukan
+  metrik overlay; metrik overlay dibandingkan hanya dalam kohortnya sendiri.
+
 ## 2. Pengikut sinyal GMGN (tipe 12 smart-money, tipe 20 KOL) — SOL & ROBINHOOD
 - **Hipotesis**: sinyal GMGN dapat dieksekusi tepat waktu dan memberi return positif pada horizon
   tetap 15m/60m/360m/1440m.
-- **Temuan terukur (B2, 2026-10-24, n kecil)**: feed telat — delay observasi median 566–782 menit;
-  hanya 4% (tipe-12 sol) sampai 21% (tipe-20 sol) sinyal tiba ≤5 menit. Return 1440m median
-  −43%…−60%. Return 60m tipe-12 berubah tanda antar snapshot (−3,01% → +14,43% mean) — belum stabil.
+- **Temuan terukur (B2, direvisi round-4, n kecil)**: delay total median 566–782 menit, dan
+  DEKOMPOSISI menunjukkan hampir SEMUA delay adalah USIA-SAAT-REQUEST (med ≈761 m; antrean lokal
+  med 0,5 s) — keterlambatan ada di sisi provider/daftar-bergerak-lambat, bukan polling lokal
+  (siklus kita 15 m). Artinya: pipa KITA tak bisa bertindak tepat waktu untuk 96% sinyal; apakah
+  GMGN menerbitkan kejadian tua atau memakai semantik trigger berbeda = UNKNOWN (perlu sampel mentah
+  untuk dipastikan). Return 1440m median −43%…−60%, CI95 mean [−64, −37] (tipe-12 sol, n=23) —
+  CI TIDAK melewati nol, tetapi 2 UTC-hari & token berkorelasi = belum inferensi final.
 - **Falsifikasi**: bila setelah ≥30 hari jendela data, return med semua horizon ≤0 dengan CI
   tidak melewati nol → REJECTED (sinyal telat = tak bisa dieksekusi; bukan strategi).
 - **Status**: INSUFFICIENT (n=104 sinyal / 2 UTC-hari). Tidak ada eksekusi; journal harga saja.
