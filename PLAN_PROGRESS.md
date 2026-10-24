@@ -302,3 +302,34 @@ fillmodel-v1 = baris baru sejak 10-24; keduanya dilaporkan TERPISAH oleh `rh:coh
 (PF, break-even winrate, CI bootstrap per arm × kohort).
 
 157 tes / 26 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK.
+
+## ROUND-5 AUDIT (2026-10-24, sesi kelima) — MATEMATIKA BREAK-EVEN & KEBENARAN FILL (commit b952cc2)
+
+**Koreksi kontradiksi break-even (laporan saya sebelumnya salah):** angka "drag 2,6% → BE 72%"
+TIDAK konsisten — 72% hanya mengikuti d=1,02 pp. Investigasi implementasi membuktikan:
+- TP/stop dievaluasi pada netPct yang SUDAH memuat gas + fee/dampak DUA kaki quote (bukti data:
+  stop-exits arm A n=8 netPct −1,51..−1,74 mengelompok di threshold −1,5; bukan −2,64/−4,1).
+- Rumus benar: **BE=(SL+d)/(TP+SL)** dengan d = drag INKREMENTAL di luar dasar threshold =
+  overlay latensi fillmodel 1,0 pp → **A 71,4% · B 50,0% · C 42,9%**; d=2,6 (ganda-hitung) →
+  MUSTAHIL untuk A/B (dilabel null + TIDAK LAYAK, bukan "117%").
+- Gas = wei ABSOLUT: 1,14% hanya pada 0,001 ETH; skala 1/ukuran (0,01 ETH → 0,114%).
+- Latensi 0,5% diterapkan SEKALI per kaki; tidak ada komponen yang dihitung dua kali
+  (breakeven.test.ts: 8 kasus analitik termasuk kasus mustahil).
+
+**Kebenaran fill per-transaksi**: tx-truth.ts — fill = receipt sukses + Transfer token-out KE dompet
+pada tx ITU. Tes adversarial: sukses-0/0, output ke dompet lain, token-lain (saldo naik tapi bukan
+fill), receipt gagal, multi-hop, duel saldo-vs-tx. live-executor kini mewajibkan fillProof + delta
+saldo (keduanya) sebelum LIVE_FILL/LIVE_SELL ok:true.
+
+**Withdraw**: status TETAP RISIKO TERBUKA (legacy = sesi sah bisa tarik ke mana pun) —
+docs/withdrawal-decision-pack.md; deny/policy siap & teruji, aktif hanya dengan keputusan operator.
+
+**Kohort v2**: 1.253 CLOSE → 6 trade unik arm-A PROSPECTIVE quote-only (sisanya LEGACY), Σnet
+arm-A PROSPECTIVE quote-only −9,80% (8 → dikoreksi hitung unik), MDD/ekspektasi CI95/biaya gas
+14,28e15 wei/modal $3.202,50/REJECT 291 — JSON machine-readable. TIDAK ADA verdict strategi (n kecil).
+
+**Sinyal**: usia p10/p50/p90 = 9,6m/752m/1047m; 10/56 sinyal ≤15m → segmen segar ADA; klaim
+"tidak bisa dieksekusi" dibatasi ke mayoritas (bukan seluruh feed). ft:progress: gerbang 14h/100t
+12,4%/0-12% per arm; downtime 29,86 jam (7 hari) tercatat eksplisit.
+
+171 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. PROFITABILITY NOT YET VALIDATED.
