@@ -471,3 +471,14 @@ menulis data segar. Sisa riset: AWAITING_OBSERVATION (H-A..H-H); D2 24/7: operat
 | P0-3 funnel palsu | bukti exit diwarisi dari state entry | countFunnel murni: wajib OPEN↔CLOSE unik + simFillEntry + simFillExit di baris masing-masing + versi cocok; 1.252 invalidCloses dilaporkan; 10 completed terekonsiliasi | 4 tes regresi skenario palsu |
 | P0-4 likuiditas exit | exit memakai likuiditas entry yang disimpan | fillmodel-v2: likuiditas exit-time (snapshot batch siklus), kuantitas exit = token sim entry, STALE_QUOTE >90s; kohort v1 utuh | tes fixture ujung-ke-ujung + tes v2 |
 | P0-5 gitleaks | tidak ada pemindaian; flag --config-path salah (exit 126) | gitleaks 8.24 di CI + .gitleaks.toml allowlist tertarget; scan 205 komit = 0 temuan (diverifikasi lokal sungguhan) | Actions step hijau |
+
+## CONTINUE-EXECUTION SELESAI (2026-10-25) — commit 6fcf68a, Actions GREEN
+| Defek | Akar | Perbaikan | Bukti |
+|---|---|---|---|
+| sim entry tak persist | pos dibuat sebelum sim dihitung | sim dihitung dulu, disimpan di Position (crash-safe), exit fail-closed tanpa bukti (ENTRY_SIM_MISSING/REJECTED/VERSION_MISMATCH) | tes restart-disk + re-quote |
+| exit quote qty salah | quote utk qty penuh | exit RE-QUOTE nyata atas kuantitas sim (bukan penskalaan) — dokumentasi: (1−l) tetap aproksimasi latensi | tes: panggilan exit = sim qty |
+| replay v1-untuk-semua | replay tak versi-sadar | replay per-versi (v1 komposit / v2 re-quote / quote-only / invalid); basis data-driven (netWethRaw ada = net; hanya netPct = gross); 0 mismatch | rh:replay JSON per-bucket |
+| funnel duplikat | first-close dihitung | dua-pass: tradeId duplikat ditolak SELURUHNYA; bukti = validator sama (9 completed, 1 turun krn duplikat — dilaporkan) | 4 tes regresi |
+| LP provenance | spread snapshot tak terkait | ConfirmedLpEvent murni dari decode (txHash/logIndex/blok/pool/eventKey/chainId); jendela blok per-interval; idempoten eventKey | tes decode + adversarial |
+| gitleaks cetek | shallow checkout, path-exemptions luas, flag salah | fetch-depth:0; allowlist fingerprint-class (3 kelas publik); rule EVM no-prefix; adversarial: kunci 64-hex terdeteksi | 208 komit 0 temuan |
+Status: Actions GREEN; live mati; withdraw legacy = RISIKO TERBUKA; PROFITABILITY NOT YET VALIDATED.
