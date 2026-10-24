@@ -443,3 +443,15 @@ PROFITABILITY NOT YET VALIDATED — 4 completed sim trade pertama (semua rugi ke
 
 ENGINEERING STATUS: Level-1 terpenuhi untuk sisi yang bisa dikerjakan tanpa otorisasi.
 PROFITABILITY: NOT YET VALIDATED — 5 completed sim trade (semua stop kecil) bukan bukti.
+
+## PEMBARUAN FINAL (sesi kelanjutan — commit terakhir lihat git log)
+
+| ID | Item | Status |
+|---|---|---|
+| F-1 | quotePnl rasional penuh (−2,622791450244 persis, dites equality) | DONE |
+| F-2 | Fitur perilaku point-in-time (imbalanceH1/txnsH1/priceChangeH1/pairAgeDays) di scanner→posisi→ledger — nol panggilan API baru | DONE |
+| F-3 | Bukti per-trade COMPLETED di funnel (5 rekaman, sim-net dari simulatedExitWeth+quotePnl) | DONE |
+| F-4 | `npm run withdraw:status` (read-only) + `deploy/withdraw-policy.env.template` + `deploy/research-keepalive.sh` | DONE (disiapkan; aktivasi = operator) |
+| D2 | 24/7 | BLOCKED_EXTERNAL (operator: caffeinate/pmset/VPS) |
+| E | Riset H-A..H-E | AWAITING_OBSERVATION / PENDING DATA (fitur F-2 kini mengalir prospektif) |
+| Level-2 | Profitabilitas | PENDING — butuh hari observasi valid + ≥100 trade/arm |
