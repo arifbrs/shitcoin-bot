@@ -51,34 +51,55 @@ export function ftProgress(now = Date.now()): Record<string, unknown> {
       } catch { malformed++; }
     }
   }
-  // Downtime: celah terbesar antar-baris ledger 7 hari terakhir (jam) + JENDELA celah eksplisit
-  // + coverage % + observasi sinyal yang jatuh DI DALAM celah (dari journal GMGN — yang bisa
-  // dihitung saja yang dilaporkan; yang tidak pernah terlihat TIDAK dikarang).
+  // Downtime & COVERAGE (round-7 P1 — denominator eksplisit, tidak lagi pakai span tersembunyi):
+  //   availabilityPctTrailing7d  = waktu-aktif / 168 jam (jendela penuh) — angka paling jujur.
+  //   availabilityPctCohortSpan  = waktu-aktif / [baris-pertama kohort → kini] — lama span saja.
+  //   "aktif" = antar-baris ≤ GAP_THRESHOLD. Celah diklasifikasi: BEFORE_COHORT (sebelum baris
+  //   pertama — lane memang belum jalan) vs OUTAGE (di dalam kohort — kegagalan sesungguhnya).
   const cutoff = now - 7 * 86_400_000;
   const recent = timestamps.filter((t) => t >= cutoff).sort((a, b) => a - b);
-  let maxGapH = 0;
-  const gapWindows: Array<{ start: string; end: string; hours: number }> = [];
-  const GAP_THRESHOLD = 30 * 60_000; // >30 menit tanpa baris = celah
-  for (let i = 1; i < recent.length; i++) {
-    const gap = recent[i]! - recent[i - 1]!;
+  const GAP_THRESHOLD = 30 * 60_000;
+  const firstTs = recent[0] ?? now;
+  let activeMs = 0, outageMs = 0, beforeCohortMs = 0;
+  const gapWindows: Array<{ start: string; end: string; hours: number; class: "OUTAGE" | "BEFORE_COHORT" }> = [];
+  let prev = cutoff;
+  for (const t of recent) {
+    const gap = t - prev;
     if (gap > GAP_THRESHOLD) {
-      const hours = gap / 3_600_000;
-      maxGapH = Math.max(maxGapH, hours);
-      gapWindows.push({ start: new Date(recent[i - 1]!).toISOString(), end: new Date(recent[i]!).toISOString(), hours: Number(hours.toFixed(2)) });
-    }
+      const cls = t === firstTs ? "BEFORE_COHORT" : "OUTAGE";
+      if (cls === "OUTAGE") outageMs += gap; else beforeCohortMs += gap;
+      gapWindows.push({ start: new Date(prev).toISOString(), end: new Date(t).toISOString(), hours: Number((gap / 3_600_000).toFixed(2)), class: cls });
+    } else activeMs += gap;
+    prev = Math.max(prev, t);
   }
-  const spanH = recent.length > 1 ? (recent[recent.length - 1]! - recent[0]!) / 3_600_000 : 0;
-  const gapTotalH = gapWindows.reduce((s, g) => s + g.hours, 0);
-  const coveragePct = spanH > 0 ? Number((100 * (1 - gapTotalH / spanH)).toFixed(2)) : null;
-  // Observasi sinyal yang jatuh dalam celah (mark MISSING WINDOW_MISSED dengan targetAt di celah).
+  if (now - prev > GAP_THRESHOLD) {
+    outageMs += now - prev;
+    gapWindows.push({ start: new Date(prev).toISOString(), end: new Date(now).toISOString(), hours: Number(((now - prev) / 3_600_000).toFixed(2)), class: "OUTAGE" });
+  } else activeMs += now - prev;
+  const maxGapH = Math.max(0, ...gapWindows.filter((g) => g.class === "OUTAGE").map((g) => g.hours));
+  const cohortSpanH = (now - firstTs) / 3_600_000;
+  const coverage = {
+    windowHours: 168,
+    activeHoursTrailing7d: Number((activeMs / 3_600_000).toFixed(2)),
+    availabilityPctTrailing7d: Number((100 * activeMs / (7 * 86_400_000)).toFixed(2)),
+    cohortSpanHours: Number(cohortSpanH.toFixed(2)),
+    activeHoursCohortSpan: Number((activeMs / 3_600_000).toFixed(2)),
+    availabilityPctCohortSpan: cohortSpanH > 0 ? Number((100 * activeMs / (cohortSpanH * 3_600_000)).toFixed(2)) : null,
+    outageHours: Number((outageMs / 3_600_000).toFixed(2)),
+    beforeCohortHours: Number((beforeCohortMs / 3_600_000).toFixed(2)),
+    gapWindowsLast7d: gapWindows,
+    note: "availabilityPctTrailing7d memakai 168 jam penuh sebagai penyebut (round-6 salah pakai span); BEFORE_COHORT = lane memang belum dimulai, OUTAGE = kegagalan di dalam kohort. Uptime ≠ kelengkapan data pasar.",
+  };
+  // Observasi sinyal yang jatuh dalam celah OUTAGE saja (dari journal GMGN — yang bisa dihitung).
   let missedObservations = 0;
   try {
     const journal = readFileSync("logs/gmgn-observations/journal.jsonl", "utf8");
+    const outageWindows = gapWindows.filter((g) => g.class === "OUTAGE");
     for (const line of journal.split("\n")) {
       if (!line.includes('"status":"MISSING"') || !line.includes("WINDOW_MISSED")) continue;
       try {
         const m = JSON.parse(line) as { targetAt?: number };
-        if (typeof m.targetAt === "number" && gapWindows.some((g) => Date.parse(g.start) <= m.targetAt! && m.targetAt! <= Date.parse(g.end))) missedObservations++;
+        if (typeof m.targetAt === "number" && outageWindows.some((g) => Date.parse(g.start) <= m.targetAt! && m.targetAt! <= Date.parse(g.end))) missedObservations++;
       } catch { /* baris rusak dilewati */ }
     }
   } catch { /* journal belum ada */ }
@@ -97,9 +118,8 @@ export function ftProgress(now = Date.now()): Record<string, unknown> {
   });
   return { generatedAt: new Date(now).toISOString(), gate: "≥14 hari & ≥100 trade selesai (per versi beku) — target riset MINIMUM, bukan bukti signifikansi",
     ledger: { files: files.length, malformedRows: malformed },
-    downtime: { maxGapHoursLast7d: Number(maxGapH.toFixed(2)), gapWindowsLast7d: gapWindows, coveragePctLast7d: coveragePct,
-      missedSignalObservationsInGaps: missedObservations,
-      note: "kalender ≠ jam observasi sah; 14 hari kalender dengan selisih ini BUKAN forward-test 14 hari" },
+    downtime: { ...coverage, missedSignalObservationsInGaps: missedObservations,
+      note2: "kalender ≠ jam observasi sah; 14 hari kalender dengan selisih ini BUKAN forward-test 14 hari" },
     arms };
 }
 

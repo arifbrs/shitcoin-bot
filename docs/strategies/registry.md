@@ -67,3 +67,17 @@ bukti prospektif (≥14 hari, ≥100 trade selesai, CI tidak melewati nol).
 - B1 "beli semua kandidat yang lolos gerbang dua-arah, keluar umur 240m" (tanpa TP/stop).
 - B2 "acak dari kandidat lolos" (seed tetap, prinsip A/B mc-band yang sudah ada).
 - Setiap fitur baru diuji sebagai Δ vs baseline pada kohort yang sama, bukan sebagai angka berdiri sendiri.
+
+## 6. REGISTRI HIPOTESIS EDGE (round-7 P5) — masing-masing falsifiable, status empiris eksplisit
+
+| # | Mekanisme teramati | Data & timestamp | Coverage kini | Keputusan masuk/keluar | Status bukti |
+|---|---|---|---|---|---|
+| H-A | Sinyal GMGN SEGAR (usia ≤15m) mengikuti pergerakan lanjutan yang bisa dieksekusi | journal: observedAt/triggerAt + mark 15m/60m | n=12 (≤5m) + 15 (5–15m) — 2 UTC-hari | entry @ mark0 ≤5m toleransi; exit horizon tetap 15m/60m | **INSUFFICIENT** (C5; 15m med −6,0% vs +3,9% antar-bucket, CI melewati nol) |
+| H-B | Likuiditas pool menentukan kapasitas keluar (2% rule fillmodel) | scanner candidates: liquidityUsd (DexScreener, saat scan) | 24/29 kandidat 10-24 punya likuiditas; p10 $3,1k · p50 $102,7k | notional $2,5 → lolos 2% rule di likuiditas ≥ ~$118 | **TERUKUR, netral**: semua kandidat berkeliuditas lolos di ukuran ini; penghalang nyata = likuiditas TIDAK TERCATAT (model menolak fail-closed) |
+| H-C | Skor wallet SEBELUM trade memprediksi outcome | walletQuality.scoredAt ≤ tradeAt (anti-leak) | 303/330 trade lolos syarat waktu; outcome join <30 | — | **INSUFFICIENT** (C4) |
+| H-D | Akselerasi transaksi & buy/sell imbalance memprediksi lanjutan | belum dikumpulkan (butuh feed trade per token) | 0 | — | **PENDING DATA** |
+| H-E | Filter risiko pra-entry (top10-holder, honeypot, tax) mengurangi hasil buruk | GMGN security (ada di enrich lane) | kandidat RH belum diperkaya security | gate sebelum entry | **PENDING DATA** |
+
+Aturan: label "smart money"/winrate wallet TIDAK dipakai sebagai bukti (klasifikasi pihak ketiga /
+bocor masa depan); tidak ada optimasi parameter retrospektif; hipotesis hanya naik status setelah
+n & coverage memenuhi ambang yang ditetapkan SEBELUM pengukuran.

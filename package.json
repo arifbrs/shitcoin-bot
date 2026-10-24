@@ -35,6 +35,7 @@
     "rh:cohort-stats": "tsx src/rhpaper/cohort-stats.ts",
     "ft:progress": "tsx src/rhpaper/ft-progress.ts",
     "rh:ledger-audit": "tsx src/rhpaper/ledger-audit.ts",
+    "ft:daily": "tsx src/rhpaper/ft-daily.ts",
     "rh:audit": "tsx src/robinhood/audit.ts",
     "rh:backtest": "tsx src/robinhood/backtest.ts",
     "rh:study": "tsx src/robinhood/study.ts",

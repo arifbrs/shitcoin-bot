@@ -1,6 +1,7 @@
 /** (B3) round-3: model simulasi fill — fail-closed, batas likuiditas, matematika slippage. */
-import { test, eq, assert } from "../testing/harness.js";
-import { simulateFill, applyLatencySlippage, DEFAULT_ASSUMPTIONS, FILL_MODEL_VERSION } from "./fillmodel.js";
+import { test, eq, approx, assert } from "../testing/harness.js";
+import { simulateFill, applyLatencySlippage, latencyOverlayPct, DEFAULT_ASSUMPTIONS, FILL_MODEL_VERSION } from "./fillmodel.js";
+import { quotePnl } from "./engine.js";
 
 const WETH = "1000000000000000000"; // 1 WETH
 const happy = { quoteAmountIn: WETH, quoteAmountOut: "2000000000000000000", impactPct: 0.3, sizeWethRaw: WETH, ethUsd: 2361 as number | null };
@@ -44,4 +45,27 @@ test("B3 slippage latensi: floor BigInt eksak (0,5% → 50 bps)", () => {
   eq(r.version, FILL_MODEL_VERSION, "versi model tercatat di hasil");
   eq(r.latencySlippagePct, DEFAULT_ASSUMPTIONS.latencySlippagePct, "asumsi yang dipakai tercatat");
   eq(r.fillOutRaw, applyLatencySlippage("2000000000000000000", 0.5), "fill = quote − slippage latensi");
+});
+
+test("R7 P3: aljabar latensi — dua kaki masing-masing ×(1−l) sekali → putaran ×(1−l)²; overlay eksak", () => {
+  const l = DEFAULT_ASSUMPTIONS.latencySlippagePct / 100;
+  const exitOut = "1000000000000000"; // quote jual (WETH) untuk qty penuh
+  // Mekanisme: entry fill → token ×(1−l); exit fill → WETH ×(1−l). WETH diterima = exitOut×(1−l)².
+  const simOut = applyLatencySlippage(applyLatencySlippage(exitOut, l * 100), l * 100);
+  eq(simOut, ((BigInt(exitOut) * 9950n / 10000n) * 9950n / 10000n).toString(), "komposit dua kaki (BigInt, pemotongan per kaki)");
+  // overlay pp EKSAK = 1−(1−l)² — dipakai laporan; pakai fillOutRaw tunggal = kurang satu (1−l) (bug round-6, sudah dibetulkan)
+  approx(latencyOverlayPct(), (1 - 0.995 * 0.995) * 100, 1e-12, "0,9975 pp eksak");
+  approx(Number(simOut) / Number(exitOut) * 100, 100 - latencyOverlayPct(), 1e-9, "komposit ≡ overlay");
+  // Kesamaan lintas-modul: net sim = netPct − overlay ≡ quotePnl(entry, exitOut×(1−l)²).netPct
+  const entry = "1000000000000000";
+  const netViaOverlay = 2.0 - latencyOverlayPct();
+  const netViaComposite = quotePnl(entry, simOut).netPct - (quotePnl(entry, exitOut).netPct - 2.0);
+  approx(netViaOverlay, netViaComposite, 1e-9, "jalur overlay ≡ jalur komposit");
+});
+
+test("R7 P3: latensi diterapkan SEKALI per kaki — tidak digandakan di laporan", () => {
+  // ledger menyimpan fillOutRaw per kaki (bukti kaki); laporan memakai overlay eksak SATU kali.
+  const perLeg = applyLatencySlippage("1000000000000000", 0.5);
+  eq(perLeg, "995000000000000", "satu kaki = ×0,995 persis");
+  assert(latencyOverlayPct() < 2 * DEFAULT_ASSUMPTIONS.latencySlippagePct, "komposit < 2×lat (bukan penjumlahan linear)");
 });
