@@ -271,3 +271,34 @@ Engine paper membaca likuiditas DexScreener saat scan (1 panggilan batch) dan me
 kriteria falsifikasi eksplisit. Engine kini menulis baris REJECT untuk tiap kandidat layak yang
 ditolak (dasar evaluasi tanpa pilih-kasar). Supervisor paper = runner forward-test nol-modal yang
 terbukti hidup lintas sesi (ledger 10-22→10-24 berlanjut tanpa sesi AI).
+
+## ROUND-4 AUDIT (2026-10-24, sesi keempat) — KOREKSI MATEMATIKA (commit 9fac9bc)
+
+**Tiga kesalahan laporan saya diakui & dikoreksi dari sumber** (bukan dari ingatan):
+1. WETH keluar = `105887335874462950` (laporan) SALAH KETIK; data kanonik & rantai = `10588733587462950`
+   raw = 0,01058873358746295 WETH ≈ $25 (dibaca ulang dari receipt + transfer decode).
+2. decimals gilet = **18 (dibaca dari kontrak)** → selisih saldo 10^21 raw = **1.000 gilet**,
+   bukan 1.000.000. Konversi kini menunggu decimals() per token; tanpa itu konversi DITAHAN.
+3. Jual 10-19 = **FALSE_POSITIVE**: riwayat eth_getLogs menunjukkan satu-satunya keluar non-nol
+   adalah 1.000 gilet pada 2026-10-18T20:01:01Z (tx 0x3fb3fe31…bf4971b — uji kontrak helper, bukan
+   jualan). Akar: verifikasi pool-swap hanya menolak 0→0 → **diperbaiki: wajib delta saldo keluar**.
+
+**Invariant klasifikasi**: 311 = VERIFIED 1 + INFERRED 308 + UNKNOWN 0 + FALSE_POSITIVE 1 + ADMIN 1 ✓
+(311 baris; 1 ADMIN = baris tanpa alamat token). INVARIANT saldo-vs-riwayat gilet: COCOK ✓.
+
+**Security jujur**: dengan tanpa konfigurasi, sesi dashboard sah MASIH BISA menarik ke mana pun
+(mode legacy dipertahankan sampai operator menyetujui perubahan jalur dana). Default-deny siap &
+teruji: `WITHDRAW_MODE=deny|policy|legacy` + `WITHDRAW_DAILY_MAX_SOL`; rollback = hapus env.
+
+**Arsip**: rh-live-*.jsonl dilindungi; manifest sha256; verifikasi dekompresi sebelum unlink;
+tes arsip→restart→rekonstruksi LULUS (posisi terbuka tetap punya sumber).
+
+**Sinyal**: dekomposisi delay = usia-saat-request med 761 m vs antrean lokal 0,5 s → telat di sisi
+provider (truncation/semantik trigger = UNKNOWN). Return 1440m tipe-12 sol: med −60,3%, CI95 mean
+[−63,98, −36,70] — CI di luar nol pada n=23 (2 hari, korelasi token → belum inferensi final).
+
+**Kohort**: keputusan engine v3 TIDAK berubah sejak 10-22 (diff = ledger enrichment saja); overlay
+fillmodel-v1 = baris baru sejak 10-24; keduanya dilaporkan TERPISAH oleh `rh:cohort-stats`
+(PF, break-even winrate, CI bootstrap per arm × kohort).
+
+157 tes / 26 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK.
