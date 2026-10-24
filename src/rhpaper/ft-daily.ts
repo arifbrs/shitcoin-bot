@@ -1,9 +1,9 @@
 /**
- * REKAMAN HARIAN FORWARD-TEST (round-7 P6) — `npm run ft:daily`. OFFLINE.
- * Satu berkas JSON per hari (logs/forward-test-daily-<tanggal>.json) yang MENULIS ULANG dirinya
- * sepanjang hari (idempoten). Semua angka dari fungsi produksi teruji — tanpa transkripsi manual:
- *   coverage/uptime: ftProgress() · kohort & PnL: cohortStats() · sensitivitas biaya: benchmarkTable().
- * Periode observasi TIDAK SAH dihitung sebagai bukti (flag coveragePct + gap windows disertakan).
+ * REKAMAN HARIAN FORWARD-TEST (FINAL §1) — `npm run ft:daily`. OFFLINE.
+ * Satu berkas JSON per hari (logs/forward-test-daily-<tanggal>.json), idempoten per hari.
+ * Semua angka dari fungsi produksi teruji — skema KOHOR = cohortStats().json.groups
+ * (bucket simNetFor: quote-only/v1/v2-defective/v3), entry sim diterima = fill model LOLOS
+ * (bukan setiap baris OPEN), rekonsiliasi = validator funnel yang sama. dir bisa disuntik utk tes.
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,27 +11,34 @@ import { ftProgress } from "./ft-progress.js";
 import { cohortStats } from "./cohort-stats.js";
 import { benchmarkTable } from "./breakeven.js";
 
-export function dailyRecord(now = Date.now()): Record<string, unknown> {
-  const ft = ftProgress(now) as { downtime: Record<string, unknown> };
-  const cs = cohortStats(now);
+interface GroupBlock { arm: string; cohort: string; bucket: string; excludedFromProfitability: boolean; closeRows: number; expectancyPct: number }
+
+export function dailyRecord(now = Date.now(), dir = "logs/rhpaper"): Record<string, unknown> {
+  const ft = ftProgress(now, dir) as { downtime: Record<string, unknown> };
+  const cs = cohortStats(now, dir);
   const csJson = cs.json as Record<string, unknown>;
+  const groups = (csJson.groups ?? []) as GroupBlock[];
+  const profitableGroups = groups.filter((g) => !g.excludedFromProfitability); // v2-defective dikecualikan
   return {
     date: new Date(now).toISOString().slice(0, 10),
-    calcVersions: { ftProgress: "ft-progress-r7", cohortStats: "cohort-stats-r7", breakeven: "breakeven-r6" },
+    calcVersions: { ftProgress: "ft-progress-r7", cohortStats: "cohort-stats-final (simNetFor; groups)", breakeven: "breakeven-r6", daily: "ft-daily-final" },
     validObservationHoursTrailing7d: (ft.downtime as Record<string, unknown>).activeHoursTrailing7d,
     availabilityPctTrailing7d: (ft.downtime as Record<string, unknown>).availabilityPctTrailing7d,
     coverageFlags: { gapWindows: (ft.downtime as Record<string, unknown>).gapWindowsLast7d, missedSignalObservationsInGaps: (ft.downtime as Record<string, unknown>).missedSignalObservationsInGaps,
       warning: "periode dengan coverage rendah TIDAK dihitung penuh sebagai bukti kualitas" },
-    eligibleOpportunities: Number(cs.json.openRows) + Number(cs.json.rejectRows),
-    acceptedSimulatedEntries: Number(cs.json.openRows),
-    rejectedSignals: Number(cs.json.rejectRows),
-    accountingBreakdown: cs.json.accountingBreakdown,
-    unfilledOrUnexitable: { rejects: Number(cs.json.rejectRows), stuck: Number(cs.json.stuckRows) },
-    netSimulatedPnL: csJson.arms,
+    eligibleOpportunities: Number(csJson.openRows) + Number(csJson.rejectRows),
+    acceptedSimulatedEntries: Number(csJson.acceptedSimEntries), // fill model entry LOLOS (bukan semua OPEN)
+    rejectedSignals: Number(csJson.rejectRows),
+    accountingBreakdown: csJson.accountingBreakdown,
+    funnelValidTrades: Number(csJson.funnelValidTrades),
+    reconciliationNote: "groups = cohortStats(bucket simNetFor); funnelValidTrades = validator countFunnel (sama dgn rh:funnel/rh:replay); v2-defective excludedFromProfitability",
+    unfilledOrUnexitable: { rejects: Number(csJson.rejectRows), stuck: Number(csJson.stuckRows) },
+    netSimulatedPnL: groups, // semua bucket — konsumen memfilter excludedFromProfitability
+    netSimulatedPnLForProfitability: profitableGroups.map((g) => ({ arm: g.arm, cohort: g.cohort, bucket: g.bucket, closeRows: g.closeRows, expectancyPct: g.expectancyPct })),
     costSensitivityBreakEven: benchmarkTable(),
-    strategyVersions: [...new Set(((csJson.arms ?? []) as Array<Record<string, unknown>>).map((a) => `${a.arm}/${a.cohort}/${a.overlay}`))],
-    dataQuality: { malformedRows: Number(cs.json.malformed), ledgerFiles: Number(cs.json.files) },
-    sourceCommands: ["npm run ft:progress", "npm run rh:cohort-stats", "npx tsx tools/breakeven-table.ts"],
+    strategyVersions: [...new Set(groups.map((g) => `${g.arm}/${g.cohort}/${g.bucket}`))],
+    dataQuality: { malformedRows: Number(csJson.malformed), ledgerFiles: (csJson.dataset as { ledgerFiles?: unknown })?.ledgerFiles ?? Number(csJson.files ?? 0) },
+    sourceCommands: ["npm run ft:progress", "npm run rh:cohort-stats", "npm run rh:funnel", "npm run rh:replay", "npx tsx tools/breakeven-table.ts"],
   };
 }
 
@@ -39,5 +46,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const r = dailyRecord();
   const day = new Date().toISOString().slice(0, 10);
   writeFileSync(join("logs", `forward-test-daily-${day}.json`), JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
-  console.log(`[ft:daily] ditulis logs/forward-test-daily-${day}.json · coverage7d=${r.availabilityPctTrailing7d}% · eligible=${r.eligibleOpportunities} · accepted=${r.acceptedSimulatedEntries} · rejected=${r.rejectedSignals}`);
+  const profit = (r.netSimulatedPnLForProfitability as GroupBlock[]).length;
+  console.log(`[ft:daily] ditulis logs/forward-test-daily-${day}.json · coverage7d=${r.availabilityPctTrailing7d}% · eligible=${r.eligibleOpportunities} · simEntriesDiterima=${r.acceptedSimulatedEntries} · funnelValid=${r.funnelValidTrades} · grupProfitabilitas=${profit}`);
 }

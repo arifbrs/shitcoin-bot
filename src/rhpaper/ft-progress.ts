@@ -9,13 +9,13 @@ import { join } from "node:path";
 
 const GATE_DAYS = 14, GATE_TRADES = 100;
 
-export function ftProgress(now = Date.now()): Record<string, unknown> {
-  const files = readdirSync("logs/rhpaper").filter((f) => /^ledger-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+export function ftProgress(now = Date.now(), dir = "logs/rhpaper"): Record<string, unknown> {
+  const files = readdirSync(dir).filter((f) => /^ledger-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
   const versions = new Map<string, { policyId: string; exits: string; firstTs: number; lastTs: number; opens: number; closes: number; rejects: number; simEligible: number; simFilled: number }>();
   let malformed = 0;
   const timestamps: number[] = [];
   for (const f of files) {
-    for (const line of readFileSync(join("logs/rhpaper", f), "utf8").split("\n")) {
+    for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
       if (!line.trim()) continue;
       let j: Record<string, unknown>;
       try { j = JSON.parse(line) as Record<string, unknown>; } catch { malformed++; continue; }
@@ -39,7 +39,7 @@ export function ftProgress(now = Date.now()): Record<string, unknown> {
   // Hitung CLOSE per versi: cocokkan policyId+arm dari baris CLOSE.
   const closeByKey = new Map<string, { n: number; ids: Set<string> }>();
   for (const f of files) {
-    for (const line of readFileSync(join("logs/rhpaper", f), "utf8").split("\n")) {
+    for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
       if (!line.includes('"action":"CLOSE"')) continue;
       try {
         const j = JSON.parse(line) as Record<string, unknown>;

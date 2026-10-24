@@ -39,10 +39,16 @@ function bootstrapCi(values: number[], resamples = 2000, seed = 42): { lo: numbe
   return { lo: means[Math.floor(0.025 * (means.length - 1))]!, hi: means[Math.floor(0.975 * (means.length - 1))]! };
 }
 
-function maxDrawdownPct(rows: CloseRow[]): number {
-  let peak = 0n, equity = 0n, mdd = 0;
-  for (const r of [...rows].sort((a, b) => a.ts - b.ts)) {
-    equity += r.netWethRaw;
+/**
+ * (FINAL §2 MDD) Maximum drawdown dari kurva ekuitas bermodal-awal EKSPLISIT atas PnL TERMODEL
+ * (bukan netWethRaw ledger-quote), urut waktu. Versi lama mulai ekuitas dari 0 → saat SEMUA
+ * trade rugi, puncak tetap 0 → MDD salah 0%. Modal awal = Σ entryWethRaw trade di kohor itu
+ * (modal terpasang jendela ini); MDD dipakai per-bucket sama dgn expectancy/PF (tak campur basis).
+ */
+export function maxDrawdownWei(trades: Array<{ ts: number; netWei: bigint }>, startCapitalWei: bigint): number {
+  let peak = startCapitalWei, equity = startCapitalWei, mdd = 0;
+  for (const t of [...trades].sort((a, b) => a.ts - b.ts)) {
+    equity += t.netWei;
     if (equity > peak) peak = equity;
     if (peak > 0n) {
       const dd = Number((peak - equity) * 10_000n / peak) / 100;
@@ -54,7 +60,7 @@ function maxDrawdownPct(rows: CloseRow[]): number {
 
 export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: string[]; json: Record<string, unknown>; summary: string } {
   const closes: CloseRow[] = [];
-  let openRows = 0, rejectRows = 0, stuckRows = 0, malformed = 0, capitalUsd = 0;
+  let openRows = 0, rejectRows = 0, stuckRows = 0, malformed = 0, capitalUsd = 0, acceptedSimEntries = 0;
   const rawRows: Array<Record<string, unknown>> = [];
   const files = readdirSync(dir).filter((f) => /^ledger-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
   for (const f of files) {
@@ -69,7 +75,13 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
   for (const j of rawRows) {
     {
       const action = String(j.action ?? "");
-      if (action === "OPEN") { openRows++; capitalUsd += Number(j.usd ?? 0) || 0; continue; }
+      if (action === "OPEN") {
+        openRows++; capitalUsd += Number(j.usd ?? 0) || 0;
+        // (FINAL §1) ENTRI SIM DITERIMA = model fill entry LOLOS (bukan sekadar baris OPEN).
+        const es = j.simFillEntry as { filled?: boolean } | undefined;
+        if (es?.filled === true) acceptedSimEntries++;
+        continue;
+      }
       if (action === "REJECT") { rejectRows++; continue; }
       if (action === "STUCK") { stuckRows++; continue; }
       if (action !== "CLOSE") continue;
@@ -131,7 +143,7 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
       latencyOverlayPct: OVERLAY_PP, latencySource: "fillmodel ASUMSI (belum terkalibrasi fill nyata) — dipakai HANYA utk normalisasi v0",
       quoteFees: "terkandung dalam quote OKX" },
     accountingBreakdown: { quoteOnly: buckets["quote-only"], v1: buckets.v1, v2Defective: buckets["v2-defective"], v3: buckets.v3, invalid: buckets.invalid, sum: breakdownSum, matchesCloseTotal: breakdownOk },
-    funnelValidTrades: validIds.size, generatedAt: now, closeRows: closes.length, openRows, rejectRows, stuckRows, malformed, capitalUsd, groups: [] as unknown[] };
+    funnelValidTrades: validIds.size, generatedAt: now, closeRows: closes.length, openRows, acceptedSimEntries, rejectRows, stuckRows, malformed, capitalUsd, groups: [] as unknown[] };
 
   // METRIK per arm × measurementVersion × cohortStatus × bucket — hanya trade funnel-valid.
   for (const arm of [...new Set(closes.map((c) => c.arm))].sort()) {
@@ -142,14 +154,15 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
             && bucketOf(c) === bucket && validIds.has(c.tradeId) && Number.isFinite(c.netPct));
           if (!rows.length) continue;
           // Net per trade: simNetFor utk baris ber-model; v0 dinormalisasi (gross−gas−overlay, HIPOTETIS).
+          // (FINAL §2 MDD) PnL per trade dibawa BERSAMA ts-nya → kurva ekuitas termodel, modal awal eksplisit.
           const sim = rows.map((r) => {
             if (bucket !== "quote-only") {
               const s = simNetFor({ version: r.fillModelVersion, entryWethRaw: r.entryWethRaw ?? "0", exitQuoteWethRaw: r.exitWethRaw ?? "0",
                 entrySimFillOutRaw: r.entrySimFillOutRaw, exitSimFillOutRaw: r.exitSimFillOutRaw });
-              return { net: s.netPct, netWethRaw: BigInt(s.netWethRaw) };
+              return { net: s.netPct, netWethRaw: BigInt(s.netWethRaw), ts: r.ts };
             }
             const gasPct = r.entryWethRaw != null ? gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, BigInt(r.entryWethRaw)) : gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, 1_000_000_000_000_000n);
-            return { net: r.netPct - gasPct - OVERLAY_PP, netWethRaw: BigInt(Math.round((r.netPct - gasPct - OVERLAY_PP) / 100 * Number(r.entryWethRaw || "1"))), normalized: true };
+            return { net: r.netPct - gasPct - OVERLAY_PP, netWethRaw: BigInt(Math.round((r.netPct - gasPct - OVERLAY_PP) / 100 * Number(r.entryWethRaw || "1"))), ts: r.ts, normalized: true } as { net: number; netWethRaw: bigint; ts: number; normalized?: boolean };
           });
           const wins = sim.filter((x) => x.net > 0), losses = sim.filter((x) => x.net < 0);
           const sumWin = wins.reduce((a, b) => a + b.net, 0), sumLoss = Math.abs(losses.reduce((a, b) => a + b.net, 0));
@@ -158,6 +171,10 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
           const be = sumWin > 0 && losses.length ? (sumLoss / losses.length) / ((sumLoss / losses.length) + (sumWin / wins.length)) : 1;
           const ci = bootstrapCi(sim.map((x) => x.net));
           const netWethSum = sim.reduce((acc, x) => acc + x.netWethRaw, 0n);
+          // (FINAL §2 MDD) modal awal = Σ entryWethRaw trade kohor ini (modal terpasang jendela);
+          // kurva ekuitas dari PnL TERMODEL urut-waktu — bukan netWethRaw ledger-quote, bukan mulai-0.
+          const startCapitalWei = rows.reduce((acc, r) => acc + BigInt(r.entryWethRaw ?? "0"), 0n);
+          const mddPct = maxDrawdownWei(sim.map((x) => ({ ts: x.ts, netWei: x.netWethRaw })), startCapitalWei);
           const label = bucket === "quote-only" ? "quote-only (net gas tersimpan)" : `sim ${bucket}`;
           const block = {
             arm, version, cohort, bucket, closeRows: rows.length, uniqueTrades: new Set(rows.map((r) => r.tradeId)).size,
@@ -168,7 +185,7 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
             profitFactor: Number.isFinite(pf) ? Number(pf.toFixed(4)) : (sumWin > 0 ? "inf" : 0),
             expectancyPct: Number(expectancy.toFixed(4)), expectancyCi95: [Number(ci.lo.toFixed(3)), Number(ci.hi.toFixed(3))],
             breakEvenOfRealized: sim.length ? Number((be * 100).toFixed(2)) : null,
-            maxDrawdownPct: maxDrawdownPct(rows),
+            maxDrawdownPct: mddPct, capitalBaseWei: startCapitalWei.toString(),
             exits: rows.reduce<Record<string, number>>((acc, r) => { acc[r.why] = (acc[r.why] ?? 0) + 1; return acc; }, {}),
             excludedFromProfitability: bucket === "v2-defective",
           };
