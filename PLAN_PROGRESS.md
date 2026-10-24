@@ -491,3 +491,14 @@ Status: Actions GREEN; live mati; withdraw legacy = RISIKO TERBUKA; PROFITABILIT
 | — | rekonsiliasi 9 vs 11+1 | recount jujur: 15 completed-with-evidence = v1 9 + v2-defective 6 (beku, tidak dihitung ulang); duplikat tradeId ditolak seluruhnya (2-pass); replay invalid bucket terpisah | rh:funnel + rh:replay JSON |
 | 3 | 0x-64hex blanket allowlist membutakan kunci berprefiks 0x | kelas DIHAPUS; allowlist = 5 topik eksak + docs/onchain + fixture path; rule khusus 0x/no-prefix 64-hex; adversarial 2/2 terdeteksi; .gitleaksignore fingerprint per-temuan (format commit:file:rule:line) | scan 208 komit = 0; uji adversarial |
 Status: Actions GREEN (b190455); v3 aktif utk observasi baru; PROFITABILITY NOT YET VALIDATED.
+
+## BLOCKER 1-3 SELESAI (2026-10-25) — commit 935f1bd, Actions GREEN
+- BLOCKER-1: cohort-stats ditulis ulang di atas simNetFor (otoritas tunggal); pilahan saling-lepas
+  quote-only 1251 · v1 11 · v2-defective 7 · v3 bertambah terus · invalid; validator funnel sama
+  (funnelValid); pairing OPEN↔CLOSE pre-pass; tes dataset campuran 5 kasus.
+- BLOCKER-2: decisionQtySource/decisionQtyRaw terekam di tiap MARK/CLOSE ("sim-entry" vs
+  "quote-only") — baseline quote-only historis TIDAK berubah perilaku; v3 = kohort baru dgn basis
+  keputusan terekam.
+- BLOCKER-3: v3 per-arm — A: 6, C: 11 completed (bertambah); exit ditolak model: ENTRY_SIM_MISSING 36,
+  LIQUIDITY_UNKNOWN 31; INSUFFICIENT DATA utk profitabilitas v3.
+- Rekonsiliasi terkini: COMPLETED 32 = bukti 32 = replay-valid 32 ✓ (v1 9 · v2-defective 6 · v3 17).
