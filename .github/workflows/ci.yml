@@ -33,8 +33,8 @@ jobs:
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o /tmp/gl.tgz
           tar -xzf /tmp/gl.tgz -C /tmp gitleaks
-          /tmp/gitleaks detect --source . --redact --config-path .gitleaks.toml --exit-code 1 --report-format sarif --report-path /tmp/gitleaks.sarif || {
-            echo "GITLEAKS MENEMUKAN RAHASIA — lihat laporan (nilai disensor)"; /tmp/gitleaks report --report-format sarif; exit 1; }
+          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1 --report-format sarif --report-path /tmp/gitleaks.sarif || {
+            echo "GITLEAKS MENEMUKAN RAHASIA — periksa laporan (nilai disensor)"; exit 1; }
 
       - name: Pemeriksa panel web
         run: |
