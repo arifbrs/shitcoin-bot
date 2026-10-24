@@ -502,3 +502,14 @@ Status: Actions GREEN (b190455); v3 aktif utk observasi baru; PROFITABILITY NOT 
 - BLOCKER-3: v3 per-arm — A: 6, C: 11 completed (bertambah); exit ditolak model: ENTRY_SIM_MISSING 36,
   LIQUIDITY_UNKNOWN 31; INSUFFICIENT DATA utk profitabilitas v3.
 - Rekonsiliasi terkini: COMPLETED 32 = bukti 32 = replay-valid 32 ✓ (v1 9 · v2-defective 6 · v3 17).
+
+## PELAPORAN HARIAN + METRIK RISIKO SELESAI (2026-10-25) — commit 6b07c10, Actions GREEN
+- §1 ft-daily: skema groups (netSimulatedPnL terisi; strategyVersions = arm/cohort/bucket;
+  acceptedSimulatedEntries = fill model LOLOS [102] bukan jumlah OPEN; v2-defective teridentifikasi
+  + netSimulatedPnLForProfitability bebas v2; rekonsiliasi funnelValid) + tes integrasi.
+- §2 MDD: maxDrawdownWei — kurva ekuitas bermodal-awal eksplisit (Σ entryWethRaw) atas PnL TERMODEL
+  urut-waktu; semua-rugi kini MDD>0% (versi lama salah 0%); capitalBaseWei terekam; 3 skenario dites.
+- Verifikasi: 203 tes/32 berkas ✓ · gate ✓ · integrity exit 0 · Actions success 6b07c10.
+- STATUS v3 prospektif (terkini): funnelValid 37; profitabilitas groups: A/v1 n=8 exp −2,29% ·
+  A/v3 n=6 exp −2,34% · B/v1 n=1 · C/v3 n=16 exp −2,71% — SEMUA NEGATIF, INSUFFICIENT utk verdict;
+  coverage 7d 10,14% (sleep host) — bukan window forward-test sah.
