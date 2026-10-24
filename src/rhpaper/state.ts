@@ -12,6 +12,10 @@ export interface Position {
   liquiditySource?: "dexscreener" | null; // (R8) provenance: dari mana angka likuiditas
   liquidityReason?: string | null; // (R8) alasan bila null (DEXSCREENER_NO_PAIR / fetch gagal)
   liquidityAt?: number | null; // (R8) timestamp snapshot likuiditas
+  imbalanceH1?: number | null; // (FINAL-3) fitur perilaku point-in-time (tekanan beli 0..1)
+  txnsH1?: number | null; // (FINAL-3) intensitas transaksi jam-1
+  priceChangeH1?: number | null; // (FINAL-3) momentum jam-1 (%)
+  pairAgeDays?: number | null; // (FINAL-3) umur pair (hari)
   exitPolicy?: { stopPct: number; takePct: number; tpHoldMin: number };
 }
 export interface PaperState {

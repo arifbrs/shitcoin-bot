@@ -108,3 +108,12 @@ test("R8 P6: fixture ujung-ke-ujung — likuiditas → entry sim → posisi → 
 });
 
 function afterOpenPositionsDir(): string { return process.env.RHPAPER_DIR ?? "logs/rhpaper"; }
+
+test("FINAL-2: representasi persis — netWethRaw = bilangan rasional eksak; netPct = double 10 desimal", () => {
+  const simOut = simulatedExitWeth("995098189942235");
+  const pnl = quotePnl("1000000000000000", simOut.toString());
+  eq(pnl.netWethRaw, "-26227914502440", "numerik rasional EKSAK disimpan (wei, BigInt-string)");
+  eq(pnl.netPct, -2.622791450244, "netPct terbaca 10 desimal — double memuat 13 digit signifikan ini persis");
+  // Yang DISIMPAN di ledger = keduanya (netWethRaw string eksak + netPct number); yang DITAMPILKAN
+  // laporan boleh dibulatkan, asal berasal dari nilai ini (rh:ledger-audit memvalidasi tiap baris).
+});

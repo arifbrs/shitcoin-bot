@@ -7,19 +7,47 @@ import { CHAIN, WETH, decimalsOf, envOf, okxGet, quoteBuy, quoteSell } from "./e
 import { dir } from "./state.js";
 
 export interface Candidate { token: string; symbol: string; decimals: number; buyOk: boolean; sellOk: boolean; buyOut?: string; sellOut?: string; impactPct?: number | null;
-  liquidityUsd?: number | null; liquiditySource?: "dexscreener" | null; liquidityReason?: string | null; liquidityAt?: number | null }
+  liquidityUsd?: number | null; liquiditySource?: "dexscreener" | null; liquidityReason?: string | null; liquidityAt?: number | null;
+  // (FINAL-3) FITUR PERILAKU point-in-time dari respons DexScreener YANG SAMA — nol panggilan API baru.
+  imbalanceH1?: number | null; // pembelian/(pembelian+penjualan) jam-1 — 0..1 (>0,5 = tekanan beli)
+  txnsH1?: number | null; // total transaksi jam-1 — intensitas
+  priceChangeH1?: number | null; // % perubahan harga jam-1 — momentum
+  pairAgeDays?: number | null; // umur pair (hari) — siklus hidup token
+}
 
-/** (B3) Likuiditas USD dari baris DexScreener untuk mint — murni, bisa diuji. */
-export function liquidityFromDexRows(chain: string, mint: string, rows: unknown[]): number | null {
+/** (B3) Baris DexScreener terbaik (likuiditas terbesar) untuk mint — murni, bisa diuji. */
+export function bestDexRow(chain: string, mint: string, rows: unknown[]): Record<string, unknown> | null {
   const dexChain = chain === "sol" ? "solana" : chain === "eth" ? "ethereum" : chain;
-  let best: number | null = null;
+  let best: Record<string, unknown> | null = null, bestLiq = -1;
   for (const r of rows) {
     const row = r as { chainId?: string; baseToken?: { address?: string }; liquidity?: { usd?: number } };
     if (row?.chainId !== dexChain || row.baseToken?.address?.toLowerCase() !== mint.toLowerCase()) continue;
     const usd = Number(row.liquidity?.usd);
-    if (Number.isFinite(usd) && usd > 0 && (best == null || usd > best)) best = usd;
+    if (Number.isFinite(usd) && usd > 0 && usd > bestLiq) { bestLiq = usd; best = row as Record<string, unknown>; }
   }
   return best;
+}
+
+/** (B3) Likuiditas USD dari baris terbaik. */
+export function liquidityFromDexRows(chain: string, mint: string, rows: unknown[]): number | null {
+  const best = bestDexRow(chain, mint, rows);
+  return best ? Number((best.liquidity as { usd?: number })?.usd) || null : null;
+}
+
+/** (FINAL-3) Fitur perilaku dari baris pair: imbalance, intensitas, momentum, umur. */
+export function behaviorFromDexRow(row: Record<string, unknown> | null): { imbalanceH1: number | null; txnsH1: number | null; priceChangeH1: number | null; pairAgeDays: number | null } {
+  if (!row) return { imbalanceH1: null, txnsH1: null, priceChangeH1: null, pairAgeDays: null };
+  const txns = row.txns as { h1?: { buys?: number; sells?: number } } | undefined;
+  const buys = Number(txns?.h1?.buys), sells = Number(txns?.h1?.sells);
+  const imbalance = Number.isFinite(buys) && Number.isFinite(sells) && buys + sells > 0 ? buys / (buys + sells) : null;
+  const pc = row.priceChange as { h1?: number } | undefined;
+  const created = Number(row.pairCreatedAt);
+  return {
+    imbalanceH1: imbalance,
+    txnsH1: Number.isFinite(buys) && Number.isFinite(sells) ? buys + sells : null,
+    priceChangeH1: pc && Number.isFinite(Number(pc.h1)) ? Number(pc.h1) : null,
+    pairAgeDays: Number.isFinite(created) && created > 0 ? (Date.now() - created) / 86_400_000 : null,
+  };
 }
 
 const cachePath = (date = new Date().toISOString().slice(0, 10)) => dir() + "/candidates-" + date + ".json";
@@ -94,10 +122,12 @@ export async function scanCandidates(maker: string, want = 5, limit = 40): Promi
     for (const c of out) {
       c.liquidityAt = at;
       if (!liq.ok || liq.error) { c.liquidityUsd = null; c.liquiditySource = null; c.liquidityReason = liq.error ?? "DEX_FAILED"; continue; }
+      const best = bestDexRow("robinhood", c.token, liq.rows);
       const usd = liquidityFromDexRows("robinhood", c.token, liq.rows);
       c.liquidityUsd = usd;
       c.liquiditySource = usd != null ? "dexscreener" : null;
       c.liquidityReason = usd != null ? null : "DEXSCREENER_NO_PAIR"; // provider memang tak punya pair ≠ kondisi pasar
+      Object.assign(c, behaviorFromDexRow(best)); // fitur perilaku point-in-time (FINAL-3)
     }
   }
   mkdirSync(dir(), { recursive: true });

@@ -4,6 +4,8 @@
  * setiap penolakan punya alasan primer + waktu. Scanner-accept ≠ fill-eligible — terpisah jelas.
  */
 import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+import { simulatedExitWeth } from "./fillmodel.js";
+import { quotePnl, ROUND_TRIP_GAS_WEI } from "./engine.js";
 import { join } from "node:path";
 
 export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, unknown> {
@@ -80,10 +82,35 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
   if (opens !== opensWithLiq + opensNoLiq) throw new Error(`funnel: OPEN ${opens} ≠ liq ${opensWithLiq} + no-liq ${opensNoLiq}`);
   if (entrySimFilled + entrySimRejected > opens) throw new Error("funnel: sim-entry melebihi OPEN");
   const rate = (n: number, d: number): number | null => (d > 0 ? Number((100 * n / d).toFixed(2)) : null);
-  return { generatedAt: new Date(now).toISOString(), calcVersion: "rh-funnel-r8",
+  // (FINAL-2) BUKTI PER-TRADE: setiap COMPLETED_SIM_TRADE direkonstruksi dari snapshot aslinya.
+  const completedTrades: Array<Record<string, unknown>> = [];
+  for (const f of files) {
+    for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
+      if (!line.includes('"action":"CLOSE"')) continue;
+      let j: Record<string, unknown>;
+      try { j = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+      const id = String(j.tradeId ?? "");
+      const o = openById.get(id);
+      const es = o?.simFillEntry as { filled?: boolean } | undefined;
+      const xs = j.simFillExit as { filled?: boolean } | undefined;
+      if (es?.filled !== true || xs?.filled !== true) continue;
+      completedTrades.push({
+        tradeId: id, arm: j.arm, symbol: j.symbol, token: j.token,
+        openedAt: o?.ts, closedAt: j.ts, heldWhy: j.why,
+        liquidityUsd: o?.liquidityUsd ?? null, liquiditySource: o?.liquiditySource ?? null,
+        entryWethRaw: j.entryWethRaw, exitQuoteWethRaw: j.exitWethRaw,
+        entrySimFill: o?.simFillEntry, exitSimFill: xs,
+        netPctQuote: j.netPct,
+        netPctSim: j.fillModelVersion != null && typeof j.entryWethRaw === "string" && typeof j.exitWethRaw === "string"
+          ? quotePnl(j.entryWethRaw, simulatedExitWeth(j.exitWethRaw).toString()).netPct : null,
+        gasWeiPerRoundTrip: ROUND_TRIP_GAS_WEI.toString(), fillModelVersion: j.fillModelVersion ?? null,
+      });
+    }
+  }
+  return { generatedAt: new Date(now).toISOString(), calcVersion: "rh-funnel-final",
     stages, conversion: { dataValidPct: rate(dataValid, discovered), liquidityVerifiedPct: rate(liquidityVerified, dataValid),
       entrySimFilledPct: rate(entrySimFilled, opens), completedPct: rate(completed, opens) },
-    distinctTokensDiscovered: uniqueTokens.size };
+    distinctTokensDiscovered: uniqueTokens.size, completedTrades };
 }
 
 function readdirLedgers(dir: string): string[] {

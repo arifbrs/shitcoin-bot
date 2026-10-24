@@ -16,11 +16,15 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
   const entry = BigInt(entryRaw), exit = BigInt(exitRaw);
   if (entry <= 0n || exit < 0n || gasWei < 0n) throw new Error("invalid quote amounts");
   const gross = exit - entry, net = gross - gasWei;
-  // (FINAL A1) PRESISI 10 DESIMAL pp — dulu ×1e6/1e4 yang memotong ke 4 desimal dan kehilangan
-  // 0,0000914 pp pada kasus DELL (−2,6227 vs benar −2,622791450244). pp = gross/entry×100 =
-  // (gross×1e12/entry)/1e10; hasil bagi BigInt tetap < 2^53 untuk rasio realistis (|rasio| < 9000).
-  return { grossPct: Number(gross * 1_000_000_000_000n / entry) / 1e10,
-    netPct: Number(net * 1_000_000_000_000n / entry) / 1e10, netWethRaw: net.toString() };
+  // (FINAL A1, revisi) PRESISI RASIONAL-PENUH: kini langsung membagi dua integer EKSAK dalam
+  // double (keduanya < 2^53 untuk nilai wei realistis) — hasil = pembulatan-correct dari bilangan
+  // rasional, tanpa artefak truncation (kasus DELL: −2,622791450244 persis; dulu −2,6227 oleh
+  // truncation ×1e6/1e4). Fallback skala BigInt hanya untuk magnitudo di luar 2^53 (non-realistis).
+  const pct = (delta: bigint): number =>
+    delta >= -9_000_000_000_000_000n && delta <= 9_000_000_000_000_000n && entry <= 9_000_000_000_000_000n
+      ? Number(delta) / Number(entry) * 100
+      : Number(delta * 1_000_000_000_000n / entry) / 1e10;
+  return { grossPct: pct(gross), netPct: pct(net), netWethRaw: net.toString() };
 }
 
 type CycleIO = Pick<typeof import("./exec.js"), "quoteBuy" | "quoteSell"> &
@@ -134,13 +138,15 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             appendLedger({ ts: Date.now(), action: "REJECT", arm: armName, token: c.token, symbol: c.symbol, reason: "round trip already beyond stop", roundTripFloorPct: floor.netPct });
             errors.push(c.symbol + ": round trip already beyond stop"); continue;
           }
-          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null, liquiditySource: c.liquiditySource ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null };
+          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null, liquiditySource: c.liquiditySource ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null,
+          imbalanceH1: c.imbalanceH1 ?? null, txnsH1: c.txnsH1 ?? null, priceChangeH1: c.priceChangeH1 ?? null, pairAgeDays: c.pairAgeDays ?? null };
           s.positions.push(pos); opened++;
           // (B3) simFillEntry: model fill untuk akuntansi simulasi — tidak mengubah keputusan buka.
           const simFillEntry = simulateFill({ quoteAmountIn: buy.quote!.amountIn, quoteAmountOut: buy.quote!.amountOut, impactPct: buy.quote!.impactPct,
             liquidityUsd: c.liquidityUsd ?? null, sizeWethRaw: buy.quote!.amountIn, ethUsd: await (io.ethUsd ?? ethUsdOf)() });
           appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, tradeId: pos.tradeId, policyId, exitPolicy, measurementVersion: "rhpaper-units-arm-v3", executionState: "QUOTE_ONLY_NOT_SIMULATED", roundTripFloorPct: floor.netPct, reverseQuoteRef: JSON.stringify(reverse.quote), decimals: c.decimals, usd: cfg.usd, entryWethRaw: pos.entryWethRaw, qtyRaw: pos.qtyRaw, entryImpactPct: buy.quote!.impactPct, entrySlippagePct: buy.quote!.slippagePct, quoteRef: pos.entryQuoteRef,
-            liquidityUsd: c.liquidityUsd ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null, simFillEntry, fillModelVersion: FILL_MODEL_VERSION });
+            liquidityUsd: c.liquidityUsd ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null,
+            imbalanceH1: c.imbalanceH1 ?? null, txnsH1: c.txnsH1 ?? null, priceChangeH1: c.priceChangeH1 ?? null, pairAgeDays: c.pairAgeDays ?? null, simFillEntry, fillModelVersion: FILL_MODEL_VERSION });
         }
       }
       saveState(s);
