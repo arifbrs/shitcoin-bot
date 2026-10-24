@@ -66,8 +66,10 @@ export function study(now = Date.now(), dir = observationDir()): string[] {
     }
     const totalDelay = signals.map((s) => s.observationDelayMs).filter((v): v is number => v != null && v >= 0);
     const feasibleByAge = ages.filter((d) => d <= 300_000).length;
-    lines.push(`   delay total (observedAt−triggerAt) med=${totalDelay.length ? (med(totalDelay)! / 60_000).toFixed(1) + "m" : "?"} — DEKOMPOSISI: usia-saat-request med=${ages.length ? (med(ages)! / 60_000).toFixed(1) + "m" : "?"} (≤5m: ${feasibleByAge}/${ages.length}) · antrean-lokal med=${queues.length ? (med(queues)! / 1000).toFixed(1) + "s" : "?"} (≤5m: ${queues.filter((d) => d <= 300_000).length}/${queues.length})`,
-      `   → bila usia-saat-request dominan: keterlambatan SISI PROVIDER/daftar-bergerak-lambat, bukan polling lokal (siklus kita 15m tak mungkin menghasilkan jam).`);
+    const pct = (arr: number[], p: number): string => (arr.length ? (med([...arr].sort((x, y) => x - y).slice(Math.floor(p * (arr.length - 1)), Math.floor(p * (arr.length - 1)) + 1))! / 60_000).toFixed(1) + "m" : "?");
+    const freshOneCycle = ages.filter((d) => d <= 15 * 60_000).length;
+    lines.push(`   delay total (observedAt−triggerAt) med=${totalDelay.length ? (med(totalDelay)! / 60_000).toFixed(1) + "m" : "?"} — DEKOMPOSISI: usia-saat-request p10/p50/p90 = ${pct(ages, 0.1)}/${pct(ages, 0.5)}/${pct(ages, 0.9)} (≤5m: ${feasibleByAge}/${ages.length}; ≤15m=1 siklus: ${freshOneCycle}) · antrean-lokal med=${queues.length ? (med(queues)! / 1000).toFixed(1) + "s" : "?"}`,
+      `   → usia dominan di sisi provider. ${freshOneCycle > 0 ? `PERINGATAN DIMENSI LAIN: ${freshOneCycle} sinyal berusia ≤15 mnt = feed TIDAK sepenuhnya basa — segmen segar ada; klaim 'tidak bisa dieksekusi' berlaku untuk mayoritas, bukan seluruh feed.` : "tidak ada sinyal berusia ≤15 mnt pada sampel ini — feed murni mengirim kejadian tua (atau semantik trigger berbeda = UNKNOWN)."}`);
     // C3: konsentrasi
     const byToken = new Map<string, number>();
     for (const s of signals) byToken.set(s.mint, (byToken.get(s.mint) ?? 0) + 1);

@@ -23,6 +23,7 @@ import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { config } from "../config.js";
 import { duplicateSecurityKeys } from "../util/env-audit.js";
+import { verifySwapFill } from "./tx-truth.js";
 
 const CHAIN = 4663;
 const RPC = process.env.ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
@@ -157,10 +158,12 @@ async function main(): Promise<void> {
     console.log("    ▶ jual " + s.symbol + " (seluruh posisi " + s.positionId + ") via exec.fillSell …");
     const sr = await fillSell(s.token, qtyRaw.toString(), BOTW);
     const after = await readTokenBalance(rpc, s.token, BOTW);
-    const ok = sr.ok && after.ok && after.raw < qtyRaw; // verifikasi saldo, bukan percaya status tx
+    // (R5) bukti fill per-tx juga di sisi jual: token masuk ke dompet pada tx ITU harus WETH.
+    const sellProof = sr.hash ? await verifySwapFill(rpc, sr.hash, { owner: BOTW, tokenIn: s.token, tokenOut: WETH }) : null;
+    const ok = sr.ok && (sellProof?.filled ?? false) && after.ok && after.raw < qtyRaw; // status + per-tx + delta saldo
     appendFileSync(liveLog, JSON.stringify({ ts: Date.now(), action: "LIVE_SELL", strategy, token: s.token, symbol: s.symbol,
       route: "okx", ok, positionId: s.positionId, qtyRaw: qtyRaw.toString(), why: s.why,
-      ...(sr.hash ? { txHash: sr.hash } : {}), ...(sr.reason ? { reason: sr.reason.slice(0, 120) } : {}), ...(after.ok ? { remainingRaw: after.raw.toString() } : {}) }) + "\n");
+      fillProof: sellProof, ...(sr.hash ? { txHash: sr.hash } : {}), ...(sr.reason ? { reason: sr.reason.slice(0, 120) } : {}), ...(after.ok ? { remainingRaw: after.raw.toString() } : {}) }) + "\n");
   }
 
   // …baru BELI (izin + tunai + gerbang "bisa keluar" + dedupe sudah di plan).
@@ -194,14 +197,17 @@ async function main(): Promise<void> {
     const before = await readTokenBalance(rpc, r.token, BOTW);
     const br = await fillBuy(r.token, wethRaw.toString(), BOTW);
     const after = await readTokenBalance(rpc, r.token, BOTW);
-    const filled = br.ok && before.ok && after.ok && after.raw > before.raw;
+    // (R5) BUKTI FILL PER-TX: transfer token pada tx ITU harus menyerahkan tokenOutput ke dompet.
+    // Delta saldo saja bisa tertipu aktivitas bersamaan — keduanya wajib.
+    const fillProof = br.hash ? await verifySwapFill(rpc, br.hash, { owner: BOTW, tokenIn: WETH, tokenOut: r.token }) : null;
+    const filled = br.ok && (fillProof?.filled ?? false) && before.ok && after.ok && after.raw > before.raw;
     const tsRow = Date.now();
-    const amountOutRaw = br.ok && before.ok && after.ok ? (after.raw - before.raw).toString() : "0";
+    const amountOutRaw = fillProof?.amountOut != null ? fillProof.amountOut.toString() : (br.ok && before.ok && after.ok ? (after.raw - before.raw).toString() : "0");
     // NIAT vs KENYATAAN (2026-10-21): LIVE_ATTEMPT = percobaan, LIVE_FILL = saldo terverifikasi bertambah.
     appendFileSync(liveLog, JSON.stringify({ ts: tsRow, action: filled ? "LIVE_FILL" : "LIVE_ATTEMPT", strategy,
       token: r.token, symbol: r.symbol, notionalUsd: usd, amountInWethRaw: wethRaw.toString(), priceSource: ethUsd === 2361 ? "fallback" : "okx-quote",
       route: "okx", ok: filled, amountOutRaw, positionId: positionIdFor(r.token, br.hash ?? null, tsRow, filled ? amountOutRaw : null),
-      ...(br.hash ? { txHash: br.hash } : {}), ...(br.reason ? { reason: br.reason.slice(0, 120) } : {}) }) + "\n");
+      fillProof, ...(br.hash ? { txHash: br.hash } : {}), ...(br.reason ? { reason: br.reason.slice(0, 120) } : {}) }) + "\n");
     if (filled) executed++;
   }
 }

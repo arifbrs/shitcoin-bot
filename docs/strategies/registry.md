@@ -12,7 +12,11 @@ bukti prospektif (≥14 hari, ≥100 trade selesai, CI tidak melewati nol).
 - **Keluar (dibekukan 2026-10-22)**: A stop −1,5% / TP +2,0% / umur 240m · B −1,0 / +3,0 / 240m ·
   C −2,0 / +5,0 / 240m. Gas riil riwayat 1,14% putaran (asumsi, berlabel `historical-assumption`).
 - **Falsifikasi**: net profit factor < 1 setelah ≥100 trade PROSPECTIVE per arm, atau rugi terpusat
-  di segelintir token (konsentrasi).
+  di segelintir token (konsentrasi). **Matematika break-even (round-5, teruji analitik)**: threshold
+  dievaluasi pada netPct (SUDAH memuat gas + fee quote — dibuktikan stop-exits real mengelompok di
+  −1,5..−1,7); drag inkremental = overlay latensi 1,0 pp → BE=(SL+d)/(TP+SL): **A 71,4% · B 50,0% ·
+  C 42,9%**; d=2,6 pp (ganda-hitung) = MUSTAHIL untuk A/B. Gas = wei ABSOLUT (1,14% hanya di
+  0,001 ETH; skala 1/ukuran).
 - **Status**: TESTING (kohort mulai 2026-10-22; sejak 2026-10-24 setiap OPEN/CLOSE membawa
   `simFillEntry`/`simFillExit` fillmodel-v1 + setiap kandidat layak yang ditolak tercatat REJECT).
 - **Anti-kebocoran**: keputusan hanya dari quote saat keputusan; likuiditas DexScreener dibaca saat
