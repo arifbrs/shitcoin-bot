@@ -482,3 +482,12 @@ menulis data segar. Sisa riset: AWAITING_OBSERVATION (H-A..H-H); D2 24/7: operat
 | LP provenance | spread snapshot tak terkait | ConfirmedLpEvent murni dari decode (txHash/logIndex/blok/pool/eventKey/chainId); jendela blok per-interval; idempoten eventKey | tes decode + adversarial |
 | gitleaks cetek | shallow checkout, path-exemptions luas, flag salah | fetch-depth:0; allowlist fingerprint-class (3 kelas publik); rule EVM no-prefix; adversarial: kunci 64-hex terdeteksi | 208 komit 0 temuan |
 Status: Actions GREEN; live mati; withdraw legacy = RISIKO TERBUKA; PROFITABILITY NOT YET VALIDATED.
+
+## V2-ACCOUNTING FINALIZE (2026-10-25) — commit b190455, Actions GREEN
+| § | Defek | Perbaikan | Bukti |
+|---|---|---|---|
+| 1 | double-count entry slippage: v2 exit memotong (1−l) DUA kali (kuantitas entry dipotong, quote utk kuantitas itu DISKALAKAN lagi) | fillmodel-v3: entry potongan SEKALI (sim qty); exit = RE-QUOTE NYATA simQty (engine memanggil quoteSell(simQty)) + (1−l) exit SEKALI; parameter scaling DIHAPUS dari FillInput | tes fillmodel: 1990 ≠ 1980 (bug v2); tes engine: panggilan exit = sim qty |
+| 2 | funnel/replay/cohort beda formula net-sim | simNetFor() = SATU otoritas versi-sadar (v1 komposit beku / v2-defective direkam apa adanya / v3 re-quote / quote-only / invalid); funnel+replay+cohort-stats memanggilnya; paritas quoteNet↔quotePnl dites | rekonsiliasi: COMPLETED 15 = bukti 15 = replay-valid 15 |
+| — | rekonsiliasi 9 vs 11+1 | recount jujur: 15 completed-with-evidence = v1 9 + v2-defective 6 (beku, tidak dihitung ulang); duplikat tradeId ditolak seluruhnya (2-pass); replay invalid bucket terpisah | rh:funnel + rh:replay JSON |
+| 3 | 0x-64hex blanket allowlist membutakan kunci berprefiks 0x | kelas DIHAPUS; allowlist = 5 topik eksak + docs/onchain + fixture path; rule khusus 0x/no-prefix 64-hex; adversarial 2/2 terdeteksi; .gitleaksignore fingerprint per-temuan (format commit:file:rule:line) | scan 208 komit = 0; uji adversarial |
+Status: Actions GREEN (b190455); v3 aktif utk observasi baru; PROFITABILITY NOT YET VALIDATED.
