@@ -87,6 +87,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
         p.troughPct = Math.min(p.troughPct ?? pnlPct, pnlPct);
         p.marks = (p.marks ?? 0) + 1;
         appendLedger({ ts: Date.now(), action: "MARK", arm: p.arm, token: p.token, symbol: p.symbol, tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen",
+          decisionQtySource: entrySimUsablePre ? "sim-entry" : "quote-only", decisionQtyRaw: entrySimUsablePre ? p.simFillEntry!.fillOutRaw! : p.qtyRaw,
           outWethRaw: sell.quote.amountOut, pnlPct, netPct: pnl.netPct, impactPct: sell.quote.impactPct, quoteRef: JSON.stringify(sell.quote), executionState: "QUOTE_ONLY_NOT_SIMULATED" });
         const why = shouldExit(pnl.netPct, (Date.now() - p.entryTs) / 60000, p.exitPolicy ?? exitPolicy);
         if (why) {
@@ -109,6 +110,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             quoteAgeMs: Date.now() - (sell.quote!.ts ?? Date.now()) }); // (FINAL §1) quote SUDAH utk kuantitas sim (re-quote nyata) — tanpa penskalaan kedua
           appendLedger({
             ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
+            decisionQtySource: entrySimUsablePre ? "sim-entry" : "quote-only", decisionQtyRaw: entrySimUsablePre ? p.simFillEntry!.fillOutRaw! : p.qtyRaw,
             tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen", measurementVersion: "rhpaper-units-arm-v3",
             cohortStatus: p.tradeId && p.policyId && p.exitPolicy ? "PROSPECTIVE" : "LEGACY_CARRYOVER",
             heldMin: Math.round((Date.now() - p.entryTs) / 60000),
