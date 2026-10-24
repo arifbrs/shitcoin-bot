@@ -462,3 +462,12 @@ sesi berakhir → killpg membunuh semuanya (bukan crash, bukan sleep saat itu). 
 launchctl submit diblokir TCC (Documents). Solusi terpasang: `node deploy/start-lanes-detached.mjs`
 (spawn detached, PGID baru, idempoten) — SEMUA LANE OK terverifikasi; collector/tracker/rhpaper
 menulis data segar. Sisa riset: AWAITING_OBSERVATION (H-A..H-H); D2 24/7: operator (caffeinate/VPS).
+
+## P0-DIRECTIVE CI SELESAI (2026-10-25) — Actions GREEN pada 194ef0b
+| P0 | Akar | Perbaikan | Bukti |
+|---|---|---|---|
+| P0-1 CI merah | package-lock usang (utf-8-validate@5.0.10 menggantung) + TMPDIR kosong di ubuntu (3 tes) | lock diregenerasi bersih; Node CI dikunci 20.18.0; tes pakai tmpdir() | `npm ci` bersih di direktori terisolasi; Actions success |
+| P0-2 decoder V3 | topik Mint = topik V2 (salah); likuiditas Mint dibaca kata data 0 (mestinya 1 — sender non-indexed di depan) | topik di-derive via viem ABI; layout Mint/Burn benar; pool divalidasi; multi-event; idempoten eventKey; konfirmasi terintegrasi (--confirm → lp-events.jsonl) | tes log autentik (multi-event, pool salah, log rusak) |
+| P0-3 funnel palsu | bukti exit diwarisi dari state entry | countFunnel murni: wajib OPEN↔CLOSE unik + simFillEntry + simFillExit di baris masing-masing + versi cocok; 1.252 invalidCloses dilaporkan; 10 completed terekonsiliasi | 4 tes regresi skenario palsu |
+| P0-4 likuiditas exit | exit memakai likuiditas entry yang disimpan | fillmodel-v2: likuiditas exit-time (snapshot batch siklus), kuantitas exit = token sim entry, STALE_QUOTE >90s; kohort v1 utuh | tes fixture ujung-ke-ujung + tes v2 |
+| P0-5 gitleaks | tidak ada pemindaian; flag --config-path salah (exit 126) | gitleaks 8.24 di CI + .gitleaks.toml allowlist tertarget; scan 205 komit = 0 temuan (diverifikasi lokal sungguhan) | Actions step hijau |
