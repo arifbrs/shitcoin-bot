@@ -69,13 +69,15 @@ test("R8 P6: fixture ujung-ke-ujung — likuiditas → entry sim → posisi → 
     const ethUsd = async (): Promise<number | null> => 2361; // disuntik: deterministik, tanpa jaringan
     const liqCandidate = { token: "0xliq", symbol: "LIQ", decimals: 18, buyOk: true, sellOk: true, liquidityUsd: 50_000, liquiditySource: "dexscreener" as const, liquidityAt: 1 };
     // Entry quote: 1e15 wei → 2.000 token. Exit quote (qty penuh): 1.020.000 wei → gross +2%.
-    const entryQuote = { ts: 1, route: "test", amountIn: "1000000000000000", amountOut: "2000000000000000000000", impactPct: 0.1, slippagePct: 1 };
-    const exitQuote = { ts: 2, route: "test", amountIn: "2000000000000000000000", amountOut: "1020000000000000", impactPct: 0.1, slippagePct: 1 };
+    const now = Date.now();
+    const entryQuote = { ts: now, route: "test", amountIn: "1000000000000000", amountOut: "2000000000000000000000", impactPct: 0.1, slippagePct: 1 };
+    const exitQuote = { ts: now + 1000, route: "test", amountIn: "2000000000000000000000", amountOut: "1020000000000000", impactPct: 0.1, slippagePct: 1 };
     let phase = 0;
     const io = {
       quoteBuy: async () => ({ ok: true, quote: entryQuote }),
-      quoteSell: async () => ({ ok: true, quote: exitQuote }),
+      quoteSell: async () => ({ ok: true, quote: { ...exitQuote, ts: Date.now() + 1000 } }),
       loadCandidates: () => [liqCandidate], cacheStale: () => false, scanCandidates: async () => [liqCandidate], ethUsd,
+      liquiditySnapshot: async (tokens: string[]) => new Map(tokens.map((t) => [t, { liquidityUsd: 50_000, at: Date.now() }])), // (P0-4) exit-time liquidity disuntik
     };
     // Siklus 1: buka (sim entry harus fill — likuiditas $50k ≫ 2% × $2,36).
     await cycle({ ...base, maxPositions: 1 }, io);
@@ -87,7 +89,7 @@ test("R8 P6: fixture ujung-ke-ujung — likuiditas → entry sim → posisi → 
     // Siklus 2: tutup (netPct = (1.020.000−1.000.000−11.400)/1.000.000 ... dalam pp = +0,86% → di bawah TP 5%? base.takePct=5 → tidak keluar.
     // Paksa keluar via stop: exit quote 980.000 → net −3,14% < −1 (base.stopPct=1)... base di atas: stopPct 1.
     const exitQuoteLoss = { ...exitQuote, amountOut: "980000000000000" };
-    const io2 = { ...io, quoteSell: async () => ({ ok: true, quote: exitQuoteLoss }) };
+    const io2 = { ...io, quoteSell: async () => ({ ok: true, quote: { ...exitQuoteLoss, ts: Date.now() + 2000 } }) };
     await cycle({ ...base, maxPositions: 1 }, io2);
     const ledger = readFileSync(join(afterOpenPositionsDir(), "ledger-" + new Date().toISOString().slice(0, 10) + ".jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
     const openRow = ledger.find((r) => r.action === "OPEN")!;

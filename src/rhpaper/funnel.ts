@@ -8,6 +8,58 @@ import { simulatedExitWeth } from "./fillmodel.js";
 import { quotePnl, ROUND_TRIP_GAS_WEI } from "./engine.js";
 import { join } from "node:path";
 
+export interface FunnelCounts {
+  opens: number; rejects: number; opensWithLiq: number; opensNoLiq: number;
+  entrySimFilled: number; entrySimRejected: number;
+  exitSignals: number; exitSimFilled: number; exitSimRejected: number; completed: number;
+  invalidCloses: number; rejectReasons: Record<string, number>;
+}
+
+/** (FINAL P0-3) inti corong MURNI — bukti ketat, bisa diuji offline:
+ *  COMPLETED hanya bila (a) tradeId unik & berpasangan OPEN↔CLOSE tunggal, (b) simFillEntry
+ *  .filled===true di baris OPEN, (c) simFillExit.filled===true di baris CLOSE itu sendiri
+ *  (BUKAN diwarisi dari state entry), (d) fillModelVersion OPEN & CLOSE ada dan sama.
+ *  CLOSE tanpa simFillExit / tradeId ganda / versi beda = invalidCloses, TIDAK dihitung. */
+export function countFunnel(rows: Array<Record<string, unknown>>): FunnelCounts {
+  const out: FunnelCounts = { opens: 0, rejects: 0, opensWithLiq: 0, opensNoLiq: 0, entrySimFilled: 0,
+    entrySimRejected: 0, exitSignals: 0, exitSimFilled: 0, exitSimRejected: 0, completed: 0,
+    invalidCloses: 0, rejectReasons: {} };
+  const openById = new Map<string, { row: Record<string, unknown>; count: number }>();
+  const closeCount = new Map<string, number>();
+  for (const j of rows) {
+    const action = String(j.action ?? "");
+    if (action === "OPEN") {
+      out.opens++;
+      const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
+      const prev = openById.get(id);
+      openById.set(id, { row: j, count: (prev?.count ?? 0) + 1 });
+      if (typeof j.liquidityUsd === "number" && j.liquidityUsd > 0) out.opensWithLiq++; else out.opensNoLiq++;
+      const s = j.simFillEntry as { filled?: boolean; reason?: string } | undefined;
+      if (s?.filled === true) out.entrySimFilled++;
+      else if (s) { out.entrySimRejected++; out.rejectReasons[`entry_sim:${s.reason ?? "?"}`] = (out.rejectReasons[`entry_sim:${s.reason ?? "?"}`] ?? 0) + 1; }
+    } else if (action === "REJECT") {
+      out.rejects++;
+      const why = String(j.reason ?? "?");
+      out.rejectReasons[why] = (out.rejectReasons[why] ?? 0) + 1;
+    } else if (action === "CLOSE") {
+      out.exitSignals++;
+      const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
+      closeCount.set(id, (closeCount.get(id) ?? 0) + 1);
+      const o = openById.get(id);
+      const es = o?.row.simFillEntry as { filled?: boolean } | undefined;
+      const xs = j.simFillExit as { filled?: boolean; reason?: string } | undefined;
+      const openVersion = o?.row.fillModelVersion ?? null;
+      const closeVersion = j.fillModelVersion ?? null;
+      const versionsMatch = openVersion != null && openVersion === closeVersion;
+      const unique = closeCount.get(id) === 1 && (o?.count ?? 0) === 1;
+      if (es?.filled === true && xs?.filled === true && unique && versionsMatch) out.completed++;
+      else if (xs?.filled === false) { out.exitSimRejected++; out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] = (out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] ?? 0) + 1; }
+      else out.invalidCloses++; // tanpa bukti exit / pasangan tidak unik / versi tak cocok — DILAPOR, tidak dihitung
+    }
+  }
+  return out;
+}
+
 export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, unknown> {
   const stages: Array<{ stage: string; count: number; note?: string }> = [];
   // DISCOVERED + DATA_VALID: dari cache kandidat hari ini (listTokens → probe dua arah).
@@ -29,54 +81,27 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
         note: `NO_PAIR=${liquidityNoPair} (provider tak punya pair) · FETCH_FAILED=${liquidityFetchFailed} — kategori BERBEDA, bukan kondisi pasar` });
   } else stages.push({ stage: "DISCOVERED", count: 0, note: "cache hari ini belum ada" });
 
-  // STRATEGY_ELIGIBLE → OPEN (accepted) / REJECT (dengan alasan + ts): dari seluruh ledger.
-  let opens = 0, rejects = 0, opensWithLiq = 0, opensNoLiq = 0, entrySimFilled = 0, entrySimRejected = 0;
-  let exitSignals = 0, exitSimFilled = 0, exitSimRejected = 0, completed = 0;
-  const rejectReasons: Record<string, number> = {};
+  // STRATEGY_ELIGIBLE → OPEN / REJECT / CLOSE: dikumpulkan lalu dihitung oleh countFunnel()
+  // (FINAL P0-3: fungsi murni, bukti ketat — TIDAK ADA jalur "bukti exit dari state entry").
+  const rawRows: Array<Record<string, unknown>> = [];
   const files = readdirLedgers(dir);
-  const openById = new Map<string, Record<string, unknown>>();
   for (const f of files) {
     for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
       if (!line.trim()) continue;
-      let j: Record<string, unknown>;
-      try { j = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-      const action = String(j.action ?? "");
-      if (action === "OPEN") {
-        opens++;
-        const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
-        openById.set(id, j);
-        if (typeof j.liquidityUsd === "number" && j.liquidityUsd > 0) opensWithLiq++; else opensNoLiq++;
-        const s = j.simFillEntry as { filled?: boolean; reason?: string } | undefined;
-        if (s?.filled === true) entrySimFilled++;
-        else if (s) { entrySimRejected++; rejectReasons[`entry_sim:${s.reason ?? "?"}`] = (rejectReasons[`entry_sim:${s.reason ?? "?"}`] ?? 0) + 1; }
-      } else if (action === "REJECT") {
-        rejects++;
-        const why = String(j.reason ?? "?");
-        rejectReasons[why] = (rejectReasons[why] ?? 0) + 1;
-      } else if (action === "CLOSE") {
-        exitSignals++;
-        const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
-        const openRow = openById.get(id);
-        const s = (j.simFillExit ?? (openRow ? undefined : undefined)) as { filled?: boolean; reason?: string } | undefined;
-        const exitState = s ?? undefined;
-        if (exitState?.filled === true) { exitSimFilled++; completed++; }
-        else if (exitState) { exitSimRejected++; rejectReasons[`exit_sim:${exitState.reason ?? "?"}`] = (rejectReasons[`exit_sim:${exitState.reason ?? "?"}`] ?? 0) + 1; }
-        else {
-          // exit state ada di baris OPEN yang dipasangkan (simFillExit dihitung saat OPEN pada
-          // arsitektur ini — likuiditas entry menentukan kelayakan exit): pakai state entry.
-          const es = openRow?.simFillEntry as { filled?: boolean; reason?: string } | undefined;
-          if (es?.filled === true) { exitSimFilled++; completed++; }
-          else if (es) { exitSimRejected++; rejectReasons[`exit_sim(via-entry-state):${es.reason ?? "?"}`] = (rejectReasons[`exit_sim(via-entry-state):${es.reason ?? "?"}`] ?? 0) + 1; }
-        }
-      }
+      try { rawRows.push(JSON.parse(line) as Record<string, unknown>); } catch { /* rusak dihitung terpisah */ }
     }
   }
+  const fc = countFunnel(rawRows);
+  const opens = fc.opens, rejects = fc.rejects, opensWithLiq = fc.opensWithLiq, opensNoLiq = fc.opensNoLiq;
+  const entrySimFilled = fc.entrySimFilled, entrySimRejected = fc.entrySimRejected;
+  const exitSignals = fc.exitSignals, exitSimFilled = fc.exitSimFilled, exitSimRejected = fc.exitSimRejected, completed = fc.completed;
+  const rejectReasons = fc.rejectReasons;
   stages.push({ stage: "STRATEGY_ELIGIBLE (OPEN attempt)", count: opens, note: `REJECT=${rejects} (alasan: ${JSON.stringify(rejectReasons)})` },
     { stage: "LIQUIDITY_VERIFIED at entry (posisi)", count: opensWithLiq, note: `tanpa likuiditas (cache pra-R8)=${opensNoLiq}` },
     { stage: "ENTRY_SIM_FILLED", count: entrySimFilled, note: `ditolak model=${entrySimRejected}` },
     { stage: "EXIT_SIGNAL (CLOSE)", count: exitSignals },
     { stage: "EXIT_SIM_FILLED", count: exitSimFilled, note: `tak-bisa-keluar (model)=${exitSimRejected}` },
-    { stage: "COMPLETED_SIM_TRADE", count: completed, note: "entry-fill DAN exit-fill lolos model — satu-satunya kohor net-sim yang sah" });
+    { stage: "COMPLETED_SIM_TRADE", count: completed, note: `bukti ketat: OPEN↔CLOSE unik + simFillEntry.filled + simFillExit.filled + versi cocok; ditolak: ${fc.invalidCloses} baris CLOSE tidak-lengkap/ganda` });
 
   // (FINAL C) invarian konsistensi internal — funnel tidak boleh lolos dengan hitungan bocor.
   if (opens !== opensWithLiq + opensNoLiq) throw new Error(`funnel: OPEN ${opens} ≠ liq ${opensWithLiq} + no-liq ${opensNoLiq}`);
@@ -84,16 +109,19 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
   const rate = (n: number, d: number): number | null => (d > 0 ? Number((100 * n / d).toFixed(2)) : null);
   // (FINAL-2) BUKTI PER-TRADE: setiap COMPLETED_SIM_TRADE direkonstruksi dari snapshot aslinya.
   const completedTrades: Array<Record<string, unknown>> = [];
-  for (const f of files) {
-    for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
-      if (!line.includes('"action":"CLOSE"')) continue;
-      let j: Record<string, unknown>;
-      try { j = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+  const openRowById = new Map<string, Record<string, unknown>>();
+  for (const j of rawRows) if (String(j.action ?? "") === "OPEN" && j.tradeId) openRowById.set(String(j.tradeId), j);
+  const seenEvidence = new Set<string>();
+  for (const j of rawRows) {
+    if (String(j.action ?? "") !== "CLOSE") continue;
+    {
       const id = String(j.tradeId ?? "");
-      const o = openById.get(id);
+      if (seenEvidence.has(id)) continue; // bukti hanya untuk CLOSE pertama (sama dengan countFunnel)
+      seenEvidence.add(id);
+      const o = openRowById.get(id);
       const es = o?.simFillEntry as { filled?: boolean } | undefined;
       const xs = j.simFillExit as { filled?: boolean } | undefined;
-      if (es?.filled !== true || xs?.filled !== true) continue;
+      if (es?.filled !== true || xs?.filled !== true) continue; // (P0-3) bukti ketat, tanpa warisan state entry
       completedTrades.push({
         tradeId: id, arm: j.arm, symbol: j.symbol, token: j.token,
         openedAt: o?.ts, closedAt: j.ts, heldWhy: j.why,
@@ -107,10 +135,10 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
       });
     }
   }
-  return { generatedAt: new Date(now).toISOString(), calcVersion: "rh-funnel-final",
+  return { generatedAt: new Date(now).toISOString(), calcVersion: "rh-funnel-p03", invalidCloses: fc.invalidCloses, completedTrades,
     stages, conversion: { dataValidPct: rate(dataValid, discovered), liquidityVerifiedPct: rate(liquidityVerified, dataValid),
       entrySimFilledPct: rate(entrySimFilled, opens), completedPct: rate(completed, opens) },
-    distinctTokensDiscovered: uniqueTokens.size, completedTrades };
+    distinctTokensDiscovered: uniqueTokens.size };
 }
 
 function readdirLedgers(dir: string): string[] {

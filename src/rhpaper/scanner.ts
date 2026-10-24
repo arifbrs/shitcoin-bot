@@ -76,6 +76,30 @@ export function isAcceptable(symbol: string, token: string): boolean {
   return /^0x[0-9a-f]{40}$/i.test(token);
 }
 
+/** (P0-4) Snapshot likuiditas WAKTU-KELUAR: satu batch DexScreener untuk token posisi terbuka. */
+export async function liquiditySnapshot(tokens: string[]): Promise<Map<string, { liquidityUsd: number | null; at: number }>> {
+  const map = new Map<string, { liquidityUsd: number | null; at: number }>();
+  if (!tokens.length) return map;
+  const at = Date.now();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/tokens/v1/robinhood/${tokens.map(encodeURIComponent).join(",")}`, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) break;
+      const data: unknown = await res.json();
+      const rows: unknown[] = Array.isArray(data) ? data as unknown[] : [];
+      for (const t of tokens) {
+        const best = bestDexRow("robinhood", t, rows);
+        const b = behaviorFromDexRow(best);
+        void b;
+        map.set(t, { liquidityUsd: liquidityFromDexRows("robinhood", t, rows), at });
+      }
+      return map;
+    } catch { if (attempt === 1) break; await new Promise((r) => setTimeout(r, 2_000)); }
+  }
+  for (const t of tokens) map.set(t, { liquidityUsd: null, at }); // gagal = null eksplisit (fail-closed)
+  return map;
+}
+
 /** (FINAL-3b) Keadaan pool V3 on-chain: liquidity() + slot0 → string mentah (BigInt aman). */
 export async function poolStateRaw(poolAddress: string): Promise<{ liquidity: string; sqrtPriceX96: string }> {
   const { rpc } = await import("./exec.js");

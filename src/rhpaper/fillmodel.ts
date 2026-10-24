@@ -23,7 +23,11 @@
  *                                  di engine — tidak digandakan di sini.
  * Hasil selalu diberi label SIMULASI — tidak pernah digabung ke PnL nyata/quote.
  */
-export const FILL_MODEL_VERSION = "rhpaper-fillmodel-v1";
+/** (P0-4) v2 = perubahan metodologi MATERIAL: gerbang exit memakai likuiditas WAKTU-KELUAR
+ *  (bukan likuiditas entry yang disimpan), kuantitas exit = token yang benar-benar diterima
+ *  simulasi entry (bukan qty quote penuh), dan usia quote dibatasi (STALE_QUOTE). Kohort v1
+ *  tetap utuh — baris lama TIDAK dinaikkan ke standar v2. */
+export const FILL_MODEL_VERSION = "rhpaper-fillmodel-v2";
 
 export interface FillAssumptions { maxLiquiditySharePct: number; latencySlippagePct: number; rejectImpactPct: number }
 export const DEFAULT_ASSUMPTIONS: FillAssumptions = { maxLiquiditySharePct: 2, latencySlippagePct: 0.5, rejectImpactPct: 5 };
@@ -32,9 +36,13 @@ export interface FillInput {
   quoteAmountIn: string; // WETH masuk (raw)
   quoteAmountOut: string; // token keluar / WETH keluar (raw) menurut quote
   impactPct: number | null;
-  liquidityUsd: number | null; // likuiditas pool pada saat keputusan
+  liquidityUsd: number | null; // likuiditas pool pada saat keputusan SISI INI (entry→entry-time; exit→exit-time)
   sizeWethRaw: string; // ukuran trade untuk cek pangsa likuiditas
   ethUsd: number | null; // untuk konversi ukuran → USD; null = TOLAK (fail-closed)
+  quoteAgeMs?: number | null; // (P0-4) usia quote saat dipakai — >90s = STALE_QUOTE (tolak)
+  simulatedTokensRaw?: string | null; // (P0-4, sisi exit) token yang BENAR-BENAR diterima sim entry;
+  // WETH keluar = quoteOut × (simTokens/quoteTokens) × (1−l) — re-quote semantik atas kuantitas berubah
+  quoteTokensRaw?: string | null; // (P0-4) qty yang dikutip pada exitQuoteOut (biasanya qty penuh entry)
 }
 
 export type SimulatedFill =
@@ -92,8 +100,18 @@ export function simulateFill(input: FillInput, a: FillAssumptions = DEFAULT_ASSU
   if (input.impactPct != null && Math.abs(input.impactPct) >= a.rejectImpactPct) {
     return { filled: false, reason: "REJECT_IMPACT", version: FILL_MODEL_VERSION };
   }
+  if (input.quoteAgeMs != null && (!Number.isFinite(input.quoteAgeMs) || input.quoteAgeMs > 90_000)) {
+    return { filled: false, reason: "STALE_QUOTE", version: FILL_MODEL_VERSION };
+  }
   if (!/^\d+$/.test(input.quoteAmountOut) || BigInt(input.quoteAmountOut) <= 0n) {
     return { filled: false, reason: "QUOTE_AMOUNT_INVALID", version: FILL_MODEL_VERSION };
   }
-  return { filled: true, fillOutRaw: applyLatencySlippage(input.quoteAmountOut, a.latencySlippagePct), latencySlippagePct: a.latencySlippagePct, version: FILL_MODEL_VERSION };
+  // (P0-4) sisi exit: skalakan ke kuantitas sim entry (re-quote semantik), lalu potongan latensi.
+  let out = BigInt(input.quoteAmountOut);
+  if (input.simulatedTokensRaw != null && input.quoteTokensRaw != null && /^\d+$/.test(input.simulatedTokensRaw) && /^\d+$/.test(input.quoteTokensRaw)) {
+    const q = BigInt(input.quoteTokensRaw);
+    if (q === 0n) return { filled: false, reason: "QUOTE_QTY_INVALID", version: FILL_MODEL_VERSION };
+    out = out * BigInt(input.simulatedTokensRaw) / q;
+  }
+  return { filled: true, fillOutRaw: applyLatencySlippage(out.toString(), a.latencySlippagePct), latencySlippagePct: a.latencySlippagePct, version: FILL_MODEL_VERSION };
 }

@@ -3,7 +3,7 @@ import { test, eq, assert } from "../testing/harness.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { classifyDelta, liquidityEvents, lpKindFromLogs, MINT_TOPIC, BURN_TOPIC, type LiqEvent } from "./liquidity-events.js";
+import { classifyDelta, liquidityEvents, decodeV3PoolEvents, MINT_TOPIC, BURN_TOPIC, type LiqEvent } from "./liquidity-events.js";
 
 test("FINAL-2B klasifikasi V3: delta snapshot = ACTIVE_LIQUIDITY_CHANGE (bukan LP op) — lintas-tick ≠ deposit/penarikan", () => {
   eq(classifyDelta("1000000000000000000", "1200000000000000000").kind, "ACTIVE_LIQUIDITY_CHANGE", "+20% = perubahan in-range");
@@ -15,18 +15,37 @@ test("FINAL-2B klasifikasi V3: delta snapshot = ACTIVE_LIQUIDITY_CHANGE (bukan L
   eq(big.deltaRaw, "-50000000000000000000000", "delta eksak");
 });
 
-test("FINAL-2B konfirmasi LP: decode Mint/Burn pool membedakan LP ops dari lintas-tick", () => {
-  // Lintas-tick: liquidity berubah TANPA Mint/Burn → tetap ACTIVE_LIQUIDITY_CHANGE.
-  const tickOnly = lpKindFromLogs([]);
-  eq(tickOnly.kind, null, "tanpa Mint/Burn = tidak terkonfirmasi LP op");
-  // LP deposit nyata: event Mint pool V3 (amount uint128 = word pertama data).
-  const mint = lpKindFromLogs([{ topics: [MINT_TOPIC, "0xsender", "0xowner", "0xtick"], data: "0x" + (250n).toString(16).padStart(64, "0") + "0".repeat(128), transactionHash: "0xtx1", blockNumber: 9200 }]);
-  eq(mint.kind, "LP_ADD_CONFIRMED", "Mint = deposit LP terkonfirmasi");
-  eq(mint.amountRaw, "250", "jumlah eksak dari data");
-  eq(mint.txHash, "0xtx1", "txHash tersimpan");
-  eq(mint.blockNumber, 9200, "blok tersimpan");
-  const burn = lpKindFromLogs([{ topics: [BURN_TOPIC, "0xowner", "0xlower", "0xupper"], data: "0x" + (999n).toString(16).padStart(64, "0") + "0".repeat(128), transactionHash: "0xtx2", blockNumber: 9300 }]);
-  eq(burn.kind, "LP_REMOVE_CONFIRMED", "Burn = penarikan LP terkonfirmasi");
+test("FINAL P0-2: decode V3 BENAR — Mint likuiditas di kata data INDEKS 1 (sender non-indexed di depan)", () => {
+  const POOL = "0xpooladdress000000000000000000000000000001";
+  // Layout Mint asli: data = [sender(32), amount(32), amount0(32), amount1(32)].
+  const data = "0x" + "11".repeat(32) + (250n).toString(16).padStart(64, "0") + "0".repeat(128);
+  const evs = decodeV3PoolEvents(
+    [{ address: POOL, topics: [MINT_TOPIC, "0x" + "22".repeat(32), "0x" + "33".repeat(32), "0x" + "44".repeat(32)], data, transactionHash: "0xtx1", blockNumber: 9200, logIndex: 2 }],
+    { poolAddress: POOL, chainId: 4663, timestampMs: 1234 });
+  eq(evs.length, 1, "satu event terdekode");
+  eq(evs[0]!.kind, "LP_ADD_CONFIRMED", "Mint = LP_ADD_CONFIRMED");
+  eq(evs[0]!.liquidityAmountRaw, "250", "likuiditas dari kata data INDEKS 1 (bukan 0) — bug lama diperbaiki");
+  eq(evs[0]!.eventKey, "0xtx1:2", "kunci idempoten txHash:logIndex");
+  eq(evs[0]!.chainId, 4663, "chainId tersimpan");
+  eq(evs[0]!.timestampMs, 1234, "timestamp tersimpan");
+  eq(evs[0]!.owner, "0x" + "22".repeat(20), "owner dari topic indexed");
+});
+
+test("FINAL P0-2: Burn likuiditas di kata 0; multi-event per tx; pool salah ditolak; log rusak dilewati", () => {
+  const POOL = "0xpooladdress000000000000000000000000000001";
+  const burnData = "0x" + (999n).toString(16).padStart(64, "0") + "0".repeat(128);
+  const logs = [
+    { address: POOL, topics: [BURN_TOPIC, "0x" + "22".repeat(32), "0x" + "33".repeat(32), "0x" + "44".repeat(32)], data: burnData, transactionHash: "0xtx2", blockNumber: 9300, logIndex: 0 },
+    { address: POOL, topics: [MINT_TOPIC, "0x" + "22".repeat(32), "0x" + "33".repeat(32), "0x" + "44".repeat(32)], data: "0x" + "11".repeat(32) + (7n).toString(16).padStart(64, "0") + "0".repeat(128), transactionHash: "0xtx2", blockNumber: 9300, logIndex: 1 },
+    { address: "0x" + "ff".repeat(20), topics: [MINT_TOPIC, "0x" + "22".repeat(32), "0x" + "33".repeat(32), "0x" + "44".repeat(32)], data: "0x" + (12345n).toString(16).padStart(64, "0") + "0".repeat(128), transactionHash: "0xtx2", blockNumber: 9300, logIndex: 2 }, // pool lain
+    { address: POOL, topics: [MINT_TOPIC], data: "0x" + "0".repeat(128), transactionHash: "0xtx2", blockNumber: 9300, logIndex: 3 }, // topics tak lengkap
+  ];
+  const evs = decodeV3PoolEvents(logs, { poolAddress: POOL, chainId: 4663, timestampMs: 5 });
+  eq(evs.length, 2, "multi-event pada satu tx; pool salah & log rusak ditolak");
+  eq(evs[0]!.kind, "LP_REMOVE_CONFIRMED", "Burn pertama");
+  eq(evs[0]!.liquidityAmountRaw, "999", "Burn: likuiditas di kata 0");
+  eq(evs[1]!.kind, "LP_ADD_CONFIRMED", "Mint kedua pada tx yang sama");
+  eq(evs[1]!.liquidityAmountRaw, "7", "jumlah eksak");
 });
 
 test("R8-FINAL liq-events: seri snapshot → event berurutan, token berbeda tak tercampur", () => {

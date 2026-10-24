@@ -5,7 +5,7 @@
 import { quoteBuy, quoteSell, ethUsdOf } from "./exec.js";
 import { simulateFill, FILL_MODEL_VERSION } from "./fillmodel.js";
 import { createHash, randomUUID } from "node:crypto";
-import { cacheStale, loadCandidates, scanCandidates } from "./scanner.js";
+import { cacheStale, liquiditySnapshot, loadCandidates, scanCandidates } from "./scanner.js";
 import { appendLedger, loadState, saveState, withLockAsync, type Position } from "./state.js";
 
 export interface Cfg { maker: string; usd: number; maxPositions: number; stopPct: number; tpHoldMin: number; takePct: number; arm?: string; wethRaw?: string }
@@ -46,8 +46,9 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
 type CycleIO = Pick<typeof import("./exec.js"), "quoteBuy" | "quoteSell"> &
   Pick<typeof import("./scanner.js"), "cacheStale" | "loadCandidates" | "scanCandidates"> & {
   ethUsd?: () => Promise<number | null>; // (R8 P6) dapat disuntik untuk fixture deterministik offline
+  liquiditySnapshot?: (tokens: string[]) => Promise<Map<string, { liquidityUsd: number | null; at: number }>>; // (P0-4) injeksi fixture
 };
-const cycleIO: CycleIO = { quoteBuy, quoteSell, cacheStale, loadCandidates, scanCandidates, ethUsd: ethUsdOf };
+const cycleIO: CycleIO = { quoteBuy, quoteSell, cacheStale, loadCandidates, scanCandidates, ethUsd: ethUsdOf, liquiditySnapshot };
 
 export function shouldExit(pnlPct: number, ageMin: number, cfg: Pick<Cfg, "stopPct" | "tpHoldMin" | "takePct">): string | null {
   if (pnlPct <= -Math.abs(cfg.stopPct)) return "stop";
@@ -70,6 +71,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
       let opened = 0, closed = 0, stuck = 0;
 
       // 1) EXIT — hanya boleh bila quote jual ada
+      const exitLiquidity = await (io.liquiditySnapshot ?? liquiditySnapshot)(s.positions.map((p) => p.token)); // (P0-4) likuiditas exit-time, satu batch
       for (const p of s.positions) {
         // Each supervisor invocation owns only its arm. Frozen positions retain their entry policy.
         if (p.arm !== armName) continue;
@@ -108,8 +110,14 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
           s.netWethRaw = (BigInt(s.netWethRaw ?? "0") + BigInt(pnl.netWethRaw)).toString();
           // (B3) simFillExit: model fill TERPISAH untuk akuntansi simulasi — tidak mengubah keputusan
           // keluar di atas, tidak pernah digabung ke PnL nyata/quote.
+          // (P0-4) likuiditas WAKTU-KELUAR (snapshot segar siklus ini, bukan likuiditas entry);
+          // kuantitas keluar = token yang benar-benar diterima sim entry; usia quote dibatasi.
+          const simEntry = p.simFillEntry as { fillOutRaw?: string } | undefined;
+          const exitLiq = exitLiquidity.get(p.token) ?? null;
           const simFillExit = simulateFill({ quoteAmountIn: p.qtyRaw, quoteAmountOut: sell.quote!.amountOut, impactPct: sell.quote!.impactPct,
-            liquidityUsd: p.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await (io.ethUsd ?? ethUsdOf)() });
+            liquidityUsd: exitLiq?.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await (io.ethUsd ?? ethUsdOf)(),
+            quoteAgeMs: Date.now() - (sell.quote!.ts ?? Date.now()),
+            simulatedTokensRaw: simEntry?.fillOutRaw ?? null, quoteTokensRaw: p.qtyRaw });
           appendLedger({
             ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
             tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen", measurementVersion: "rhpaper-units-arm-v3",
@@ -118,6 +126,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             entryWethRaw: p.entryWethRaw, exitWethRaw: String(sell.quote!.amountOut),
             grossPct: pnlPct, netPct, netWethRaw: pnl.netWethRaw, gasWeth: Number(ROUND_TRIP_GAS_WEI) / 1e18,
             gasWei: ROUND_TRIP_GAS_WEI.toString(), gasSource: "historical-assumption", executionState: "QUOTE_ONLY_NOT_SIMULATED",
+            exitLiquidityUsd: exitLiq?.liquidityUsd ?? null, exitLiquidityAt: exitLiq?.at ?? null,
             simFillExit, fillModelVersion: FILL_MODEL_VERSION,
             peakPct: p.peakPct ?? pnlPct, troughPct: p.troughPct ?? pnlPct, marks: p.marks ?? 0,
             entryImpactPct: (() => { try { return (JSON.parse(p.entryQuoteRef) as { impactPct?: number }).impactPct ?? null; } catch { return null; } })(),

@@ -12,12 +12,14 @@ export interface Position {
   liquiditySource?: "dexscreener" | null; // (R8) provenance: dari mana angka likuiditas
   liquidityReason?: string | null; // (R8) alasan bila null (DEXSCREENER_NO_PAIR / fetch gagal)
   liquidityAt?: number | null; // (R8) timestamp snapshot likuiditas
+  simFillEntry?: { filled: boolean; fillOutRaw?: string; reason?: string | null; version: string } | null; // (P0-4) hasil sim entry — sumber kuantitas sim utk exit
   imbalanceH1?: number | null; // (FINAL-3) fitur perilaku point-in-time (tekanan beli 0..1)
   txnsH1?: number | null; // (FINAL-3) intensitas transaksi jam-1
   priceChangeH1?: number | null; // (FINAL-3) momentum jam-1 (%)
   pairAgeDays?: number | null; // (FINAL-3) umur pair (hari)
   exitPolicy?: { stopPct: number; takePct: number; tpHoldMin: number };
 }
+// (P0-4) baris CLOSE menyimpan exitLiquidityUsd/exitLiquidityAt — likuiditas waktu-keluar.
 export interface PaperState {
   version: 2; cycles: number; day: string; positions: Position[]; closed: number; pnlUsd: number; stuck: number;
   netWethRaw?: string; updatedAt?: number;
