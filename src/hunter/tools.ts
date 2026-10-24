@@ -1,15 +1,14 @@
 /** Dua "tool function" hunter: gmgnApi (GMGN) dan heliusGetTransactions (Solana saja). */
-import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
+import { gmgnReadResult } from "../discovery/gmgn.js";
 
 export interface GmgnToken { raw: Record<string, unknown> }
 
-/** gmgnApi: bungkus gmgn-cli (tanpa API key, kena rate-limit gratis). */
-export function gmgnApi(args: string[], timeoutMs = 45_000): Record<string, unknown> | null {
-  try {
-    const out = execFileSync("npx", ["gmgn-cli", ...args, "--raw"], { encoding: "utf8", timeout: timeoutMs, maxBuffer: 20e6 });
-    return JSON.parse(out) as Record<string, unknown>;
-  } catch { return null; }
+/** Shared local proxy only: never spawn a CLI with its own limiter or signed capabilities. */
+export async function gmgnApi(method: string, args: unknown[]): Promise<Record<string, unknown>> {
+  const result = await gmgnReadResult<Record<string, unknown>>(method, args);
+  if (!result.ok) throw new Error(`GMGN ${method} unavailable: ${result.error}`);
+  return result.data;
 }
 
 /** heliusGetTransactions: HANYA Solana (Helius tidak melayani Robinhood Chain). Butuh HELIUS_API_KEY. */

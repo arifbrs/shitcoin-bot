@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 
@@ -54,7 +54,7 @@ export interface ControlState {
   strategy2LastCommandId?: number;
 }
 
-const PATH = join(config.logDir, "control.json");
+const PATH = join(process.env.CONTROL_DIR || config.logDir, "control.json");
 const DEFAULT: ControlState = {
   paused: false,
   // EXEC_MODE=live in .env seeds the ACTIVATION too, so a headless box can run live without
@@ -119,7 +119,12 @@ export function readControl(): ControlState {
       strategy2LastCommandId: Number(s.strategy2LastCommandId ?? 0),
     };
   } catch {
-    return { ...DEFAULT };
+    // AUDIT 2026-10-24 (temuan F2): dulu fail-open ke DEFAULT (paused=false, mode dari env) —
+    // file kontrol yang rusak bisa diam-diam UN-PAUSE dan menghidupkan ulang live. Kini fail-closed
+    // seperti guardian.json: state rusak = JEDA + dry-run sampai operator menulis ulang state
+    // (menulis ulang selalu aman; menghentikan tidak butuh izin).
+    return { paused: true, execMode: "dry-run", command: null, lastCommandId: 0, risk: {},
+      strategy2Command: null, strategy2LastCommandId: 0 };
   }
 }
 
@@ -128,7 +133,14 @@ export function writeControl(next: Partial<ControlState>): ControlState {
   const merged: ControlState = { ...cur, ...next, risk: { ...cur.risk, ...(next.risk ?? {}) } };
   // Hard guard, server-side: activation without permission is refused here, not in the UI.
   // The browser is not trusted to enforce this — it only renders what it is told.
+  // (A2, round-3) FAIL-CLOSED TAMBAHAN: selama kunci keamanan .env terduplikasi (nilai efektif
+  // = nilai TERAKHIR dotenv, tanpa suara), arming live DITOLAK apa pun izinnya — operator
+  // membereskan .env dulu (hapus duplikat), lalu arming kembali normal.
   if (merged.execMode === "live" && !livePermitted()) merged.execMode = "dry-run";
+  if (merged.execMode === "live" && config.securityDupKeys.length > 0) {
+    console.warn(`[control] ARMING LIVE DITOLAK: kunci .env keamanan terduplikasi (${config.securityDupKeys.join(", ")}) — nilai efektif = nilai TERAKHIR dotenv. Bereskan duplikat, lalu arm ulang.`);
+    merged.execMode = "dry-run";
+  }
   // AUDIT TRAIL for the one field that decides whether real money moves.
   //
   // Live re-armed once without anyone clicking, and there was no way to answer "who did that?" —
@@ -148,7 +160,12 @@ export function writeControl(next: Partial<ControlState>): ControlState {
       );
     } catch { /* never let logging block a mode change, least of all a disarm */ }
   }
-  writeFileSync(PATH, JSON.stringify(merged, null, 2));
+  // AUDIT 2026-10-24 (temuan F2/F3): tulis ATOMIK (tmp→rename) — tulis setengah jadi tidak lagi
+  // mungkin terbaca sebagai state rusak. (RACE lintas-proses penulis masih ada; mitigasinya di
+  // catat sebagai keterbatasan, bukan dianggap selesai.)
+  const tmp = `${PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(merged, null, 2));
+  renameSync(tmp, PATH);
   return merged;
 }
 

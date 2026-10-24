@@ -128,3 +128,146 @@ Tiga fakta teknis yang WAJIB diingat saat menyambung jembatan live:
 
 Sisa penyambungan jembatan: di live-executor.ts ganti panggilan OKX → pool-swap helper (wrap→approve→
 swapExactIn), plus pencarian pool (GMGN `biggest_pool_address` → baca token0/token1/fee di rantai).
+
+## AUDIT FORENSIK PHASE-0 (2026-10-24, sesi MASTER DIRECTIVE — bukti kunci, bukan klaim)
+
+**Gerbang lulus**: `npm run typecheck` ✓ · `npm test` ✓ (124 kasus / 21 berkas) · `npm run gate`
+✓ penuh (termasuk okx/selftest/watchdog) — exit 0.
+
+**BUG P1 ditemukan & DIPERBAKI** — `src/robinhood/live-executor.ts` jalur JUAL: calldata
+`balanceOf` memakai `token` sebagai pemilik (mestinya `BOTW`) sejak commit `7a14c75` (2026-10-21)
+→ qty terbaca 0 → `LIVE_SELL ok:false` TANPA pernah mencoba. Akibat: jual otomatis mustahil;
+posisi live hanya bisa keluar lewat kebetulan. Diperbaiki (pemilik = `BOTW`, dua pembacaan).
+
+**CRASH P1 ditemukan & DIPERBAKI** — `rh:live` mana pun (termasuk `--exits-only`) crash ENOENT
+membaca `logs/rh-paper-state.json` yang sudah diarsipkan (regresi migrasi engine 1:1, `1e56f87`).
+Dibuktikan dengan dry-run yang gagal; kini di-guard (state lama opsional).
+
+**GERBANG IZIN ditambah** — pembelian otomatis `rh:live --yes` kini butuh `LIVE_TRADING_CONFIRMED=yes`
+di `.env` (kunci yang sama dengan sisi Solana, `control.ts`). Jualan tetap jalan. Saat ini .env = `no`
+→ bridge TAHAN beli; satu baris `LIVE_PERM_BLOCK` ditulis ke ledger live. Operator mengizinkan lewat
+.env, bukan lewat kode.
+
+**Lane mati terdeteksi & dinyalakan ulang** — GMGN lane mati ±18 jam, rhpaper mati ±30 jam
+(kesehatan bilang "RUNNING" tapi pid-nya tak ada — health hanya berhenti diperbarui).
+Kini: `run-gmgn-supervised.sh` + `run-rhpaper-supervised.sh` hidup; health 0–1 menit;
+`logs/rhpaper/ledger-2026-10-24.jsonl` menulis MARK lagi (posisi legacy tetap difreeze kebijakannya).
+
+**Bukti live terkini (dari ledger, bukan ingatan)** — `logs/rh-live-2026-10-18..21.jsonl`:
+2 `LIVE_BUY ok` ($2,5) · 1 `LIVE_SELL ok` · 289 `UNEXITABLE_BLOCK` (10-21) · **0 `LIVE_FILL`
+saldo-terverifikasi**. Saldo dompet bot terukur saat audit: ≈$8,12 (ETH+WETH+USDG).
+
+**Status jujur**: ENGINE FUNCTIONAL — PROFITABILITY NOT YET VALIDATED. Journal GMGN prospektif baru
+257 baris / 66 sinyal (sejak 2026-10-23) — jauh di bawah gerbang riset (≥14 hari, ≥100 trade).
+Kohort paper 1:1 memakai engine `rhpaper-units-arm-v3` dengan mark `QUOTE_ONLY_NOT_SIMULATED`.
+
+**Sisa celah (urut prioritas)**: (1) `runSwap`/`amount`/`weiPerUsd` di live-executor = kode mati →
+bersihkan; (2) rencana BELI live memuat token ganda per-arm (dedupe per token belum ada); (3)
+kontinuitas lintas-hari: `rh:live` hanya membaca ledger live HARI INI → posisi live semalam tak
+terlihat paginya (aturan yatim tak bekerja lintas hari); (4) `pool-swap.ts` belum dipakai live-executor
+(padahal PLAN 2026-10-18 menetapkannya); (5) hunter hanya punya data 2026-10-22 (kolektor belum
+dijadwalkan berkala); (6) audit besar (server.ts 3,4rb baris, trader.ts 2,8rb baris, lane OKX) belum
+dibedah baris-per-baris pada sesi ini.
+
+## TANGGAPAN AUDIT INDEPENDEN (2026-10-24, sesi kedua) — P0–P6 ditutup dengan bukti
+
+**Tes**: 133 kasus (124 lama + 9 regresi baru) ✓ · typecheck ✓ · `npm run gate` ✓ penuh.
+
+**Modul baru `src/robinhood/live-positions.ts` (+ `live-positions.test.ts`, 9 kasus)** — calldata
+`balanceOf` murni (pemilik = DOMPET, pad 24 nol terverifikasi — tes MENANGKAP versi pertama saya
+yang lupa pad), pembaca saldo yang membedakan nol vs gagal-RPC, pemuat state-paper lama fail-open
+ke kosong (bukan ENOENT crash), rekonstruksi posisi lintas-hari dari SEMUA `rh-live-*.jsonl`
+(positionId deterministik dari bukti entry), rekonsiliasi OPEN/CLOSED/GHOST/UNKNOWN + untracked,
+perencana aksi (dedupe per token, anti-loop 287-blok, UNKNOWN/GHOST/untracked TIDAK PERNAH dijual),
+`wethForUsd` (nominal dari harga terukur; harga gagal = tolak).
+**live-executor.ts ditulis ulang** memakai modul itu: kode mati (`runSwap`, `send` lokal, `weiPerUsd`,
+`amount`) dihapus; nominal beli dari `wethForUsd` (bukan konstanta 0,001 ETH); txHash+positionId
+dicatat di LIVE_FILL/LIVE_SELL; baris RECONCILE tiap run eksekusi.
+
+**Bukti P3 (rantai, dibaca ulang hari ini)**: beli gilet $25 = tx `0xd0422f6f…d78bc21` status `0x1`
+blok 91986560 dari dompet bot ✓ · jual "ok" 2026-10-19 ternyata PARSIAL — saldo gilet saat ini
+2.623.563.836.639.428.744.132.977 raw masih di dompet → **konflik ledger-vs-rantai NYATA**, kini
+terdeteksi otomatis (status OPEN lagi, direncanakan jual sisa) · HOOT saldo 0 = GHOST asli (baris
+VOID 10-21 mendukung) · 12 LIVE_BUY gagal + 1 LIVE_ATTEMPT (Kimchi/microduck) menjelaskan 0 LIVE_FILL:
+skema LIVE_FILL baru lahir 10-21 dan semua percobaan setelahnya gagal/tak pernah terisi.
+
+**Hasil audit 3 subagen (server / trader-Solana / OKX+supervisi) + perbaikan yang diambil**:
+- `/api/live` & `/api/paper` tanpa auth (satu-satunya /api begitu) → **diberi isAuthed**, dashboard
+  direstart, diverifikasi: tanpa sesi 401, dengan sesi 200.
+- `control.json` non-atomik + fail-open saat korup (bisa un-pause & re-arm live diam-diam) →
+  **tulis atomik + fail-closed** (korup = paused+dry-run, sejalan guardian.json).
+- `run-live-exits-supervised.sh` header bohong ("HANYA KELUAR" padahal mode penuh) + tanpa lock →
+  **header jujur + lock duplikasi** (mode penuh tetap sesuai permintaan operator 10-19; BELI tetap
+  tertahan LIVE_TRADING_CONFIRMED=no).
+- `lane-guard` menunjuk skrip OKX yang sudah pindah ke legacy/ (pkill tiap 120 detik) → **dikomentari**.
+- `bot.sh` status selalu merah (PROCS berisi lane OKX yang tak pernah dinyalakan) → **entri dilepas**.
+- `S2_LIVE_ENABLED` default fail-open → **default fail-closed** (mesin ini eksplisit "true", tak berubah).
+- `assertNotLive` kode mati dengan pesan keamanan PALSU → **dihapus dengan catatan**.
+- Kunci .env duplikat = nilai TERAKHIR menang tanpa suara (MAX_DAILY_SPEND_SOL 0.10 → 9999,
+  keputusan operator 2026-08-22 dihormati) → **peringatan startup** kunci duplikat (terverifikasi muncul).
+
+**P6**: `run-hunter-supervised.sh` baru (kolektor hunter dua chain tiap jam, lock, sedang jalan) ·
+`tools/lane-status.mjs` baru — bukti HIDUP dari pid+usia heartbeat (bukan label "RUNNING");
+SEMUA LANE OK exit 0 · laporan fitur dari data tersimpan: 1.505 wallet terskor, 104 sinyal 24 jam,
+Δ harga 15m/60m terhitung (type 12: med 0.00% / −3.01%) — deskriptif, bukan klaim prediktif.
+
+**MASIH TERBUKA (butuh keputusan operator)**: (1) `/api/wallet/withdraw` = jalur drain satu-cookie
+tanpa allowlist/cap — by-design "uangku kembali", direkomendasikan allowlist `WITHDRAW_ALLOWLIST`
+env + cap; DIUBAH tanpa izin = pelanggaran aturan "fund-moving changes butuh otorisasi eksplisit";
+(2) race penulis control.json lintas-proses (atomik ✓, lock belum); (3) S2: exit terkunci saat
+disarm + `s2MirrorFlatten` tanpa pemanggil (lane mati; perlu desain ulang sebelum hidup lagi);
+(4) retensi log (logs/ 3,9 GB, okx-strict-paper-v2.jsonl 279 MB tanpa rotasi); (5) pool-swap helper
+belum disambung ke live-executor; (6) validator status tetap: PROFITABILITY NOT YET VALIDATED.
+
+## ROUND-3 AUDIT (2026-10-24, sesi ketiga) — Track A + Track B
+
+**Tes**: 151 kasus / 25 berkas ✓ · typecheck ✓ · `npm run gate` ✓ penuh.
+
+**A1 withdraw (additive, default OFF)**: `src/execution/withdraw-gate.ts` — validasi tujuan/jumlah
+(NaN kini ditolak eksplisit, temuan F9), origin mismatch (CSRF) ditolak, `WITHDRAW_ALLOWLIST` +
+`WITHDRAW_MAX_SOL` opsional; SETIAP percobaan (ditolak/terkirim/gagal) diaudit ke events. Env tidak
+diisi = perilaku lama utuh. 6 tes.
+
+**A2 konfigurasi**: `src/util/env-audit.ts` (murni, teruji) — duplikat kunci keamanan .env kini
+(1) berwarna peringatan startup, (2) `config.securityDupKeys`, (3) MENOLAK arming live di
+control.ts dan mode full live-executor sampai operator membereskan .env. Nilai cap operator TIDAK
+diubah (9999 tetap nilai efektif — keputusan operator 2026-08-22 dihormati; implikasi finansial:
+breaker harian MATI; dipaparkan di laporan).
+
+**A3 mode eksekusi**: `rh:live --mode exit-only|full` (default exit-only, nilai asing ditolak).
+EXIT_ONLY = rencana beli STRUKTURAL tidak dibangun di dalam `planActions()` — tak bisa dibolongi
+env/izin/tunai. Supervisor live-exits kini mengirim `--mode exit-only`. Tes: exit-only = 0 beli
+walau sinyal segar + izin; full = rencana muncul; banana = TOLAK.
+
+**A4 rekonsiliasi kanonik**: `npm run rh:reconcile` → `logs/rh-reconciliation-<tanggal>.md/.json`
++ history jsonl. Hasil terukur (tx `0xd0422f6f…d78bc21`, receipt 0x1 blok 91986560):
+WETH keluar 10.588.733.587.462.950 raw (= 0,01058873 ETH ≈ **$25** — klaim $25 BENAR; angka $2,5
+adalah HOOT 10-20), gilet masuk 2.624.563.836.639.428.744.132.977 raw; saldo kini
+2.623.563.836.639.428.744.132.977 → jual 10-19 terbukti PARSIAL tepat 1.000.000 gilet (tanpa hash —
+INFERRED; tidak ada riwayat transfer lain). HOOT: beli $2,5 INFERRED (tanpa hash), saldo 0 → fill
+nol vs hilang = UNKNOWN, jujur dilabel. Tidak ada posisi dilabel CLOSED_CONFIRMED tanpa bukti.
+
+**A5 tes tambahan (13 baru)**: crash-recovery (fill ganda = satu posisi, ID sama), exit parsial
+(status OPEN dipertahankan, bukan CLOSED), ledger terpotong (malformed dihitung), EXIT_ONLY,
+UNKNOWN/GHOST tak tersentuh, alamat tidak sah diabaikan; control.json korup = fail-closed
+(`CONTROL_DIR` untuk pengujian), tulis atomik.
+
+**A6 operasi**: tracker GMGN menulis `tracker-log.jsonl` per poll (akuntansi interval hilang tahan
+lama); `tools/archive-logs.mjs` (kompres, JANGAN hapus) — 203 berkas → 943 MB hemat (3,9 GB → 3,0 GB),
+bukti utuh di `logs/archive/` (68 MB .gz); `npm run logs:archive`. Lane-status: SEMUA OK dengan pid hidup.
+
+**B2 studi sinyal** (`npm run gmgn:signal-study` → logs/gmgn-signal-study-<tanggal>.md): reproduksi +
+kontrol. Temuan utama: feed telat (delay median 566–782 menit; ≤5m hanya 4–21%) → mayoritas sinyal
+TIDAK BISA dieksekusi riil; return 1440m median −43%…−60%; C1 dedupe-token membuat makin negatif;
+C4 join wallet point-in-time: 303/330 trade lolos syarat waktu (27 dibuang anti-leak), outcome
+belum cukup sampel → INSUFFICIENT. Hasil negatif TIDAK dioptimalkan; n kecil dinyatakan.
+
+**B3 model fill** (`src/rhpaper/fillmodel.ts` v1, teruji): likuiditas/harga tak diketahui → TIDAK
+ADA fill; pangsa likuiditas >2% → tolak; dampak ≥5% → tolak; slippage latensi 0,5% (asumsi berlabel).
+Engine paper membaca likuiditas DexScreener saat scan (1 panggilan batch) dan mencatat
+`simFillEntry`/`simFillExit` + `fillModelVersion` di ledger — ADDITIVE: keputusan TP/stop tak diubah.
+
+**B4/B5**: `docs/strategies/registry.md` — 5 strategi + baseline pembanding, versi dibekukan,
+kriteria falsifikasi eksplisit. Engine kini menulis baris REJECT untuk tiap kandidat layak yang
+ditolak (dasar evaluasi tanpa pilih-kasar). Supervisor paper = runner forward-test nol-modal yang
+terbukti hidup lintas sesi (ledger 10-22→10-24 berlanjut tanpa sesi AI).

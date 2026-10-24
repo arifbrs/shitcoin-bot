@@ -1,5 +1,6 @@
 /**
- * GMGN LOCAL RATE-LIMIT PROXY — the ONLY process that talks to GMGN's OpenAPI directly.
+ * GMGN LOCAL RATE-LIMIT PROXY — shared by gmgn.ts clients. Legacy CLI callers elsewhere
+ * still bypass it; do not start those concurrently until migrated.
  *
  * Review finding (2026-07-27, verified against gmgn-skills/skills/gmgn-market/SKILL.md): GMGN's
  * real limiter is a leaky bucket at `rate=20, capacity=20`, with per-endpoint WEIGHTS —
@@ -10,16 +11,16 @@
  * independent 5rps budgets, not one shared 20rps budget: up to 25rps could genuinely leave the
  * machine at once, well over GMGN's real ceiling.
  *
- * This process holds the ONE real OpenApiClient + the ONE real weighted rate limiter. Every
- * other process now calls THIS over local HTTP instead of GMGN directly — gmgn.ts's wrappers
- * were rewritten to do exactly that. Read-only by construction: only the methods gmgn.ts
- * actually wraps are dispatched; swap/order/cooking are not reachable through this proxy.
+ * This process serializes SDK calls at 10-second spacing with persistent ban cooldown.
+ * GMGN_READ_ONLY=true prevents loading signing auth or registering swap/order routes.
  *
  * Run: npm run gmgn:proxy (must be running before any other GMGN-consuming process)
  */
 import { createServer } from "node:http";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { OpenApiClient } from "gmgn-cli/dist/client/OpenApiClient.js";
-import { TokenBucket } from "../util/http.js";
+import { GmgnAbandonedError, GmgnCooldownError, GmgnRequestGate, type GmgnGateState } from "./gmgn-request-gate.js";
 import "dotenv/config";
 
 // Disable gmgn-cli's built-in "retry once on 429" (verified live 2026-10-07): retrying DURING a
@@ -27,14 +28,13 @@ import "dotenv/config";
 // RATE_LIMIT_BANNED — GMGN's own error text: "repeated requests can extend the ban by 5s up to
 // 5 minutes". The proxy now handles cooldown itself (see cooldownUntil below), so the library
 // must stay out of it.
-process.env.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS ??= "0";
+process.env.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS = "0";
 
 const PORT = Number(process.env.GMGN_PROXY_PORT ?? 4319);
 const apiKey = process.env.GMGN_API_KEY?.trim();
 // .env menyimpan PEM sebagai SATU baris dengan `\n` literal (diverifikasi 2026-10-07: tanpa
 // normalisasi ini, crypto melempar "1E08010C:DECODER routines::unsupported" saat memuat key).
 // Ganti escape jadi baris baru asli; PEM dengan baris baru asli tidak terpengaruh (no-op).
-const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim().replace(/\\n/g, "\n");
 // Review item (2026-07-27): none of the read-only methods this proxy dispatches need signing
 // (all are exist-auth — see OpenApiClient.ts's own auth-mode comment), so the private key is
 // intentionally NOT loaded here. If a genuinely signed method is ever added, load it explicitly
@@ -44,11 +44,13 @@ const privateKeyRaw = process.env.GMGN_PRIVATE_KEY?.trim().replace(/\\n/g, "\n")
 // (owner asked to try GMGN as an execution route). The private key signs the API REQUEST
 // (Ed25519/RSA auth signature per GMGN's own protocol); it is NOT a wallet custody key and
 // never leaves this process. The swap itself executes against `from_address` = the bot wallet.
-const swapEnabled = process.env.S2_EXEC_ROUTE === "gmgn";
+const readOnly = process.env.GMGN_READ_ONLY === "true";
+const swapEnabled = !readOnly && process.env.S2_EXEC_ROUTE === "gmgn";
 // Portfolio reads (wallet holdings / token balance) are GMGN "critical-auth" routes that need the
 // private key too. Owner approved loading it for these READS (2026-10-07) WITHOUT enabling swap:
 // GMGN_PORTFOLIO_AUTH=true loads the key, but the swap/order entries stay absent from DISPATCH.
-const portfolioAuth = process.env.GMGN_PORTFOLIO_AUTH === "true";
+const portfolioAuth = !readOnly && process.env.GMGN_PORTFOLIO_AUTH === "true";
+const privateKeyRaw = !readOnly ? process.env.GMGN_PRIVATE_KEY?.trim().replace(/\\n/g, "\n") : undefined;
 const privateKeyPem = (swapEnabled || portfolioAuth) && privateKeyRaw ? privateKeyRaw : undefined;
 if (swapEnabled) console.warn("[gmgn-proxy] S2_EXEC_ROUTE=gmgn — metode swap/order AKTIF (signed auth dimuat).");
 else if (portfolioAuth && privateKeyPem) console.warn("[gmgn-proxy] GMGN_PORTFOLIO_AUTH=true — wallet holdings/token balance AKTIF (signed). Swap/order tetap TERTUTUP.");
@@ -59,17 +61,33 @@ if (!apiKey) {
 }
 
 const client = new OpenApiClient({ apiKey, host: "https://openapi.gmgn.ai", privateKeyPem });
-const bucket = TokenBucket.perSecond(20); // rate=20, capacity=20 — GMGN's REAL documented limit, verified 2026-07-27
+const logDir = process.env.LOG_DIR ?? "logs";
+const statePath = join(logDir, "gmgn-proxy-state.json");
+mkdirSync(logDir, { recursive: true });
+let initialState: Partial<GmgnGateState> = {};
+if (existsSync(statePath)) {
+  // Corrupt pacing state must not silently clear a provider ban.
+  const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"));
+  if (!parsed || typeof parsed !== "object" || ["nextCallAt", "cooldownUntil"].some((k) => {
+    const value = (parsed as Record<string, unknown>)[k]; return typeof value !== "number" || !Number.isFinite(value) || value < 0;
+  })) throw new Error("GMGN proxy pacing state invalid; preserved, not reset");
+  initialState = parsed as GmgnGateState;
+}
+const gate = new GmgnRequestGate(10_000, initialState, Date.now, undefined, (state) => {
+  const tmp = `${statePath}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(state));
+  renameSync(tmp, statePath);
+});
 
 // Method name -> weight (verified: trending=1, kline=2, trenches=3, signal=3, hot-searches=3;
 // every other read-only method defaults to 1, matching gmgn-skills' documented weight table —
 // only these five were explicitly weighted, everything else the docs list at the default).
 const WEIGHTS: Record<string, number> = {
   getTrendingSwaps: 1, getTokenKline: 2, getTrenches: 3, getTokenSignalV2: 3, getHotSearches: 3,
+  quoteOrder: 2, swap: 5,
 };
 
-// Only read-only methods are dispatchable — swap/multiSwap/order/cooking are simply absent from
-// this map, so no request body can reach them no matter what a caller sends.
+// Signing methods are absent when readOnly=true. Other invocations retain the existing opt-in.
 const DISPATCH: Record<string, (args: unknown[]) => Promise<unknown>> = {
   getTokenInfo: (a) => client.getTokenInfo(a[0] as string, a[1] as string),
   getTokenSecurity: (a) => client.getTokenSecurity(a[0] as string, a[1] as string),
@@ -103,13 +121,14 @@ const DISPATCH: Record<string, (args: unknown[]) => Promise<unknown>> = {
   quoteOrder: (a) => client.quoteOrder(a[0] as string, a[1] as string, a[2] as string, a[3] as string, a[4] as string, a[5] as number),
 };
 
-let served = 0, errors = 0, abandonedSuccess = 0, abandonedError = 0;
+let served = 0, errors = 0, abandonedSuccess = 0, abandonedError = 0, skippedAbandoned = 0, upstreamWeight = 0;
 
 // Global ban-aware cooldown (added 2026-10-07, live-verified): a 429 from GMGN carries a reset
 // time, and EVERY request sent before it extends the ban (RATE_LIMIT_EXCEEDED → RATE_LIMIT_BANNED,
 // +5s each, up to 5min). Previously the proxy kept relaying callers straight into that window.
-// Now any 429 sets a cooldown; subsequent calls wait it out (+5s safety) before going upstream.
-let cooldownUntil = 0;
+// Now any 429 sets a cooldown; subsequent calls are refused locally until it expires.
+// Gate serializes dispatch, persists cooldown, and refuses cooldown calls locally instead of
+// parking them until after the caller's 15-second timeout and then spending quota anyway.
 
 // LIMITATION (found live 2026-07-27, follow-up audit): a caller aborting its local fetch to THIS
 // proxy does NOT cancel the upstream GMGN request `fn(args)` makes — gmgn-cli's OpenApiClient.
@@ -124,50 +143,52 @@ let cooldownUntil = 0;
 // "upstream itself failed after the caller left" — the two mean very different things for
 // diagnosing whether GMGN or the timeout budget is the actual problem.
 const server = createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ readOnly, swapEnabled, spacingMs: 10_000, ...gate.snapshot(), pending: gate.pending,
+      served, errors, abandonedSuccess, abandonedError, skippedAbandoned, upstreamWeight }));
+    return;
+  }
   if (req.method !== "POST" || req.url !== "/call") { res.writeHead(404); res.end(); return; }
   let body = "";
   let callerGone = false;
-  req.on("data", (c) => { body += c; });
+  req.on("data", (c) => { body += c; if (body.length > 65_536) req.destroy(); });
   res.on("close", () => { if (!res.writableEnded) callerGone = true; });
   req.on("end", () => {
     void (async () => {
       try {
         const { method, args } = JSON.parse(body) as { method: string; args: unknown[] };
-        const fn = DISPATCH[method];
+        const fn = Object.hasOwn(DISPATCH, method) ? DISPATCH[method] : undefined;
         if (!fn) { if (!callerGone) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `unknown or non-read-only method: ${method}` })); } return; }
-        const wait = cooldownUntil - Date.now();
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        const weight = WEIGHTS[method] ?? 1;
-        for (let i = 0; i < weight; i++) await bucket.take();
-        const data = await fn(args ?? []);
+        if (!Array.isArray(args)) { res.writeHead(400); res.end(JSON.stringify({ error: "args must be an array" })); return; }
+        if (gate.pending >= 4) { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "GMGN proxy queue full; no upstream request sent" })); return; }
+        const data = await gate.run(async () => { upstreamWeight += WEIGHTS[method] ?? 1; return fn(args); }, () => callerGone);
         if (callerGone) { abandonedSuccess++; return; } // upstream succeeded, but nobody's listening anymore — don't count as clean-served
         served++;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ data }));
       } catch (e) {
+        if (e instanceof GmgnAbandonedError) { skippedAbandoned++; return; }
         if (callerGone) { abandonedError++; return; } // upstream itself failed too, AFTER the caller already left — distinct from abandonedSuccess
         errors++;
         // Forward the REAL error message/status distinctly (review: callers used to see every
         // failure — 429, bad contract, network — collapsed to the same `null`).
         const msg = (e as Error).message ?? String(e);
-        const rateLimited = /HTTP 429|RATE_LIMIT/i.test(msg);
+        const rateLimited = e instanceof GmgnCooldownError || (e as { status?: number }).status === 429 || /HTTP 429|RATE_LIMIT/i.test(msg);
         if (rateLimited) {
-          // Error text carries "(~Ns remaining)"; without it, GMGN's regular window is ~30s.
-          const secs = Number(/~(\d+)s remaining/.exec(msg)?.[1] ?? 30);
-          cooldownUntil = Math.max(cooldownUntil, Date.now() + (secs + 5) * 1000);
-          console.warn(`[gmgn-proxy] 429 — holding all calls for ~${secs + 5}s (ban-aware cooldown)`);
+          console.warn(`[gmgn-proxy] 429 — upstream blocked until ${new Date(gate.snapshot().cooldownUntil).toISOString()}`);
         }
         res.writeHead(rateLimited ? 429 : 502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: msg }));
+        res.end(JSON.stringify({ error: msg, ...(rateLimited ? { retryAt: gate.snapshot().cooldownUntil } : {}) }));
       }
     })();
   });
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[gmgn-proxy] listening on 127.0.0.1:${PORT} — rate=20/cap=20 (real GMGN limit), shared across every GMGN-consuming process.`);
+  console.log(`[gmgn-proxy] listening on 127.0.0.1:${PORT} — one upstream call/10s, serialized, persistent cooldown. readOnly=${readOnly}, swapEnabled=${swapEnabled}.`);
 });
-setInterval(() => console.log(`[gmgn-proxy] served ${served}, errors ${errors}, abandonedSuccess ${abandonedSuccess} (caller gave up, upstream still succeeded), abandonedError ${abandonedError} (caller gave up, upstream then failed too)`), 5 * 60_000);
+setInterval(() => console.log(`[gmgn-proxy] served ${served}, errors ${errors}, abandonedSuccess ${abandonedSuccess}, abandonedError ${abandonedError}, skippedQueued ${skippedAbandoned}, pending ${gate.pending}, cooldownUntil ${gate.snapshot().cooldownUntil}`), 5 * 60_000);
 
 process.on("SIGINT", () => process.exit(0));
 process.on("SIGTERM", () => process.exit(0));

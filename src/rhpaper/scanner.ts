@@ -6,7 +6,20 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { CHAIN, WETH, decimalsOf, envOf, okxGet, quoteBuy, quoteSell } from "./exec.js";
 import { dir } from "./state.js";
 
-export interface Candidate { token: string; symbol: string; decimals: number; buyOk: boolean; sellOk: boolean; buyOut?: string; sellOut?: string; impactPct?: number }
+export interface Candidate { token: string; symbol: string; decimals: number; buyOk: boolean; sellOk: boolean; buyOut?: string; sellOut?: string; impactPct?: number | null; liquidityUsd?: number | null }
+
+/** (B3) Likuiditas USD dari baris DexScreener untuk mint — murni, bisa diuji. */
+export function liquidityFromDexRows(chain: string, mint: string, rows: unknown[]): number | null {
+  const dexChain = chain === "sol" ? "solana" : chain === "eth" ? "ethereum" : chain;
+  let best: number | null = null;
+  for (const r of rows) {
+    const row = r as { chainId?: string; baseToken?: { address?: string }; liquidity?: { usd?: number } };
+    if (row?.chainId !== dexChain || row.baseToken?.address?.toLowerCase() !== mint.toLowerCase()) continue;
+    const usd = Number(row.liquidity?.usd);
+    if (Number.isFinite(usd) && usd > 0 && (best == null || usd > best)) best = usd;
+  }
+  return best;
+}
 
 const cachePath = (date = new Date().toISOString().slice(0, 10)) => dir() + "/candidates-" + date + ".json";
 
@@ -37,15 +50,15 @@ export async function probe(token: string, symbol: string, maker: string, usdRaw
   const buy = await quoteBuy(token, usdRaw, maker);
   let sellOk = false; let sellOut: string | undefined;
   if (buy.ok) {
-    const q1e18 = "1" + "0".repeat(dec);
-    const sell = await quoteSell(token, q1e18, maker);
+    const sell = await quoteSell(token, buy.quote!.amountOut, maker);
     sellOk = Boolean(sell.ok);
     sellOut = sell.quote?.amountOut;
   }
   return { token, symbol, decimals: dec, buyOk: buy.ok, sellOk, buyOut: buy.quote?.amountOut, sellOut, impactPct: buy.quote?.impactPct };
 }
 
-/** Pindai sampai `want` kandidat yang lolos dua arah; hasil disimpan sebagai cache harian. */
+/** Pindai sampai `want` kandidat yang lolos dua arah; hasil disimpan sebagai cache harian.
+ *  (B3) Likuiditas DexScreener diambil SEKALI per batch (gratis, tanpa kunci) untuk model fill. */
 export async function scanCandidates(maker: string, want = 5, limit = 40): Promise<Candidate[]> {
   const out: Candidate[] = [];
   const all = await listTokens();
@@ -53,6 +66,15 @@ export async function scanCandidates(maker: string, want = 5, limit = 40): Promi
     const c = await probe(t.token, t.symbol, maker);
     if (c.buyOk && c.sellOk) out.push(c);
     if (out.length >= want) break;
+  }
+  // Satu panggilan batch DexScreener untuk semua kandidat lolos (≤30 mint/panggilan).
+  if (out.length) {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/tokens/v1/${"robinhood"}/${out.map((c) => c.token).join(",")}`, { signal: AbortSignal.timeout(10_000) });
+      const data: unknown = await res.json();
+      const rows: unknown[] = Array.isArray(data) ? data as unknown[] : [];
+      for (const c of out) c.liquidityUsd = liquidityFromDexRows("robinhood", c.token, rows);
+    } catch { /* likuiditas tidak tersedia → model fill fail-closed, bukan tebakan */ }
   }
   mkdirSync(dir(), { recursive: true });
   writeFileSync(cachePath(), JSON.stringify({ ts: Date.now(), candidates: out }));

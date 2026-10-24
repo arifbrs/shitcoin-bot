@@ -479,12 +479,11 @@ export async function devnetPlumbingTest(): Promise<DevnetTestResult> {
   }
 }
 
-/** LIVE sends are intentionally not implemented — hard block. */
-export function assertNotLive(): void {
-  if (config.exec.mode === "live") {
-    throw new Error("EXEC_MODE=live is hard-blocked: real-money execution + keychain key storage are not built yet.");
-  }
-}
+// AUDIT 2026-10-24: `assertNotLive()` dihapus — pesan lamanya PALSU ("real-money execution …
+// not built yet") padahal live S1 sudah dibangun (live-bridge.ts + liveBuy di berkas ini) dan
+// pernah berjalan nyata (guard.json). Fungsi tanpa pemanggil yang menyerukan keamanan semu
+// lebih berbahaya daripada tidak ada; pengaman live yang NYATA ada di liveAllowed()/guardBuy
+// (guardian.ts) dan bridgePermitted() (live-bridge.ts).
 
 // ── Devnet execution bridge ─────────────────────────────────────────────────
 // pump.fun isn't deployed on devnet, so a devnet "trade" can't be a real buy.

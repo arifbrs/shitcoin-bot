@@ -3,7 +3,7 @@
  * Masukan : logs/hunter/in-<tanggal>.json  { chain, token, symbol, mcapUsd, liquidityUsd, traders[] }
  * Keluaran: logs/hunter/gmgnimportall-<tanggal>.json   (semua yang lolos, siap impor)
  *           logs/hunter/tier-{S,A,B,C}-<tanggal>.json   (per tier)
- * Aturan  : mcap <1jt · liq <50rb · top trader ROI >300% & winrate >60% (90 hari)
+ * Aturan  : mcap <1jt · liq <50rb · top trader ROI >300% & winrate >60% (30 hari)
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { RULES, passesToken, scoreToken, tierOf, type Scored, type TokenSnap, type TraderSnap } from "./filters.js";

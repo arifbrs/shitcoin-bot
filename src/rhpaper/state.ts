@@ -7,9 +7,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlink
 export interface Position {
   arm: string; token: string; symbol: string; entryTs: number; entryQuoteRef: string; entryUsd: number; entryWethRaw: string; qtyRaw: string;
   peakPct?: number; troughPct?: number; marks?: number; stuckCount?: number; stuck?: boolean; stuckReason?: string;
+  tradeId?: string; policyId?: string;
+  liquidityUsd?: number | null; // (B3) likuiditas pool saat entry — untuk model fill, bukan keputusan
+  exitPolicy?: { stopPct: number; takePct: number; tpHoldMin: number };
 }
 export interface PaperState {
   version: 2; cycles: number; day: string; positions: Position[]; closed: number; pnlUsd: number; stuck: number;
+  netWethRaw?: string; updatedAt?: number;
 }
 
 export function dir(): string { return process.env.RHPAPER_DIR || "logs/rhpaper"; }
@@ -30,6 +34,7 @@ export function loadState(): PaperState {
 /** Tulis atomik: tmp → rename (tidak pernah meninggalkan state setengah jadi). */
 export function saveState(s: PaperState): void {
   mkdirSync(dir(), { recursive: true });
+  s.updatedAt = Date.now();
   const tmp = statePath() + ".tmp-" + process.pid;
   writeFileSync(tmp, JSON.stringify(s));
   renameSync(tmp, statePath());

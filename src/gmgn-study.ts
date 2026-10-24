@@ -12,7 +12,7 @@
  *    PERTAMA per kandidat + umur mark sebenarnya, bukan label horizon.
  *  - Sebagian kandidat sudah terotasi keluar dari logs (reset/arsip), sehingga outcome-nya
  *    menganggur tanpa pasangan. Angka kehilangan itu dicetak eksplisit.
- *  - mcChangePct murni MARK; belum dipotong friction round-trip ~3-4% rute GMGN.
+ *  - mcChangePct murni MARK; biaya aktual, latency, dan sellability belum diukur.
  *  - Bucket n<25 ditandai "!" (jangan dipakai keputusan). Sampel menumpuk di beberapa jam
  *    yang sama (regim pasar sama) — hipotesis, bukan aturan entry.
  *
@@ -21,13 +21,14 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { gmgnCandidateKey, gmgnCohortKey, validExactLedger } from "./analysis/gmgn-evidence.js";
 
 interface Cand {
-  mint: string; sym: string; source: string; cfg: string; epoch: string;
+  chain: string; mint: string; sym: string; source: string; cfg: string; epoch: string;
   firstSeenAt: number; entryMcUsd: number; row: Record<string, unknown>;
 }
 interface Out {
-  cfg: string; epoch: string; checkedAt: number; ageH: number;
+  cfg: string; epoch: string; firstSeenAt: number; checkedAt: number; ageH: number;
   mcChangePct: number | null; currentMcUsd: number | null; ruggedNow: boolean | null;
 }
 
@@ -46,12 +47,13 @@ function eventFiles(): string[] {
       for (const f of readdirSync(d)) if (f.startsWith("events-") && f.endsWith(".jsonl")) files.push(join(d, f));
     } catch { /* skip */ }
   }
-  return files;
+  return files.sort();
 }
 
 const cands = new Map<string, Cand>();
-const outsByMintSource = new Map<string, Out[]>();
+const outsByCandidate = new Map<string, Out[]>();
 let outRows = 0;
+let invalidIdentityRows = 0;
 
 for (const f of eventFiles()) {
   let text: string;
@@ -67,12 +69,13 @@ for (const f of eventFiles()) {
     const source = String(r["source"] ?? "unknown");
     if (!mint) continue;
     if (isCand) {
-      const key = `${mint}|${source}`;
+      const key = gmgnCohortKey(r);
+      if (!key || !gmgnCandidateKey(r)) { invalidIdentityRows++; continue; }
       const firstSeenAt = Number(r["firstSeenAt"] ?? 0);
       const prev = cands.get(key);
       if (!prev || firstSeenAt < prev.firstSeenAt) {
         cands.set(key, {
-          mint, sym: String(r["sym"] ?? "?"), source, cfg: String(r["cfg"] ?? "unknown"),
+          chain: String(r["chain"] ?? "sol"), mint, sym: String(r["sym"] ?? "?"), source, cfg: String(r["cfg"]),
           epoch: String(r["strategy2Epoch"] ?? "unknown"), firstSeenAt, entryMcUsd: Number(r["mcUsd"] ?? 0), row: r,
         });
       }
@@ -80,30 +83,29 @@ for (const f of eventFiles()) {
       outRows++;
       const checkedAt = Number(r["checkedAt"] ?? 0);
       const firstSeenAt = Number(r["firstSeenAt"] ?? 0);
+      const key = gmgnCandidateKey(r);
+      if (!key || !Number.isFinite(checkedAt) || checkedAt < firstSeenAt) { invalidIdentityRows++; continue; }
       const o: Out = {
         cfg: String(r["cfg"] ?? "unknown"), epoch: String(r["strategy2Epoch"] ?? "unknown"),
-        checkedAt, ageH: firstSeenAt && checkedAt ? (checkedAt - firstSeenAt) / 3_600_000 : NaN,
+        firstSeenAt, checkedAt, ageH: (checkedAt - firstSeenAt) / 3_600_000,
         mcChangePct: typeof r["mcChangePct"] === "number" ? r["mcChangePct"] : null,
         currentMcUsd: typeof r["currentMcUsd"] === "number" ? r["currentMcUsd"] : null,
         ruggedNow: typeof r["ruggedNow"] === "boolean" ? r["ruggedNow"] : null,
       };
-      const key = `${mint}|${source}`;
-      const arr = outsByMintSource.get(key);
-      if (arr) arr.push(o); else outsByMintSource.set(key, [o]);
+      const arr = outsByCandidate.get(key);
+      if (arr) arr.push(o); else outsByCandidate.set(key, [o]);
     }
   }
 }
 
-/** Mark PERTAMA per kandidat (exact cfg/epoch dulu, fallback mark mana pun yang paling awal). */
+/** Mark PERTAMA with exact chain/mint/source/cfg/epoch/first-seen. No legacy fallback. */
 interface Joined { c: Cand; o: Out; ageH: number }
 const joined: Joined[] = [];
 let paired = 0;
 for (const c of cands.values()) {
-  const list = outsByMintSource.get(`${c.mint}|${c.source}`);
+  const list = outsByCandidate.get(gmgnCandidateKey(c as unknown as Record<string, unknown>)!);
   if (!list?.length) continue;
-  const exact = list.filter((o) => o.cfg === c.cfg && o.epoch === c.epoch);
-  const pool = exact.length ? exact : list;
-  const first = pool.reduce((a, b) => (a.checkedAt <= b.checkedAt ? a : b));
+  const first = list.reduce((a, b) => (a.checkedAt <= b.checkedAt ? a : b));
   if (first.mcChangePct == null) continue;
   paired++;
   joined.push({ c, o: first, ageH: Number.isFinite(first.ageH) ? first.ageH : NaN });
@@ -113,39 +115,39 @@ for (const c of cands.values()) {
 // SELAMAT dari retensi 7 hari stream events (terverifikasi 2026-10-07: events lama memang
 // terhapus saat proses pertama menyentuh log.ts). Begitu jendela 7 hari lewat, ini sumber utama.
 let ledgerCount = 0;
+let excludedLegacyLedger = 0;
 {
-  const have = new Set(joined.map((j) => `${j.c.mint}|${j.c.source}`));
+  const have = new Set(joined.map((j) => gmgnCandidateKey(j.c as unknown as Record<string, unknown>)));
+  const ledgerPairs = new Map<string, Record<string, unknown>>();
+  try { excludedLegacyLedger = readFileSync(join(config.logDir, "gmgn-study-ledger.jsonl"), "utf8").split("\n").filter((l) => l.trim()).length; } catch { /* none */ }
   try {
-    const text = readFileSync(join(config.logDir, "gmgn-study-ledger.jsonl"), "utf8");
+    const text = readFileSync(join(config.logDir, "gmgn-study-ledger-v2.jsonl"), "utf8");
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try {
-        const r = JSON.parse(line) as {
-          mint?: string; sym?: string; source?: string; firstSeenAt?: number; entryMcUsd?: number;
-          features?: Record<string, unknown>;
-          mark?: { mcChangePct?: number; ageH?: number; checkedAt?: number; currentMcUsd?: number | null; ruggedNow?: boolean | null };
-        };
-        if (!r.mint || !r.source || typeof r.mark?.mcChangePct !== "number") continue;
-        if (have.has(`${r.mint}|${r.source}`)) continue;
-        have.add(`${r.mint}|${r.source}`);
-        const row = r.features ?? {};
-        const cfg = String(row["cfg"] ?? "ledger");
-        const epoch = String(row["epoch"] ?? "unknown");
-        joined.push({
-          c: { mint: r.mint, sym: r.sym ?? "?", source: r.source, cfg, epoch, firstSeenAt: r.firstSeenAt ?? 0, entryMcUsd: r.entryMcUsd ?? 0, row },
-          o: {
-            cfg, epoch, checkedAt: r.mark.checkedAt ?? 0,
-            ageH: typeof r.mark.ageH === "number" ? r.mark.ageH : NaN,
-            mcChangePct: r.mark.mcChangePct,
-            currentMcUsd: typeof r.mark.currentMcUsd === "number" ? r.mark.currentMcUsd : null,
-            ruggedNow: typeof r.mark.ruggedNow === "boolean" ? r.mark.ruggedNow : null,
-          },
-          ageH: typeof r.mark.ageH === "number" ? r.mark.ageH : NaN,
-        });
-        ledgerCount++;
+        const r = JSON.parse(line) as Record<string, unknown>;
+        if (!validExactLedger(r)) { invalidIdentityRows++; continue; }
+        const key = gmgnCandidateKey(r)!;
+        if (have.has(key)) continue;
+        const prev = ledgerPairs.get(key);
+        if (!prev || (r.mark as { checkedAt: number }).checkedAt < (prev.mark as { checkedAt: number }).checkedAt) ledgerPairs.set(key, r);
       } catch { /* baris rusak — abaikan */ }
     }
   } catch { /* ledger belum ada */ }
+  for (const r of ledgerPairs.values()) {
+    const mark = r.mark as Record<string, unknown>;
+    if (typeof mark.mcChangePct !== "number" || !Number.isFinite(mark.mcChangePct)) continue;
+    const firstSeenAt = r.firstSeenAt as number, checkedAt = mark.checkedAt as number;
+    const cfg = String(r.cfg), epoch = String(r.strategy2Epoch), ageH = (checkedAt - firstSeenAt) / 3_600_000;
+    joined.push({
+      c: { chain: String(r.chain ?? "sol"), mint: String(r.mint), sym: String(r.sym ?? "?"), source: String(r.source), cfg, epoch,
+        firstSeenAt, entryMcUsd: Number(r.entryMcUsd ?? 0), row: (r.features ?? {}) as Record<string, unknown> },
+      o: { cfg, epoch, firstSeenAt, checkedAt, ageH, mcChangePct: mark.mcChangePct,
+        currentMcUsd: typeof mark.currentMcUsd === "number" ? mark.currentMcUsd : null,
+        ruggedNow: typeof mark.ruggedNow === "boolean" ? mark.ruggedNow : null }, ageH,
+    });
+    ledgerCount++;
+  }
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -221,14 +223,16 @@ function section(t: string): void { console.log(`\n═══ ${t} ═══`); }
 
 console.log("STUDI GMGN — fitur kandidat vs mark pertama (mark-based, belum potong fee)");
 console.log(`${eventFiles().length} file events (${config.logDir} + arsip). Kandidat unik: ${cands.size}. Baris outcome: ${outRows}. Dipasangkan dari events: ${paired}. Dari ledger durabel: ${ledgerCount}.`);
+console.log(`Exact identities only. Invalid/unattributable rows=${invalidIdentityRows}; unsafe v1 ledger rows excluded=${excludedLegacyLedger}. Historical exploratory marks, NOT net profit.`);
 
 section("KUALITAS DATA");
 {
-  const mintsWithOut = outsByMintSource.size;
-  const orphan = mintsWithOut - paired;
+  const mintsWithOut = outsByCandidate.size;
+  const knownCandidates = new Set([...cands.values()].map((c) => gmgnCandidateKey(c as unknown as Record<string, unknown>)));
+  const orphan = [...outsByCandidate.keys()].filter((k) => !knownCandidates.has(k)).length;
   const collapse = (() => {
     let multi = 0, same = 0;
-    for (const [, list] of outsByMintSource) {
+    for (const [, list] of outsByCandidate) {
       if (list.length < 2) continue;
       multi++;
       const horizonsLike = new Set(list.map((o) => o.checkedAt));
@@ -240,8 +244,8 @@ section("KUALITAS DATA");
     return { multi, same };
   })();
   console.log(`  pasangan aktif: ${paired} dari events + ${ledgerCount} dari ledger durabel.`);
-  if (mintsWithOut) console.log(`  mint punya outcome di events: ${mintsWithOut} — ${orphan} di antaranya tanpa baris kandidat (sudah terotasi keluar logs).`);
-  else console.log(`  (tidak ada baris outcome di events saat ini — sampel datang dari arsip/ledger.)`);
+  if (mintsWithOut) console.log(`  identitas punya outcome di events: ${mintsWithOut} — ${orphan} tanpa kandidat exact; hilang/salah identitas tidak dipasangkan paksa.`);
+  else console.log(`  (tidak ada outcome exact di events; ledger exact ${ledgerCount} pasangan.)`);
   if (collapse.multi) console.log(`  mark duplikat dlm satu waktu-check: ${collapse.same}/${collapse.multi} mint multi-mark → ${((collapse.same / collapse.multi) * 100).toFixed(0)}% angka 6/24/48 jam historis sebenarnya SATU snapshot (label horizon tidak bisa dipercaya).`);
   const byPct = {
     "≤8h": joined.filter((r) => r.ageH <= 8).length,
@@ -249,7 +253,7 @@ section("KUALITAS DATA");
     "30–60h": joined.filter((r) => r.ageH > 30 && r.ageH <= 60).length,
     ">60h": joined.filter((r) => r.ageH > 60).length,
   };
-  console.log(`  umur mark pertama: ${JSON.stringify(byPct)} — mayoritas mark datang TELAT, bukan di horizon.`);
+  console.log(`  umur mark pertama aktual: ${JSON.stringify(byPct)} — label horizon tidak dianggap valid tanpa timestamp yang tepat.`);
 }
 
 section("CAKUPAN & IDENTITAS LANE");
@@ -331,5 +335,6 @@ section("BUCKET TERBAIK (n≥25) MENURUT P(≥+50%)");
 section("CATATAN");
 console.log("  - 'mati' = currentMcUsd < $5k atau ruggedNow=true.");
 console.log("  - Belum multivariat — satu fitur dilihat sendirian; pakai sebagai hipotesis, bukan aturan entry.");
-console.log("  - Angka naik di sini belum dipotong friction ~3-4% rute GMGN.");
+console.log("  - Belum dipotong biaya aktual, slippage/latency, atau rug saat rute jual hilang. Friction tetap 3–4% tidak diasumsikan benar.");
+console.log("  - Bucket terbaik dipilih setelah melihat hasil: eksplorasi in-sample, bukan bukti edge. Konfigurasi/epoch berbeda tidak eksperimen berpasangan.");
 console.log("  - Untuk jawaban yang layak dipercaya, koleksi BARU dgn mark tepat waktu + kandidat yang tidak terotasi (prosesnya harus jalan terus).");

@@ -14,6 +14,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { observationReport } from "./gmgn-observation-report.js";
 
 const LOOP = process.argv.includes("--loop");
 const EVERY_MS = (() => { const n = Number(process.env.ANALISA_EVERY_MS); return Number.isFinite(n) && n >= 60_000 ? n : 12 * 60_000; })();
@@ -77,7 +78,7 @@ async function digest(): Promise<void> {
   // DUA stream: `events-` (gmgn-full-watch: sinyal, trade terpantau) DAN `rh-events-` (lane RH:
   // honeypot-block, rug-signal enrich). Sebelum ini hanya `events-` yang dibaca, sehingga blokir
   // honeypot & flag rug tampak selalu 0 — bagian ringkasan yang justru paling penting.
-  const ev = [...rowsOf("events-"), ...rowsOf("rh-events-")];
+  const ev = [...rowsOf("events-", false), ...rowsOf("rh-events-", false)];
   const signals = ev.filter((r) => r["type"] === "gmgn-signal");
   const signals2h = signals.filter((r) => now - (Date.parse(String(r["ts"] ?? "")) || 0) <= 7_200_000);
   const byType: Record<number, number> = {};
@@ -95,6 +96,7 @@ async function digest(): Promise<void> {
     const out = readFileSync(join(config.logDir, "gmgn-supervisor.out"), "utf8");
     quota429 = out.split("\n").slice(-400).filter((l) => l.includes("429")).length;
   } catch { /* belum ada */ }
+  const latestCycleAt = Math.max(0, ...ev.filter((r) => r["type"] === "gmgn-full-cycle").map((r) => Date.parse(String(r["ts"] ?? "")) || 0));
 
   // ── DELTA sejak digest sebelumnya ──────────────────────────
   const dClosed = closes.length - (prev?.closedTotal ?? closes.length);
@@ -129,7 +131,9 @@ async function digest(): Promise<void> {
   say("\n── LANE GMGN (sinyal, wallet, rug-signal)");
   say(`  sinyal 2 jam: ${signals2h.length} (${Object.entries(byType).map(([t, n]) => `t${t}=${n}`).join(" ") || "—"}) · trade terpantau: ${watched.length} · honeypot diblokir total: ${hpBlocks.length}`);
   say(`  wallet diskor: ${wq} · token diperkaya (rug-signal): ${new Set(enrich.map((e) => e["token"])).size} · flag terkumpul: ${Object.entries(flags).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([f, n]) => `${f}(${n})`).join(" ") || "—"}`);
-  say(`  kuota GMGN: ${quota429} baris 429 di 400 baris log terakhir ${quota429 > 10 ? "— sedang ketat, pace terjaga oleh proxy" : "— longgar"}`);
+  say(`  siklus GMGN terakhir: ${latestCycleAt ? new Date(latestCycleAt).toISOString() + ` (${((now - latestCycleAt) / 60_000).toFixed(0)}m lalu)` : "belum ada"}${!latestCycleAt || now - latestCycleAt > 30 * 60_000 ? " — STALE, jangan anggap monitoring sehat" : ""}`);
+  say(`  log GMGN: ${quota429} baris 429 di 400 baris terakhir; nol 429 TIDAK membuktikan kuota longgar atau proses aktif.`);
+  for (const line of observationReport(now)) say(line);
 
   say("\n── LANE DEXSCREENER (13 endpoint, siklus 5 menit)");
   {

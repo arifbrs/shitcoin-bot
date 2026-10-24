@@ -21,23 +21,26 @@
 import { readFileSync, writeFileSync, appendFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { exactCandidateMark, gmgnCandidateKey, gmgnCohortKey, latestAsOf, walletIdentity, validExactLedger } from "./analysis/gmgn-evidence.js";
+import { observationReport } from "./gmgn-observation-report.js";
 
 const DAILY = process.argv.includes("--daily");
 const DAY_MS = 24 * 3_600_000;
+const REPEAT_MS = DAILY ? DAY_MS : process.argv.includes("--loop") ? 15 * 60_000 : null;
 
 interface WalletRow {
-  wallet: string; tags: string[]; winrate: number | null; realizedProfit: number | null;
+  chain: string; wallet: string; tags: string[]; winrate: number | null; realizedProfit: number | null;
   tokens: number | null; buys: number | null; sells: number | null; at: number;
 }
-interface WatchedTrade { mint: string; side: string; maker: string; at: number; watchType: string }
-interface Mark { mint: string; source: string; mcChangePct: number; ageH: number | null; checkedAt: number; currentMcUsd: number | null; ruggedNow: boolean | null }
-interface CandRow { mint: string; sym: string; source: string; firstSeenAt: number; mcUsd: number; features: Record<string, unknown> }
-interface SignalRow { mint: string; signalType: number; sym: string; mcUsd: number | null; at: number }
+interface WatchedTrade { chain: string; mint: string; side: string; maker: string; at: number; tradeAt: number | null; txHash: string; cfg: string; epoch: string; watchType: string }
+interface Mark { chain: string; mint: string; source: string; cfg: string; epoch: string; firstSeenAt: number; mcChangePct: number | null; ageH: number | null; checkedAt: number; currentMcUsd: number | null; ruggedNow: boolean | null }
+interface CandRow { chain: string; mint: string; sym: string; source: string; cfg: string; epoch: string; firstSeenAt: number; mcUsd: number; features: Record<string, unknown> }
+interface SignalRow { chain: string; mint: string; signalType: number; sym: string; mcUsd: number | null; at: number }
 interface PositionRow { mint: string; sym: string; stillHolding: number; exited: number; avgUnrealizedPnl: number | null; at: number }
 
 function eventsFiles(): string[] {
   try {
-    return readdirSync(config.logDir).filter((f) => f.startsWith("events-") && f.endsWith(".jsonl")).map((f) => join(config.logDir, f));
+    return readdirSync(config.logDir).filter((f) => f.startsWith("events-") && f.endsWith(".jsonl")).sort().map((f) => join(config.logDir, f));
   } catch { return []; }
 }
 
@@ -51,6 +54,7 @@ function runReport(): void {
   const day = new Date().toISOString().slice(0, 10);
 
   const wallets = new Map<string, WalletRow>();
+  const walletHistory = new Map<string, WalletRow[]>();
   const trades: WatchedTrade[] = [];
   const marks = new Map<string, Mark>();
   const signals: SignalRow[] = [];
@@ -66,36 +70,43 @@ function runReport(): void {
       try { r = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
       const t = String(r["type"] ?? "");
       const ts = Date.parse(String(r["ts"] ?? "")) || 0;
+      const chain = typeof r["chain"] === "string" ? r["chain"] : "sol";
       if (t === "gmgn-wallet-quality") {
         const w = String(r["wallet"] ?? "");
         if (!w) continue;
-        wallets.set(w, {
-          wallet: w, tags: Array.isArray(r["tags"]) ? (r["tags"] as string[]) : [],
+        const quality: WalletRow = {
+          chain, wallet: w, tags: Array.isArray(r["tags"]) ? (r["tags"] as string[]) : [],
           winrate: typeof r["winrate"] === "number" ? r["winrate"] : null,
           realizedProfit: typeof r["realizedProfit"] === "number" ? r["realizedProfit"] : null,
           tokens: typeof r["tokens"] === "number" ? r["tokens"] : null,
           buys: typeof r["buys"] === "number" ? r["buys"] : null,
-          sells: typeof r["sells"] === "number" ? r["sells"] : null, at: ts,
-        });
+          sells: typeof r["sells"] === "number" ? r["sells"] : null, at: typeof r["scoredAt"] === "number" ? r["scoredAt"] : ts,
+        };
+        const key = walletIdentity(chain, w);
+        walletHistory.set(key, [...(walletHistory.get(key) ?? []), quality]);
+        if (!wallets.has(key) || wallets.get(key)!.at < quality.at) wallets.set(key, quality);
       } else if (t === "gmgn-watched-trade") {
-        trades.push({ mint: String(r["mint"] ?? ""), side: String(r["side"] ?? ""), maker: String(r["maker"] ?? ""), at: ts, watchType: String(r["watchType"] ?? "?") });
+        trades.push({ chain, mint: String(r["mint"] ?? ""), side: String(r["side"] ?? ""), maker: String(r["maker"] ?? ""), at: ts,
+          tradeAt: typeof r["tradeAt"] === "number" ? r["tradeAt"] : null, txHash: String(r["txHash"] ?? ""), cfg: String(r["cfg"] ?? "unknown"), epoch: String(r["strategy2Epoch"] ?? "unknown"), watchType: String(r["watchType"] ?? "?") });
       } else if (t === "gmgn-signal") {
-        signals.push({ mint: String(r["mint"] ?? ""), signalType: Number(r["signalType"] ?? 0), sym: String(r["sym"] ?? "?"), mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null, at: ts });
+        signals.push({ chain, mint: String(r["mint"] ?? ""), signalType: Number(r["signalType"] ?? 0), sym: String(r["sym"] ?? "?"), mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null, at: ts });
       } else if (t === "gmgn-full-position") {
         const mint = String(r["mint"] ?? "");
-        if (mint) positions.set(mint, {
+        const key = `${chain}:${mint}`;
+        if (mint && (!positions.has(key) || positions.get(key)!.at < ts)) positions.set(key, {
           mint, sym: String(r["sym"] ?? "?"), stillHolding: Number(r["stillHolding"] ?? 0), exited: Number(r["exited"] ?? 0),
           avgUnrealizedPnl: typeof r["avgUnrealizedPnl"] === "number" ? r["avgUnrealizedPnl"] : null, at: ts,
         });
       } else if (t === "strategy2-candidate") {
         const mint = String(r["mint"] ?? "");
         if (!mint) continue;
-        const key = `${mint}|${String(r["source"] ?? "unknown")}`;
+        const key = gmgnCohortKey(r);
+        if (!key || !gmgnCandidateKey(r)) continue;
         const firstSeenAt = Number(r["firstSeenAt"] ?? 0);
         const prev = cands.get(key);
         if (prev && prev.firstSeenAt <= firstSeenAt) continue;
         cands.set(key, {
-          mint, sym: String(r["sym"] ?? "?"), source: String(r["source"] ?? "unknown"),
+          chain, mint, sym: String(r["sym"] ?? "?"), source: String(r["source"] ?? "unknown"), cfg: String(r["cfg"]), epoch: String(r["strategy2Epoch"]),
           firstSeenAt, mcUsd: Number(r["mcUsd"] ?? 0),
           features: {
             mcUsd: r["mcUsd"] ?? null, liqUsd: r["liqUsd"] ?? null, holders: r["holders"] ?? null,
@@ -110,14 +121,17 @@ function runReport(): void {
         });
       } else if (t === "strategy2-outcome") {
         const mint = String(r["mint"] ?? "");
-        if (!mint || typeof r["mcChangePct"] !== "number") continue;
+        const key = gmgnCandidateKey(r);
+        if (!mint || !key) continue;
         const checkedAt = Number(r["checkedAt"] ?? 0);
         const firstSeenAt = Number(r["firstSeenAt"] ?? 0);
-        const prev = marks.get(mint);
-        if (prev && prev.checkedAt >= checkedAt) continue;
-        marks.set(mint, {
-          mint, source: String(r["source"] ?? "?"), mcChangePct: r["mcChangePct"] as number, checkedAt,
-          ageH: typeof r["ageHours"] === "number" ? r["ageHours"] : (firstSeenAt && checkedAt ? (checkedAt - firstSeenAt) / 3_600_000 : null),
+        if (!Number.isFinite(checkedAt) || checkedAt < firstSeenAt) continue;
+        const prev = marks.get(key);
+        if (prev && prev.checkedAt <= checkedAt) continue;
+        marks.set(key, {
+          chain, mint, source: String(r["source"]), cfg: String(r["cfg"]), epoch: String(r["strategy2Epoch"]), firstSeenAt,
+          mcChangePct: typeof r["mcChangePct"] === "number" && Number.isFinite(r["mcChangePct"]) ? r["mcChangePct"] : null, checkedAt,
+          ageH: (checkedAt - firstSeenAt) / 3_600_000,
           currentMcUsd: typeof r["currentMcUsd"] === "number" ? r["currentMcUsd"] : null,
           ruggedNow: typeof r["ruggedNow"] === "boolean" ? r["ruggedNow"] : null,
         });
@@ -132,12 +146,14 @@ function runReport(): void {
       walletQuality?: Record<string, { at?: number; tags?: string[]; winrate?: number | null; realizedProfit?: number | null; tokens?: number | null; buys?: number | null; sells?: number | null }>;
     };
     for (const [w, q] of Object.entries(st.walletQuality ?? {})) {
-      const prev = wallets.get(w);
+      const key = walletIdentity("sol", w);
+      const prev = wallets.get(key);
       if (prev && prev.at >= (q.at ?? 0)) continue; // baris events lebih baru
-      wallets.set(w, {
-        wallet: w, tags: q.tags ?? prev?.tags ?? [], winrate: q.winrate ?? null, realizedProfit: q.realizedProfit ?? null,
+      const quality: WalletRow = {
+        chain: "sol", wallet: w, tags: q.tags ?? prev?.tags ?? [], winrate: q.winrate ?? null, realizedProfit: q.realizedProfit ?? null,
         tokens: q.tokens ?? null, buys: q.buys ?? null, sells: q.sells ?? null, at: q.at ?? 0,
-      });
+      };
+      wallets.set(key, quality); walletHistory.set(key, [...(walletHistory.get(key) ?? []), quality]);
     }
   } catch { /* state belum ada */ }
 
@@ -156,7 +172,7 @@ function runReport(): void {
     say(`  sinyal 24 jam      : ${s24.length} (type 12 smart-money, type 20 KOL)`);
     say(`  trade terpantau 24j: ${t24.length} (menyentuh mint yang kita pantau)`);
     say(`  posisi terpantau   : ${positions.size} mint (conviction smart-degen)`);
-    say(`  mark outcome       : ${marks.size} mint (dari strategy2-outcome)`);
+    say(`  mark outcome       : ${marks.size} identitas kandidat (mark PERTAMA; source/cfg/epoch/first-seen exact)`);
   }
 
   section("B. KUALITAS WALLET PER TAG (winrate = rasio token profit; realizedPnL dari GMGN)");
@@ -179,35 +195,26 @@ function runReport(): void {
     }
   }
 
-  section("C. OUTCOME vs KUALITAS WALLET (hipotesis, bukan eksperimen acak)");
+  section("C. KELAYAKAN JOIN WALLET × OUTCOME (bukan profit copy-trade)");
   {
     const buys = trades.filter((t) => t.side === "buy" && t.maker);
-    const joined = buys
-      .map((t) => ({ t, w: wallets.get(t.maker), m: marks.get(t.mint) }))
-      .filter((x): x is { t: WatchedTrade; w: WalletRow; m: Mark } => Boolean(x.w && x.w.winrate != null && x.m));
-    if (joined.length < 10) {
-      say(`  baru ${joined.length} pembelian wallet ber-winrate yang punya mark outcome — belum layak disimpulkan.`);
-      say(`  (kolektor perlu beberapa hari; mark outcome menyusul 6–48 jam setelah kandidat terlihat)`);
-    } else {
-      const bucketOf = (wr: number): string => (wr < 0.3 ? "<30%" : wr < 0.5 ? "30–50%" : "≥50%");
-      const groups = new Map<string, Array<{ w: WalletRow; m: Mark }>>();
-      for (const j of joined) {
-        const b = bucketOf(j.w.winrate as number);
-        const arr = groups.get(b);
-        if (arr) arr.push(j); else groups.set(b, [j]);
-      }
-      say(`  winrate wallet peng-akuisisi → outcome mint (mark terbaru):`);
-      for (const b of ["≥50%", "30–50%", "<30%"]) {
-        const g = groups.get(b);
-        if (!g?.length) continue;
-        const ch = g.map((x) => x.m.mcChangePct);
-        const ages = g.map((x) => x.m.ageH).filter((x): x is number => x != null);
-        say(`  ${b.padEnd(7)} n=${String(g.length).padStart(3)}  med ${pctMed(ch).padStart(7)}  P(+50%): ${pct(ch.filter((x) => x >= 50).length, ch.length).padStart(4)}  P(≤−50%): ${pct(ch.filter((x) => x <= -50).length, ch.length).padStart(4)}  umur mark ${ages.length ? q(ages, 0.5).toFixed(0) + "h" : "?"}`);
-      }
-      const allCh = [...marks.values()].map((m) => m.mcChangePct);
-      say(`  baseline semua mark    n=${String(allCh.length).padStart(3)}  med ${pctMed(allCh).padStart(7)}  P(+50%): ${pct(allCh.filter((x) => x >= 50).length, allCh.length).padStart(4)}  P(≤−50%): ${pct(allCh.filter((x) => x <= -50).length, allCh.length).padStart(4)}`);
-      say(`  CATATAN: wallet MEMILIH mint-nya — perbandingan populasi terpilih, bukan bukti sebab-akibat.`);
+    let joinable = 0;
+    const seen = new Set<string>();
+    for (const t of buys) {
+      if (!t.tradeAt || !t.txHash || t.tradeAt > now) continue;
+      const txKey = `${t.chain}:${t.txHash}:${t.maker}:${t.mint}`;
+      if (seen.has(txKey)) continue;
+      seen.add(txKey);
+      const w = latestAsOf(walletHistory.get(walletIdentity(t.chain, t.maker)) ?? [], t.tradeAt);
+      if (!w || w.winrate == null || t.tradeAt - w.at > DAY_MS * 7) continue;
+      const candidates = [...cands.values()].filter((c) => c.chain === t.chain && c.mint === t.mint && c.cfg === t.cfg && c.epoch === t.epoch && c.firstSeenAt <= t.tradeAt!);
+      if (candidates.length !== 1) continue; // A trade has no source identity; ambiguity is not guessed.
+      const c = candidates[0]!, m = marks.get(gmgnCandidateKey(c as unknown as Record<string, unknown>)!);
+      if (m && m.mcChangePct != null && m.checkedAt > t.tradeAt && exactCandidateMark(c as unknown as Record<string, unknown>, m as unknown as Record<string, unknown>)) joinable++;
     }
+    say(`  ${joinable}/${buys.length} buy rows punya skor SEBELUM trade + satu kandidat exact + mark SETELAH trade (transaksi didedupe).`);
+    say("  Tabel edge wallet lama dinonaktifkan: latest wallet score membocorkan masa depan, dan mark kandidat bukan return sejak harga buy wallet.");
+    say("  Menunggu saja tidak memperbaiki join atau membuktikan copyability. Statistik wallet bagian B hanya deskriptif retrospektif.");
   }
 
   section("D. SINYAL 24 JAM");
@@ -215,15 +222,17 @@ function runReport(): void {
     const s24 = signals.filter((x) => now - x.at <= DAY_MS);
     if (!s24.length) say("  (belum ada sinyal hari ini)");
     else {
-      const byType = new Map<number, SignalRow[]>();
-      for (const s of s24) { const a = byType.get(s.signalType); if (a) a.push(s); else byType.set(s.signalType, [s]); }
+      const byType = new Map<string, SignalRow[]>();
+      for (const s of s24) { const key = `${s.chain} type ${s.signalType}`; const a = byType.get(key); if (a) a.push(s); else byType.set(key, [s]); }
       for (const [type, g] of [...byType.entries()].sort((a, b) => b[1].length - a[1].length)) {
         const mc = g.filter((s) => s.mcUsd != null).map((s) => s.mcUsd as number);
-        say(`  type ${String(type).padEnd(3)} n=${String(g.length).padStart(3)}  mc med ${mc.length ? "$" + Math.round(q(mc, 0.5)).toLocaleString() : "?"}  contoh: ${g.slice(0, 4).map((s) => s.sym).join(", ")}`);
+        say(`  ${type.padEnd(18)} n=${String(g.length).padStart(3)}  mc med ${mc.length ? "$" + Math.round(q(mc, 0.5)).toLocaleString() : "?"}  contoh: ${g.slice(0, 4).map((s) => s.sym).join(", ")}`);
       }
-      say(`  (outcome sinyal BELUM dilacak — mint sinyal tidak ditulis sebagai kandidat supaya tidak terbaca paper trader.)`);
+      say("  Sinyal lama tidak punya outcome yang dapat direkonstruksi dengan jujur. Kohort BARU dilacak di journal terpisah, bukan candidate trader.");
     }
   }
+
+  for (const line of observationReport(now)) say(line);
 
   section("E. POSISI TERPANTAU — CONVICTION SMART-DEGEN");
   {
@@ -238,35 +247,39 @@ function runReport(): void {
 
   section("F. LEDGER DURABEL (bertahan lewat retensi events 7 hari)");
   {
-    const ledgerPath = join(config.logDir, "gmgn-study-ledger.jsonl");
+    const ledgerPath = join(config.logDir, "gmgn-study-ledger-v2.jsonl");
     const seen = new Set<string>();
     try {
       for (const l of readFileSync(ledgerPath, "utf8").split("\n")) {
         if (!l.trim()) continue;
         try {
-          const r = JSON.parse(l) as { mint?: string; source?: string; mark?: { checkedAt?: number } };
-          if (r.mint) seen.add(`${r.mint}|${r.source}|${r.mark?.checkedAt}`);
+          const r = JSON.parse(l) as Record<string, unknown>;
+          if (validExactLedger(r)) seen.add(`${gmgnCandidateKey(r)}|${(r.mark as { checkedAt: number }).checkedAt}`);
         } catch { /* baris rusak — abaikan */ }
       }
     } catch { /* ledger belum ada */ }
     let added = 0;
     for (const c of cands.values()) {
-      const m = marks.get(c.mint);
-      if (!m) continue;
-      const key = `${c.mint}|${c.source}|${m.checkedAt}`;
+      const candidateKey = gmgnCandidateKey(c as unknown as Record<string, unknown>);
+      const m = candidateKey ? marks.get(candidateKey) : undefined;
+      if (!m || m.mcChangePct == null || !exactCandidateMark(c as unknown as Record<string, unknown>, m as unknown as Record<string, unknown>)) continue;
+      const key = `${candidateKey}|${m.checkedAt}`;
       if (seen.has(key)) continue;
       seen.add(key);
       try {
         appendFileSync(ledgerPath, JSON.stringify({
+          pairingVersion: "gmgn-exact-v2", chain: c.chain, cfg: c.cfg, strategy2Epoch: c.epoch,
           mint: c.mint, sym: c.sym, source: c.source, firstSeenAt: c.firstSeenAt, entryMcUsd: c.mcUsd,
           features: c.features,
-          mark: { mcChangePct: m.mcChangePct, ageH: m.ageH, checkedAt: m.checkedAt, markSource: m.source, currentMcUsd: m.currentMcUsd, ruggedNow: m.ruggedNow },
+          mark: { chain: m.chain, mint: m.mint, source: m.source, cfg: m.cfg, strategy2Epoch: m.epoch, firstSeenAt: m.firstSeenAt,
+            mcChangePct: m.mcChangePct, ageH: m.ageH, checkedAt: m.checkedAt, currentMcUsd: m.currentMcUsd, ruggedNow: m.ruggedNow },
         }) + "\n");
         added++;
       } catch { /* best-effort */ }
     }
     say(`  pasangan kandidat+mark: +${added} baris baru (total ${seen.size}) → ${ledgerPath}`);
     say(`  (nama file ini sengaja bukan prefix stream mana pun, jadi tidak ikut terhapus retensi.)`);
+    say("  Ledger v1 tetap disimpan, tetapi tidak dipercaya: exporter lama mencampur identitas mint/source/config/epoch.");
     if (!added && !seen.size) say(`  (belum ada pasangan kandidat+mark di jendela 7 hari — akan terisi saat scout/kolektor menulis kandidat)`);
   }
 
@@ -278,10 +291,10 @@ function runReport(): void {
 
 runReport();
 
-if (DAILY) {
-  console.log(`\n[gmgn-report] mode harian — menjalankan ulang tiap 24 jam.`);
+if (REPEAT_MS != null) {
+  console.log(`\n[gmgn-report] offline loop — menjalankan ulang tiap ${REPEAT_MS / 60_000} menit.`);
   setInterval(() => {
     console.log(`\n[gmgn-report] ${new Date().toISOString()} — laporan harian berikutnya:`);
     try { runReport(); } catch (e) { console.warn(`[gmgn-report] laporan gagal: ${(e as Error).message}`); }
-  }, DAY_MS);
+  }, REPEAT_MS);
 }

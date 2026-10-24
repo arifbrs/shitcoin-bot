@@ -35,8 +35,11 @@ while true; do
   guard "gmgn"      "run-gmgn-supervised.sh"      "logs/gmgn-supervisor.out"      "gmgn-proxy|gmgn-full-watch|gmgn-report"
   guard "analisa"   "run-analisa-supervised.sh"   "logs/analisa-supervisor.out"   "src/analisa.ts"
   guard "dex"       "run-dexscreener-supervised.sh" "logs/dex-supervisor.out"     "src/discovery/dex-full.ts"
-  guard "okx"       "run-okx-supervised.sh"        "logs/okx-supervisor.out"     "src/okx-lane.ts"
-  guard "okx-paper" "run-okx-paper-supervised.sh"  "logs/okx-paper-supervisor.out" "src/okx-strict-paper.ts"
+  # AUDIT 2026-10-24 (F3): dua baris di bawah menunjuk skrip yang sudah dipindah ke legacy/ —
+  # tiap 120 detik mereka pkill lane OKX yang dijalankan manual lalu gagal restart (berkas tak
+  # ada). Kembalikan HANYA setelah skrip supervisornya benar-benar ada di root lagi.
+  # guard "okx"       "run-okx-supervised.sh"        "logs/okx-supervisor.out"     "src/okx-lane.ts"
+  # guard "okx-paper" "run-okx-paper-supervised.sh"  "logs/okx-paper-supervisor.out" "src/okx-strict-paper.ts"
   # DASHBOARD (2026-10-11): supervisor dashboard TIDAK dijaga siapa pun sebelumnya — ia sempat mati
   # dan panel (alat pemantauan utama) hilang tanpa ada yang tahu. Sekarang dijaga seperti lane lain.
   # DASHBOARD AKTIF LAGI (2026-10-13): penjaga dikembalikan atas permintaan operator.

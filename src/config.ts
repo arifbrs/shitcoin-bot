@@ -1,6 +1,21 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { duplicateEnvKeys, duplicateSecurityKeys } from "./util/env-audit.js";
+
+// AUDIT 2026-10-24 (round-3 A2): dotenv memakai NILAI TERAKHIR untuk kunci duplikat di .env —
+// duplikat membuat blok pertama lenyap TANPA suara (kasus nyata: MAX_DAILY_SPEND_SOL 0.10 lalu
+// 9999). Keputusan operator untuk membuka cap TETAP dihormati; yang ditutup adalah sisi senyapnya:
+// (1) peringatan startup dengan nama kunci saja, (2) daftar ini diekspos sebagai
+// `config.securityDupKeys` dan control.ts MENOLAK mengarming live selama kunci keamanan
+// terduplikasi (lihat util/env-audit.ts).
+let _envSecurityDupKeys: string[] = [];
+try {
+  const envText = readFileSync(".env", "utf8");
+  const dups = duplicateEnvKeys(envText);
+  if (dups.length) console.warn(`[config] PERINGATAN: kunci .env duplikat — nilai TERAKHIR yang dipakai dotenv: ${dups.join(", ")}`);
+  _envSecurityDupKeys = duplicateSecurityKeys(envText);
+} catch { /* tanpa .env (mis. CI) — bukan fatal */ }
 
 /**
  * Audit fix (2026-07-29): every `Number(process.env.X ?? default)` in this file accepted NaN
@@ -56,6 +71,9 @@ const rpcPool = (() => {
 
 export const config = {
   mode,
+  // (A2, round-3) Kunci keamanan .env yang terduplikasi — tidak kosong = arming live DITOLAK
+  // di control.ts sampai operator membereskan .env (nilai efektif = nilai TERAKHIR dotenv).
+  securityDupKeys: _envSecurityDupKeys,
   /**
    * MEASUREMENT EPOCH. Records written before the trade-identity / post-exit-idempotency /
    * truth-schema work of 2026-07-26 lack `tradeId`, contain duplicated post-exit samples
@@ -227,7 +245,10 @@ export const config = {
    * Shares the guardian's halt + 24h spend ledger with S1. S2_LIVE_ENABLED=false freezes it to
    * paper-only without touching the brain.
    */
-  s2LiveEnabled: process.env.S2_LIVE_ENABLED !== "false",
+  // AUDIT 2026-10-24 (F6): default dulu fail-open (unset = LIVE-enabled). Kunci dana harus
+  // fail-closed: hanya nilai eksplisit "true" yang mempersenjatai. .env mesin ini menuliskan
+  // "true" secara eksplisit, jadi perilaku mesin ini tidak berubah — defaultnya saja yang aman.
+  s2LiveEnabled: process.env.S2_LIVE_ENABLED === "true",
   s2MaxPerTradeSol: Number(process.env.S2_MAX_PER_TRADE_SOL ?? 0.02),
   s2MaxDeployedSol: Number(process.env.S2_MAX_DEPLOYED_SOL ?? 0.06),
   /**
@@ -1155,6 +1176,8 @@ export const config = {
     // ever reach dry-run/simulate/devnet (control.ts). Actual mainnet spending also
     // requires this out-of-band env flag, which a browser can never set. Both locks
     // must be open. Default: closed.
+    // (A2) sementara kunci keamanan terduplikasi di .env, `securityDupKeys` tidak kosong dan
+    // control.ts MENOLAK arming live — override senyap tak boleh ikut menentukan arming.
     liveConfirmed: process.env.LIVE_TRADING_CONFIRMED === "yes",
     /**
      * LIVE BRIDGE — the module that mirrors the paper trader's decisions onto the real

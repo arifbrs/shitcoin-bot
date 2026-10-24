@@ -1,13 +1,13 @@
 /**
- * EXEC — SATU-SATUNYA JALAN EKSEKUSI (paper 1:1 dengan live). 2026-10-21.
+ * EXEC — unsigned OKX quote/build plus separately invoked live helpers.
  *
  * Prinsip (dari plan yang disetujui):
  *  - Harga fill = harga QUOTE rute (bukan harga pool/mark).
  *  - Quote gagal → TIDAK BOLEH entry. Simulasi `eth_call` gagal → TIDAK dikirim.
- *  - Biaya = terukur: fee pool 0,01% (fee()=100) + gas nyata + slippage dari quote.
- *  - Paper dan live memanggil modul ini; bedanya hanya apakah tx dikirim.
+ *  - Paper is QUOTE ONLY: it does not call simulate(), approve(), or send().
+ *  - Pool fees and gas are not proven per transaction by the paper engine.
  *
- * Catatan: jeda 1,2s antar panggilan OKX (rate limit); tidak ada panggilan beruntun.
+ * Catatan: jeda 2s antar panggilan OKX, local to this process (not a global quota).
  */
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -19,7 +19,8 @@ export const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
 export const OKX_APPROVE = "0x42170295f1173c9e5874ea9d00c6d137e1a4f53d";
 export const POOL_FEE_PCT = 0.0001; // 100 = 0,01% (terukur dari fee() pool)
 
-export interface QuoteRef { ts: number; route: string; amountIn: string; amountOut: string; impactPct: number; slippagePct: number }
+export interface QuoteRef { ts: number; route: string; amountIn: string; amountOut: string; impactPct: number | null; slippagePct: number;
+  preflightAmountOut?: string; preflightAt?: number; source?: "swap-router-result" }
 export interface QuoteResult { ok: boolean; reason?: string; quote?: QuoteRef; tx?: { to: string; data: string; value: string } }
 
 let lastCall = 0;
@@ -39,7 +40,27 @@ export function envOf(): Record<string, string> {
 /** Slippage dari dampak harga quote + margin 1%, dijepit 1%..10% (batas empiris: 2% gagal, 10% berhasil). */
 export function slippageFor(impactPct: number): number {
   if (!Number.isFinite(impactPct)) return 5;
-  return Math.min(10, Math.max(1, impactPct + 1));
+  return Math.min(10, Math.max(1, Math.abs(impactPct) + 1));
+}
+
+/** Current OKX field is priceImpactPercent, not priceImpactPercentage. Missing stays missing. */
+export function quoteImpact(row: Record<string, unknown>): number | null {
+  const raw = row.priceImpactPercent;
+  if ((typeof raw !== "string" && typeof raw !== "number") || (typeof raw === "string" && !raw.trim())) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Parse the router attached to the built swap, not a separate, earlier price quote. */
+export function parseRouterQuote(row: Record<string, unknown>, amountIn: string, buying: boolean, ts = Date.now()): QuoteResult {
+  if (!/^\d+$/.test(amountIn) || BigInt(amountIn) <= 0n || typeof row.toTokenAmount !== "string" || !/^\d+$/.test(row.toTokenAmount) || BigInt(row.toTokenAmount) <= 0n) {
+    return { ok: false, reason: "quote: invalid raw amount" };
+  }
+  if (row.fromTokenAmount != null && String(row.fromTokenAmount) !== amountIn) return { ok: false, reason: "quote: input amount mismatch" };
+  const impact = quoteImpact(row);
+  if (buying && impact == null) return { ok: false, reason: "quote: priceImpactPercent tidak tersedia" };
+  if (buying && Math.abs(impact!) >= 5) return { ok: false, reason: "quote: dampak " + impact!.toFixed(2) + "% ≥ 5%" };
+  return { ok: true, quote: { ts, route: "okx", amountIn, amountOut: row.toTokenAmount, impactPct: impact, slippagePct: slippageFor(impact ?? NaN) } };
 }
 
 export async function okxGet(path: string, env = envOf()): Promise<Record<string, unknown>> {
@@ -51,13 +72,13 @@ export async function okxGet(path: string, env = envOf()): Promise<Record<string
     "OK-ACCESS-PASSPHRASE": env.OKX_API_PASSPHRASE ?? "", "content-type": "application/json",
   };
   if (env.OKX_PROJECT_ID) headers["OK-ACCESS-PROJECT"] = env.OKX_PROJECT_ID;
-  const res = await fetch("https://web3.okx.com" + path, { headers });
+  const res = await fetch("https://web3.okx.com" + path, { headers, signal: AbortSignal.timeout(15_000) });
   const txt = await res.text();
   try { return JSON.parse(txt) as Record<string, unknown>; } catch { return { code: "?", msg: txt.slice(0, 120) }; }
 }
 
 export async function rpc(method: string, params: unknown[]): Promise<{ result?: unknown; error?: { message?: string } }> {
-  const r = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+  const r = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(15_000) });
   return (await r.json()) as { result?: unknown; error?: { message?: string } };
 }
 
@@ -70,31 +91,52 @@ export async function decimalsOf(token: string): Promise<number> {
   return 18;
 }
 
-async function swapPath(from: string, to: string, amountRaw: string, maker: string): Promise<Record<string, unknown>> {
+async function swapPath(from: string, to: string, amountRaw: string, maker: string): Promise<QuoteResult> {
+  if (!/^\d+$/.test(amountRaw) || BigInt(amountRaw) <= 0n) return { ok: false, reason: "quote: invalid input amount" };
   const env = envOf();
   const q = await okxGet(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${from}&toTokenAddress=${to}&amount=${amountRaw}&swapMode=exactIn`, env);
   if (q.code !== "0") return { ok: false, reason: "quote: " + String(q.msg ?? q.code) };
   const d = ((q.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
-  const impact = Number(d.priceImpactPercentage ?? NaN);
-  if (Number(d.toTokenAmount ?? 0) <= 0) return { ok: false, reason: "quote: keluaran 0" };
-  if (Number.isFinite(impact) && impact >= 5) return { ok: false, reason: "quote: dampak " + impact.toFixed(2) + "% ≥ 5%" };
-  const slip = slippageFor(impact);
+  const preflight = parseRouterQuote(d, amountRaw, from === WETH);
+  if (!preflight.ok) return preflight;
+  const slip = preflight.quote!.slippagePct;
   const s = await okxGet(`/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&fromTokenAddress=${from}&toTokenAddress=${to}&amount=${amountRaw}&swapMode=exactIn&slippagePercent=${slip}&userWalletAddress=${maker}`, env);
   if (s.code !== "0") return { ok: false, reason: "swap: " + String(s.msg ?? s.code) };
   const sd = ((s.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
   const tx = (sd.tx ?? {}) as Record<string, unknown>;
   if (!tx.to || !tx.data) return { ok: false, reason: "swap: data tx tidak lengkap" };
-  return { ok: true, quote: { ts: Date.now(), route: "okx", amountIn: amountRaw, amountOut: String(d.toTokenAmount), impactPct: impact, slippagePct: slip } as QuoteRef, tx: { to: String(tx.to), data: String(tx.data), value: String(tx.value ?? "0") } };
+  const built = parseRouterQuote((sd.routerResult ?? {}) as Record<string, unknown>, amountRaw, from === WETH);
+  if (!built.ok || !built.quote) return { ok: false, reason: "swap router: " + (built.reason ?? "missing quote") };
+  built.quote.slippagePct = slip;
+  built.quote.preflightAmountOut = preflight.quote!.amountOut; built.quote.preflightAt = preflight.quote!.ts;
+  built.quote.source = "swap-router-result";
+  return { ...built, tx: { to: String(tx.to), data: String(tx.data), value: String(tx.value ?? "0") } };
 }
 
-/** Quote+swap untuk BELI (WETH → token) memakai `usd` sebagai nilai tukar WETH. */
+/** Unsigned quote+swap builder for BUY (WETH → token). No USD conversion or transaction. */
 export async function quoteBuy(token: string, wethAmountRaw: string, maker: string): Promise<QuoteResult> {
-  return (await swapPath(WETH, token, wethAmountRaw, maker)) as unknown as QuoteResult;
+  return swapPath(WETH, token, wethAmountRaw, maker);
 }
 
 /** Quote+swap untuk JUAL (token → WETH). */
 export async function quoteSell(token: string, tokenAmountRaw: string, maker: string): Promise<QuoteResult> {
-  return (await swapPath(token, WETH, tokenAmountRaw, maker)) as unknown as QuoteResult;
+  return swapPath(token, WETH, tokenAmountRaw, maker);
+}
+
+/** (B3) Harga ETH (USD) via quote WETH→USDG — untuk model fill (pangsa likuiditas), bukan PnL. */
+let ethUsdCache: { at: number; value: number | null } | null = null;
+export async function ethUsdOf(): Promise<number | null> {
+  if (ethUsdCache && Date.now() - ethUsdCache.at < 30 * 60_000) return ethUsdCache.value;
+  let value: number | null = null;
+  try {
+    const env = envOf();
+    const q = await okxGet(`/api/v6/dex/aggregator/quote?chainIndex=${CHAIN}&fromTokenAddress=${WETH}&toTokenAddress=${USDG}&amount=1000000000000000000&swapMode=exactIn`, env);
+    const d = ((q.data as Array<Record<string, unknown>>) ?? [])[0] ?? {};
+    const out = Number(d.toTokenAmount ?? 0) / 1e6;
+    if (q.code === "0" && out > 0) value = out;
+  } catch { /* null = model fill menolak (fail-closed), bukan harga tebakan */ }
+  ethUsdCache = { at: Date.now(), value };
+  return value;
 }
 
 /** Simulasi wajib sebelum kirim. */

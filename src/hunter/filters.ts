@@ -10,7 +10,7 @@ export function passesToken(t: TokenSnap): boolean {
   return t.mcapUsd > 0 && t.mcapUsd < RULES.mcapMax && t.liquidityUsd > 0 && t.liquidityUsd < RULES.liqMax;
 }
 
-/** Top trader lolos bila ROI >300% DAN winrate >60% dalam window 90 hari. */
+/** Top trader lolos bila ROI >300% DAN winrate >60% dalam window 30 hari. */
 export function passesTrader(tr: TraderSnap): boolean {
   return tr.windowDays >= RULES.windowDays && tr.roiPct > RULES.roiMinPct && tr.winratePct > RULES.winrateMinPct;
 }

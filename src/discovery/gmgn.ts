@@ -4,14 +4,13 @@ import { ui } from "../util/log.js";
 /**
  * GMGN OpenAPI — read-only wrapper. Every call here goes through the LOCAL rate-limit proxy
  * (gmgn-proxy.ts, its own process — see that file's header for why) instead of calling GMGN
- * directly. That process holds the one real OpenApiClient and the one real shared rate limiter;
+ * directly. That process holds the shared serialized request gate and persistent cooldown;
  * this file only knows how to reach it over local HTTP. Used by: Strategy 2 Scout, the sniper's
  * post-open enrichment (cross-check only, never gates entry — see trader.ts), Strategy 2's
  * paper trader, KOL/Smart-money watch, and the multi-launchpad observatory.
  *
- * No API key or private key is loaded in THIS file at all (review fix, 2026-07-27) — only
- * gmgn-proxy.ts needs GMGN_API_KEY, and none of the methods reachable through it are signed
- * routes, so a private key was never actually used by anything in this file to begin with.
+ * This module does not sign: signed routes exist only in the proxy's explicitly enabled
+ * execution mode. The observation supervisor forces GMGN_READ_ONLY=true.
  *
  * Timeout is a REAL AbortController on the fetch to the local proxy (review fix — the previous
  * Promise.race against gmgn-cli's OpenApiClient never actually cancelled the underlying
@@ -22,15 +21,13 @@ import { ui } from "../util/log.js";
 const PROXY_PORT = Number(process.env.GMGN_PROXY_PORT ?? 4319);
 const PROXY_URL = `http://127.0.0.1:${PROXY_PORT}/call`;
 export const gmgnEnabled = Boolean(process.env.GMGN_API_KEY?.trim());
-// 8s was too tight (found live, 2026-07-27, first cold-start poll of all 5 research processes):
-// gmgn-cli's own OpenApiClient auto-retries ONCE on a real 429 — original request + up to a 5s
-// backoff (its DEFAULT_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS) + 1s buffer + the retry request itself,
-// which legitimately runs 8-12s end to end. An 8s client-side abort was cancelling that mid-retry
-// on every process's very first poll, discarding a response that was about to succeed anyway.
+// The proxy serializes requests at 10-second spacing and does not retry upstream 429s.
+// A local abort cancels queued work, but cannot cancel an already-dispatched SDK request.
 const CALL_TIMEOUT_MS = 15_000;
 
-async function callProxy<T>(method: string, args: unknown[]): Promise<T | null> {
-  if (!gmgnEnabled) return null;
+export type GmgnReadResult<T> = { ok: true; data: T } | { ok: false; error: string; status: number | null; retryAt: number | null };
+export async function gmgnReadResult<T>(method: string, args: unknown[]): Promise<GmgnReadResult<T>> {
+  if (!gmgnEnabled) return { ok: false, error: "GMGN_DISABLED", status: null, retryAt: null };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS);
   try {
@@ -38,19 +35,25 @@ async function callProxy<T>(method: string, args: unknown[]): Promise<T | null> 
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ method, args }), signal: ctrl.signal,
     });
-    const body = (await res.json().catch(() => null)) as { data?: T; error?: string } | null;
+    const body = (await res.json().catch(() => null)) as { data?: T; error?: string; retryAt?: number } | null;
     if (!res.ok) {
       ui.warn(`[gmgn] ${method} failed: HTTP ${res.status} ${body?.error ?? "(no body)"}`);
-      return null;
+      return { ok: false, error: body?.error ?? `HTTP ${res.status}`, status: res.status, retryAt: body?.retryAt ?? null };
     }
-    return body?.data ?? null;
+    if (body?.data == null) return { ok: false, error: "GMGN_EMPTY_RESPONSE", status: res.status, retryAt: null };
+    return { ok: true, data: body.data };
   } catch (e) {
     const isAbort = (e as Error).name === "AbortError";
     ui.warn(`[gmgn] ${method} ${isAbort ? "timed out and was cancelled" : "call failed"}: ${(e as Error).message}. Is gmgn-proxy running (npm run gmgn:proxy)?`);
-    return null;
+    return { ok: false, error: isAbort ? "LOCAL_TIMEOUT" : (e as Error).message, status: null, retryAt: null };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callProxy<T>(method: string, args: unknown[]): Promise<T | null> {
+  const result = await gmgnReadResult<T>(method, args);
+  return result.ok ? result.data : null;
 }
 
 export interface GmgnTrendingRow {
@@ -70,6 +73,7 @@ export async function gmgnTrendingSol(interval: "1m" | "5m" | "1h" | "6h" | "24h
 }
 
 export interface GmgnTokenInfo {
+  biggest_pool_address?: string;
   wallet_tags_stat?: { smart_wallets: number; renowned_wallets: number; sniper_wallets: number; bundler_wallets: number; rat_trader_wallets: number };
   stat?: { signal_count: number; degen_call_count: number; top_rat_trader_percentage: string; top_bundler_trader_percentage: string };
   link?: { twitter_username?: string; website?: string; telegram?: string };
@@ -199,6 +203,8 @@ export const SIGNAL_TYPES = {
 export interface GmgnSignalRow {
   id: string; token_address: string; signal_type: number; ath?: number; market_cap?: number;
   trigger_at?: number; trigger_mc?: number; signal_times?: number;
+  first_trigger_mc?: number; signal_times_by_type?: Record<string, number>;
+  cur_data?: { holder_count?: number; liquidity?: number; top_10_holder_rate?: number; [key: string]: unknown };
   data?: { symbol?: string; launchpad_platform?: string; creator?: string; holder_count?: number; rug_ratio?: number; [key: string]: unknown };
 }
 export async function gmgnTokenSignal(chain: string, groups: Array<{ signal_type?: number[]; mc_min?: number; mc_max?: number }>): Promise<GmgnSignalRow[] | null> {

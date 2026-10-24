@@ -37,9 +37,12 @@ PROCS+=(
        "robinhood/paper:paper RH (43 varian — 10+10+8+6+9 kohort-5)" \
        "robinhood/review:review RH jam-8" \
        "src/analisa.ts:analisa (loop 12m)" \
-       "discovery/dex-full:dex-full (13 endpoint)" \
-       "src/okx-lane.ts:okx-lane (observasi)" \
-       "src/okx-strict-paper.ts:okx strict-paper (uang kertas)")
+       "discovery/dex-full:dex-full (13 endpoint)")
+# AUDIT 2026-10-24 (F4): dua entri OKX dihapus dari PROCS — start() tidak pernah menyalakannya
+# (dipindah ke legacy/), jadi status selalu merah dan melatih operator mengabaikan alarm.
+# Kembalikan bila lane OKX benar-benar dijalankan lagi:
+#       "src/okx-lane.ts:okx-lane (observasi)" \
+#       "src/okx-strict-paper.ts:okx strict-paper (uang kertas)")
 
 running(){ pgrep -f "$1" >/dev/null 2>&1; }
 

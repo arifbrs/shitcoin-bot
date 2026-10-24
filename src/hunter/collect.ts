@@ -4,9 +4,10 @@
  * Tidak mengarang Field: nama field divergen dicocokkan dengan beberapa kandidat, dan
  * bentuk mentah respons pertama dicatat ke logs/hunter/raw-sample.json agar bisa diverifikasi.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { gmgnApi } from "./tools.js";
+import { hunterToken, hunterTrader } from "./data.js";
+import { normalizedAddress } from "../discovery/gmgn-signal-observations.js";
 
 const chain = process.argv[2] ?? "robinhood";
 // TERVERIFIKASI dari `portfolio stats --help`: --period hanya 7d / 30d. Jendela 90 hari TIDAK tersedia,
@@ -15,9 +16,8 @@ const STATS_PERIOD = "30d";
 const STATS_WINDOW_DAYS = 30;
 const limit = Number(process.argv[3] ?? 20);
 
-type Row = { chain: string; token: string; symbol: string; mcapUsd: number; liquidityUsd: number; traders: Array<{ address: string; roiPct: number; winratePct: number; windowDays: number }> };
+type Row = { chain: string; token: string; symbol: string; mcapUsd: number; liquidityUsd: number; traders: Array<{ address: string; roiPct: number; winratePct: number; windowDays: number }>; observedAt?: number; source?: string };
 
-const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const pick = (o: Record<string, unknown>, keys: string[]): unknown => { for (const k of keys) if (o[k] !== undefined && o[k] !== null) return o[k]; return undefined; };
 
 function tokenList(res: Record<string, unknown> | null): Array<Record<string, unknown>> {
@@ -29,27 +29,29 @@ function tokenList(res: Record<string, unknown> | null): Array<Record<string, un
   return [];
 }
 
-// Filter di sisi server (opsi terverifikasi): mcap <1jt · likuiditas <50rb · bukan honeypot.
-const trend = gmgnApi([
-  "market", "trending", "--chain", chain, "--interval", "5m", "--limit", String(Math.max(limit, 20)),
-  "--max-marketcap", "1000000", "--max-liquidity", "50000",
-  ...(chain === "sol" ? [] : ["--filter", "not_honeypot"]),
-]);
+async function main(): Promise<void> {
+if (!["sol", "bsc", "base", "eth", "robinhood"].includes(chain) || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid chain/limit");
+// Keep low-cap filtering local/verified; CLI-only option translation is not guessed here.
+const trend = await gmgnApi("getTrendingSwaps", [chain, "5m", { limit: Math.max(limit, 20), max_marketcap: 1_000_000, max_liquidity: 50_000,
+  ...(chain === "sol" ? {} : { filters: ["not_honeypot"] }) }]);
 mkdirSync("logs/hunter", { recursive: true });
-writeFileSync("logs/hunter/raw-sample.json", JSON.stringify({ trending: trend }, null, 2).slice(0, 20000));
+const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+writeFileSync(`logs/hunter/raw-${chain}-${stamp}.json`, JSON.stringify({ chain, observedAt: Date.now(), trending: trend }, null, 2));
 
 const list = tokenList(trend).slice(0, limit);
 console.log(`  [kolektor] ${chain}: trending mengembalikan ${list.length} token`);
 
 const out: Row[] = [];
+const unavailable: Array<Record<string, unknown>> = [];
 for (const t of list) {
   const addr = String(pick(t, ["address", "token_address", "tokenAddress", "contract"]) ?? "");
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) continue;
-  const info = gmgnApi(["token", "info", "--chain", chain, "--address", addr]) ?? {};
+  const info = await gmgnApi("getTokenInfo", [chain, addr]);
   const inf = ((info.data ?? info) as Record<string, unknown>) ?? {};
-  // PACING: gmgn-cli membalas 429 RATE_LIMIT_EXCEEDED bila dipanggil beruntun (ban bisa memanjang).
-  execFileSync("sleep", ["2"]);
-  const tradersRes = gmgnApi(["token", "traders", "--chain", chain, "--address", addr, "--order-by", "profit", "--limit", "20"]);
+  const token = hunterToken(chain, normalizedAddress(chain, addr), String(t.symbol ?? inf.symbol ?? "?"), inf);
+  if (!token) { unavailable.push({ token: addr, reason: "PRICE_CIRCULATING_SUPPLY_OR_LIQUIDITY_UNAVAILABLE" }); continue; }
+  if (token.mcapUsd >= 1_000_000 || token.liquidityUsd >= 50_000) continue;
+  const tradersRes = await gmgnApi("getTokenTopTraders", [chain, addr, { order_by: "profit", direction: "desc", limit: 20 }]);
   const traderRows = tokenList(tradersRes);
   // ROI & winrate TIDAK ada di `token traders` — diambil dari `portfolio stats` per wallet (terverifikasi):
   //   roiPct = realized_profit_pnl × 100 · winratePct = pnl_stat.winrate × 100
@@ -58,29 +60,27 @@ for (const t of list) {
   for (const x of traderRows.slice(0, 3)) {
     const wa = String(pick(x, ["address", "wallet", "maker", "trader"]) ?? "");
     if (!wa) continue;
-    execFileSync("sleep", ["2"]);
-    const st = gmgnApi(["portfolio", "stats", "--chain", chain, "--wallet", wa, "--period", STATS_PERIOD]);
+    const st = await gmgnApi("getWalletStats", [chain, [wa], STATS_PERIOD]);
     const stData = ((st?.data ?? st) as Record<string, unknown>) ?? {};
-    const pnlStat = (stData.pnl_stat ?? {}) as Record<string, unknown>;
-    traders.push({
-      address: wa,
-      roiPct: num(pick(stData, ["realized_profit_pnl"])) * 100,
-      winratePct: num(pick(pnlStat, ["winrate"])) * 100,
-      windowDays: STATS_WINDOW_DAYS, // 30 hari = maksimum yang benar-benar tersedia
-    });
+    const trader = hunterTrader(wa, stData, STATS_WINDOW_DAYS);
+    if (trader) traders.push(trader); else unavailable.push({ token: addr, wallet: wa, reason: "ROI_OR_WINRATE_UNAVAILABLE" });
   }
   const row: Row = {
-    chain, token: addr,
-    symbol: String(pick(t, ["symbol", "token_symbol"]) ?? pick(inf, ["symbol", "token_symbol"]) ?? "?"),
-    // TERVERIFIKASI dari respons nyata: token info TIDAK punya field market cap.
-    // mcap = price.price × circulating_supply (contoh: 0,00028493 × 1e9 ≈ $284.929).
-    mcapUsd: num((inf.price as Record<string, unknown> | undefined)?.price) * num(pick(inf, ["circulating_supply", "total_supply"])),
-    liquidityUsd: num(pick(inf, ["liquidity", "liquidity_usd", "pool_liquidity"])),
-    traders,
+    ...token, traders, observedAt: Date.now(), source: "gmgn-proxy-read-only",
   };
   out.push(row);
   console.log("  · " + row.symbol.padEnd(10) + " mcap " + row.mcapUsd.toFixed(0) + " liq " + row.liquidityUsd.toFixed(0) + " trader " + traders.length);
 }
 const date = new Date().toISOString().slice(0, 10);
-writeFileSync(`logs/hunter/in-${date}.json`, JSON.stringify(out, null, 2));
+const path = `logs/hunter/in-${date}.json`;
+const previous = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Row[] : [];
+if (!Array.isArray(previous)) throw new Error("hunter input invalid; preserved, not overwritten");
+const merged = [...previous.filter((r) => r.chain !== chain || !out.some((x) => normalizedAddress(chain, x.token) === normalizedAddress(chain, r.token))), ...out];
+if (existsSync(path)) writeFileSync(`logs/hunter/in-before-${chain}-${stamp}.json`, JSON.stringify(previous, null, 2));
+const tmp = `${path}.tmp-${process.pid}`;
+writeFileSync(tmp, JSON.stringify(merged, null, 2)); renameSync(tmp, path);
+writeFileSync(`logs/hunter/coverage-${chain}-${stamp}.json`, JSON.stringify({ chain, observedAt: Date.now(), received: list.length, valid: out.length, unavailable }, null, 2));
 console.log(`  [kolektor] ditulis logs/hunter/in-${date}.json (${out.length} token) — jalankan: npx tsx src/hunter/run.ts`);
+}
+
+void main().catch((e) => { console.error(`[hunter] unavailable; existing input preserved: ${(e as Error).message}`); process.exitCode = 1; });

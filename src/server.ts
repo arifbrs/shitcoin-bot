@@ -9,6 +9,8 @@ import { readControl, writeControl } from "./control.js";
 import { buildQualityView } from "./quality-view.js";
 import { summarizeTraces } from "./robinhood/mark-trace.js";
 import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
+import { validateWithdraw, withdrawPolicyFromEnv } from "./execution/withdraw-gate.js";
+import { logRecord } from "./util/log.js";
 import { applyExecutionRealism } from "./execution/exec-realism.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
 import { solPriceUsd } from "./execution/jupiter.js";
@@ -3072,7 +3074,11 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   // OKX capability/arming truth. This is intentionally configuration + registry state only: the
   // dashboard must not spend paid API quota every time it polls. `npm run okx:probe` remains the
   // explicit live-health test, while this endpoint makes missing/unprobed/armed states visible.
+  // Audit 2026-10-24 (F4): dua endpoint ini satu-satunya /api tanpa isAuthed — bocor alamat dompet
+  // + saldo + posisi live tanpa sesi, dan tiap hit memicu RPC eksternal. Kini wajib auth seperti
+  // tetangganya (panel web selalu kirim cookie sesi, jadi perilaku panel tidak berubah).
   if (path === "/api/live") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
     try {
       const { liveStatus } = await import("./robinhood/live-status.js");
       res.end(JSON.stringify(await liveStatus()));
@@ -3082,6 +3088,7 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     return;
   }
   if (path === "/api/paper") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
     try {
       const { paperStatus } = await import("./rhpaper/status.js");
       res.end(JSON.stringify(await paperStatus()));
@@ -3311,19 +3318,41 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
 
   // Withdraw SOL out of the bot wallet (owner doesn't want money sitting idle). Real
   // on-chain transfer — needs the destination + amount. Never touches trading.
+  // A1 (round-3): gerbang additif — env OFF = perilaku lama utuh; env ON = allowlist/plafon.
+  // Origin mismatch (CSRF) dan jumlah NaN kini ditolak; SETIAP percobaan diaudit ke events.
   if (path === "/api/wallet/withdraw" && req.method === "POST") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     const body = await readBody(req);
     let b: { destination?: string; amount?: number | "all" } = {};
     try { b = JSON.parse(body || "{}"); } catch { /* ignore */ }
-    if (!b.destination || typeof b.destination !== "string" || b.destination.length < 32) {
-      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "valid destination address required" })); return;
+    const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin ?? null;
+    const proto = String(req.headers["x-forwarded-proto"] ?? "http");
+    const expectedOrigin = `${proto}://${req.headers.host ?? ""}`;
+    const policy = withdrawPolicyFromEnv(process.env, originHeader, expectedOrigin);
+    const audit = (result: Record<string, unknown>): void => {
+      try { logRecord("events", { type: "withdraw-audit", destination: b.destination, amount: b.amount ?? null, ...result }); } catch { /* audit tidak boleh menggagalkan jalur */ }
+    };
+    if ("error" in policy) {
+      audit({ outcome: "REJECTED", reason: policy.error });
+      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: policy.error })); return;
+    }
+    let balance = Number.NaN;
+    try { balance = await balanceSol(config.rpcUrl); } catch { /* gagal baca → validateWithdraw menolak fail-closed */ }
+    const decision = validateWithdraw(
+      { destination: String(b.destination ?? ""), amount: b.amount === "all" ? "all" : Number(b.amount), balanceSol: balance, feeSol: 5_000 / 1e9 },
+      policy,
+    );
+    if (!decision.ok) {
+      audit({ outcome: "REJECTED", reason: decision.reason, balanceSol: Number.isFinite(balance) ? balance : null });
+      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: decision.reason })); return;
     }
     try {
-      const r = await withdrawSol(config.rpcUrl, b.destination, b.amount === "all" ? "all" : Number(b.amount));
+      const r = await withdrawSol(config.rpcUrl, b.destination!, decision.amountSol);
+      audit({ outcome: "SENT", signature: r.signature, sentSol: r.sentSol });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, signature: r.signature, sentSol: r.sentSol }));
     } catch (e) {
+      audit({ outcome: "FAILED", error: (e as Error).message.slice(0, 200) });
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
     }
