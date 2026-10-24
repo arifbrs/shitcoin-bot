@@ -513,3 +513,14 @@ Status: Actions GREEN (b190455); v3 aktif utk observasi baru; PROFITABILITY NOT 
 - STATUS v3 prospektif (terkini): funnelValid 37; profitabilitas groups: A/v1 n=8 exp −2,29% ·
   A/v3 n=6 exp −2,34% · B/v1 n=1 · C/v3 n=16 exp −2,71% — SEMUA NEGATIF, INSUFFICIENT utk verdict;
   coverage 7d 10,14% (sleep host) — bukan window forward-test sah.
+
+## CHECKPOINT RISET PROSPEKTIF (2026-10-25) — commit 3fb5f10
+- Coverage 7d: aktif 17,23h (10,26%) · OUTAGE 31,07h (29,86h + 1,21h) · BEFORE_COHORT 119,69h —
+  dipisah eksplisit; 132 observasi sinyal hilang di outage.
+- v3 per arm (funnel-valid): A n=10 exp −2,29% CI[−2,36,−2,22] · C n=16 exp −2,71% CI[−2,76,−2,66]
+  — winrate 0%, PF 0, MDD 2,3-2,7% (basis modal Σ entry). INSUFFICIENT utk verdict (n kecil).
+- Studi fitur prospektif (rh:feature-study): ketersediaan 48/48; SEMUA fitur diskriminasi lemah
+  (Δ≤0,29pp, CI tumpang tindih) — jujur dilaporkan, tidak ada fitur dipromosikan.
+- GMGN C5: sinyal segar (≤5m) n=17 — 15m med −11,1%, 60m med −47,7% (NEGATIF kuat, CI di luar nol
+  utk 60m mean); 15–60m justru positif median (n=6, tidak bermakna) — heterogen, tanpa klaim.
+- Rejeksi entry dominan: round-trip-beyond-stop 1.326 (biaya putaran > jarak TP sejak awal).
