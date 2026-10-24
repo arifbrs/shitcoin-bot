@@ -393,3 +393,32 @@ H-C INSUFFICIENT · H-D/E PENDING DATA. TIDAK ADA klaim edge; hasil negatif dipe
 
 180 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · ledger-audit exit 0 · lane SEMUA OK.
 PROFITABILITY NOT YET VALIDATED.
+
+## ROUND-8 AUDIT (2026-10-24, sesi kedelapan) — AKAR ZERO-FILL & EKSEKUSI UJUNG-KE-UJUNG (commit f156558)
+
+**Akar LIQUIDITY_UNKNOWN (bukan kondisi pasar)**: posisi 10:20–12:40 dibuka dari cache kandidat
+PRA-ENRICHMENT (liquidityUsd FIELD_ABSENT) — token yang sama punya pair DexScreener hidup saat
+diperiksa (AAPL $241k · AMZN $570k · AMD $366k) dan ethUsdOf() bekerja (2349,72, bukan fallback).
+= informasi tak tersedia saat entry (lineage cache), bukan likuiditas pasar yang buruk.
+Perbaikan: scanner kini menyimpan provenance (liquiditySource/Reason/At, retry berbatas);
+DEXSCREENER_NO_PAIR ≠ FETCH_FAILED ≠ kondisi pasar — tiga kategori berbeda.
+
+**EKSEKUSI SIMULASI KINI JALAN**: funnel machine-generated (`npm run rh:funnel`): 1.287 OPEN →
+14 ENTRY_SIM_FILLED → **4+ COMPLETED_SIM_TRADE nyata** (AMC/DELL/ASML/DDOG — likuiditas
+$22k–$976k, semua stop-exit kecil; hasil sim net negatif dilaporkan apa adanya). 534 REJECT dengan
+alasan+timestamp. Pipeline end-to-end TERBUKTI dengan observasi pasar prospektif.
+
+**Metodologi latensi dikunci (A — multiplikatif pada output)**: simulatedExitWeth() =
+exitOut×(1−l)² eksak BigInt (pemotongan per kaki = wei nyata per fill). Kasus auditor:
+985.172.085.497.560 wei (ideal desimal …561,25) → net sim **−2,622700%** (auditor ideal −2,622791%;
+selisih = floor per kaki, didokumen+ditest). Jalur "netPct−overlay" dibatalkan untuk per-trade.
+
+**Fixture deterministik (P6)**: engine.cycle() penuh offline (ethUsd disuntik): likuiditas →
+sim entry fill → posisi → sim exit fill → net komposit eksak — dilabel TES, bukan bukti pasar.
+
+**Akar outage 29,86 jam**: mesin SLEEP (pmset: Maintenance Sleep berulang, baterai; uptime 11 hari
+tanpa reboot). Perbaikan penuh butuh keputusan operator (caffeinate/pmset/VPS — deploy/ sudah punya
+plist+service). Coverage tetap: 7,43% trailing-7d / 29,48% cohort-span.
+
+182 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. Withdraw tetap LEGACY = RISIKO TERBUKA.
+PROFITABILITY NOT YET VALIDATED — 4 completed sim trade pertama (semua rugi kecil di stop) bukan bukti.
