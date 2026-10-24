@@ -11,7 +11,7 @@ test("BLOCKER-1 simNetFor: bucket benar utk tiap versi dgn bukti penuh", () => {
   eq(simNetFor({ ...base, version: V.v1, entrySimFillOutRaw: "1990", exitSimFillOutRaw: "1980" }).bucket, "v1", "v1");
   eq(simNetFor({ ...base, version: V.v2, entrySimFillOutRaw: "1990", exitSimFillOutRaw: "1980" }).bucket, "v2-defective", "v2d");
   eq(simNetFor({ ...base, version: V.v3, exitSimFillOutRaw: "1990" }).bucket, "v3", "v3");
-  eq(simNetFor({ ...base, version: null }).bucket, "quote-only");
+  eq(simNetFor({ ...base, version: null }).bucket, "quote-only", "quote-only");
   eq(simNetFor({ ...base, version: V.v3, exitSimFillOutRaw: null }).bucket, "invalid", "v3 tanpa bukti exit = invalid");
   eq(simNetFor({ ...base, version: V.v1, exitSimFillOutRaw: "1980" }).bucket, "invalid", "v1 tanpa bukti entry = invalid");
 });
