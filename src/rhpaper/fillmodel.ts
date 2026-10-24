@@ -26,11 +26,16 @@
  *                                  di engine — tidak digandakan di sini.
  * Hasil selalu diberi label SIMULASI — tidak pernah digabung ke PnL nyata/quote.
  */
-/** (P0-4) v2 = perubahan metodologi MATERIAL: gerbang exit memakai likuiditas WAKTU-KELUAR
- *  (bukan likuiditas entry yang disimpan), kuantitas exit = token yang benar-benar diterima
- *  simulasi entry (bukan qty quote penuh), dan usia quote dibatasi (STALE_QUOTE). Kohort v1
- *  tetap utuh — baris lama TIDAK dinaikkan ke standar v2. */
-export const FILL_MODEL_VERSION = "rhpaper-fillmodel-v2";
+/** (FINAL §1) v3 = koreksi DOUBLE-COUNT v2: v2 memotong (1−l) entry DUA kali (kuantitas entry
+ *  dipotong, lalu quote ulang utk kuantitas itu DISKALAKAN lagi) — 1 completed trade v2 divalidasi
+ *  ulang dan DIBEKUkan sebagai bukti defek. v3 semantik: (1−l) entry diterapkan SEKALI di entry
+ *  (kuantitas sim); exit = RE-QUOTE NYATA atas kuantitas itu (engine memanggil quoteSell(simQty))
+ *  + (1−l) exit SEKALI. Kohort: v1 beku · v2 beku (defek) · v3 aktif utk observasi baru.
+ *  simNetFor() = SATU-SATUNYA otoritas net-sim per versi — funnel/replay/cohort/ft-daily wajib
+ *  memanggilnya; dilarang menghitung sendiri. */
+export const FILL_MODEL_VERSION = "rhpaper-fillmodel-v3";
+export const FILL_MODEL_V1 = "rhpaper-fillmodel-v1";
+export const FILL_MODEL_V2_DEFECTIVE = "rhpaper-fillmodel-v2";
 
 export interface FillAssumptions { maxLiquiditySharePct: number; latencySlippagePct: number; rejectImpactPct: number }
 export const DEFAULT_ASSUMPTIONS: FillAssumptions = { maxLiquiditySharePct: 2, latencySlippagePct: 0.5, rejectImpactPct: 5 };
@@ -43,9 +48,6 @@ export interface FillInput {
   sizeWethRaw: string; // ukuran trade untuk cek pangsa likuiditas
   ethUsd: number | null; // untuk konversi ukuran → USD; null = TOLAK (fail-closed)
   quoteAgeMs?: number | null; // (P0-4) usia quote saat dipakai — >90s = STALE_QUOTE (tolak)
-  simulatedTokensRaw?: string | null; // (P0-4, sisi exit) token yang BENAR-BENAR diterima sim entry;
-  // WETH keluar = quoteOut × (simTokens/quoteTokens) × (1−l) — re-quote semantik atas kuantitas berubah
-  quoteTokensRaw?: string | null; // (P0-4) qty yang dikutip pada exitQuoteOut (biasanya qty penuh entry)
 }
 
 export type SimulatedFill =
@@ -65,6 +67,24 @@ export function applyLatencySlippage(amountOutRaw: string, slippagePct: number):
  * SATU-SATUNYA dasar net sim untuk baris fillmodel (round-8; jalur "netPct − overlay pp"
  * dibatalkan karena berbeda dari mekanisme ini sebesar ~0,005 pp dan menyamarkan basis).
  */
+/**
+ * (FINAL-2, dipindah ke sini — SATU definisi utk engine & simNetFor) Konversi rasional→double yang aman-2^53: pp = delta/entry×100 dihitung sebagai
+ * bilangan bulat 25-digit (BigInt, tanpa kehilangan), lalu decimal-string → Number (pembulatan
+ * double terdekat yang deterministik). Mendukung delta/entry di ATAS 2^53, perubahan 1-wei,
+ * nilai negatif, dan entry hingga 10^21+ wei. -0 dinormalisasi ke 0 (serialisasi deterministik).
+ */
+export function rationalPct(delta: bigint, entry: bigint): number {
+  if (entry <= 0n) throw new Error("rationalPct: entry harus > 0");
+  if (delta === 0n) return 0;
+  const sign = delta < 0n ? -1 : 1;
+  const I = (delta < 0n ? -delta : delta) * 10n ** 25n / entry; // pp × 10^23 (100×2 digit)
+  const s = I.toString().padStart(24, "0");
+  const intPart = s.slice(0, s.length - 23) || "0";
+  const fracPart = s.slice(s.length - 23);
+  const v = Number(`${sign < 0 ? "-" : ""}${intPart}.${fracPart}`);
+  return v === 0 ? 0 : v; // -0 → 0 (deterministik)
+}
+
 export function simulatedExitWeth(quoteWethOut: string, a: FillAssumptions = DEFAULT_ASSUMPTIONS): bigint {
   const bps = BigInt(Math.round(a.latencySlippagePct * 100));
   const once = BigInt(quoteWethOut) * (10_000n - bps) / 10_000n;
@@ -109,12 +129,44 @@ export function simulateFill(input: FillInput, a: FillAssumptions = DEFAULT_ASSU
   if (!/^\d+$/.test(input.quoteAmountOut) || BigInt(input.quoteAmountOut) <= 0n) {
     return { filled: false, reason: "QUOTE_AMOUNT_INVALID", version: FILL_MODEL_VERSION };
   }
-  // (P0-4) sisi exit: skalakan ke kuantitas sim entry (re-quote semantik), lalu potongan latensi.
-  let out = BigInt(input.quoteAmountOut);
-  if (input.simulatedTokensRaw != null && input.quoteTokensRaw != null && /^\d+$/.test(input.simulatedTokensRaw) && /^\d+$/.test(input.quoteTokensRaw)) {
-    const q = BigInt(input.quoteTokensRaw);
-    if (q === 0n) return { filled: false, reason: "QUOTE_QTY_INVALID", version: FILL_MODEL_VERSION };
-    out = out * BigInt(input.simulatedTokensRaw) / q;
+  return { filled: true, fillOutRaw: applyLatencySlippage(input.quoteAmountOut, a.latencySlippagePct), latencySlippagePct: a.latencySlippagePct, version: FILL_MODEL_VERSION };
+}
+
+/** (FINAL §2) OTORITAS NET-SIM versi-sadar — dipanggil funnel/replay/cohort-stats/ft-daily.
+ *  v1: komposit dua-potongan atas quote keluar penuh (dibekukan).
+ *  v2: DEFECT (double-count) — dikembalikan apa adanya dari fillOutRaw + ditandai, tidak dihitung
+ *      ulang dengan semantik lain (historis utuh).
+ *  v3: exit fillOutRaw = hasil re-quote kuantitas sim (potongan exit sudah di dalamnya) —
+ *      net = quotePnl(entry, fillOutRaw); entry potongan SEKALI, exit potongan SEKALI. */
+export const ROUND_TRIP_GAS_WEI_SHARED = 11_400_000_000_000n; // paritas dgn engine.ROUND_TRIP_GAS_WEI dites
+
+/** Net quote (gas dikurangi) — identik dgn engine.quotePnl (paritas dites di engine.test). */
+export function quoteNet(entryRaw: string, outRaw: string, gasWei = ROUND_TRIP_GAS_WEI_SHARED): { netWethRaw: string; netPct: number } {
+  const entry = BigInt(entryRaw), out = BigInt(outRaw);
+  if (entry <= 0n || out < 0n || gasWei < 0n) throw new Error("quoteNet: nilai tidak sah");
+  const net = out - entry - gasWei;
+  return { netWethRaw: net.toString(), netPct: rationalPct(net, entry) };
+}
+
+export function simNetFor(input: { version: string | null; entryWethRaw: string; exitQuoteWethRaw: string;
+  entrySimFillOutRaw?: string | null; exitSimFillOutRaw?: string | null }):
+  { bucket: "v1" | "v2-defective" | "v3" | "quote-only" | "invalid"; netWethRaw: string; netPct: number } {
+  const { version, entryWethRaw, exitQuoteWethRaw } = input;
+  if (version === FILL_MODEL_V1 && input.entrySimFillOutRaw != null && input.exitSimFillOutRaw != null) {
+    const r = quoteNet(entryWethRaw, simulatedExitWeth(exitQuoteWethRaw).toString());
+    return { bucket: "v1", netWethRaw: r.netWethRaw, netPct: r.netPct };
   }
-  return { filled: true, fillOutRaw: applyLatencySlippage(out.toString(), a.latencySlippagePct), latencySlippagePct: a.latencySlippagePct, version: FILL_MODEL_VERSION };
+  if (version === FILL_MODEL_V2_DEFECTIVE && input.entrySimFillOutRaw != null && input.exitSimFillOutRaw != null) {
+    const r = quoteNet(entryWethRaw, input.exitSimFillOutRaw); // rekam apa adanya (double-count historis)
+    return { bucket: "v2-defective", netWethRaw: r.netWethRaw, netPct: r.netPct };
+  }
+  if (version === FILL_MODEL_VERSION && input.exitSimFillOutRaw != null) {
+    const r = quoteNet(entryWethRaw, input.exitSimFillOutRaw);
+    return { bucket: "v3", netWethRaw: r.netWethRaw, netPct: r.netPct };
+  }
+  if (version == null) {
+    const r = quoteNet(entryWethRaw, exitQuoteWethRaw);
+    return { bucket: "quote-only", netWethRaw: r.netWethRaw, netPct: r.netPct };
+  }
+  return { bucket: "invalid", netWethRaw: "0", netPct: 0 };
 }

@@ -80,14 +80,13 @@ test("R8 P4: kasus auditor eksak — metodologi A multiplikatif, produksi = floo
   // fungsi yang sama (terverifikasi di rh:cohort-stats); TIDAK ada jalur kedua yang menjumlah pp.
 });
 
-test("P0-4 v2: quote basi ditolak; exit menskalakan ke kuantitas sim entry (re-quote semantik)", () => {
+test("FINAL §1 v3: TIDAK ada penskalaan kedua — quote untuk kuantitas sim hanya kena (1−l) exit SEKALI", () => {
   const happy = { quoteAmountIn: "1000000000000000", impactPct: 0.2, liquidityUsd: 100_000, sizeWethRaw: "1000000000000000", ethUsd: 2361 };
-  const stale = simulateFill({ ...happy, quoteAmountOut: "2000", quoteAgeMs: 91_000 } as never);
+  const stale = simulateFill({ ...happy, quoteAmountOut: "2000", quoteAgeMs: 91_000 });
   assert(!stale.filled && stale.reason === "STALE_QUOTE", "usia quote >90s = STALE_QUOTE");
-  const fresh = simulateFill({ ...happy, quoteAmountOut: "2000", quoteAgeMs: 5_000 } as never);
-  assert(fresh.filled, "quote segar lolos");
-  // exit: quote untuk qty penuh 2000 token; sim entry hanya menerima 1990 → WETH keluar ikut menskala.
-  const scaled = simulateFill({ ...happy, quoteAmountOut: "2000", quoteAgeMs: 5_000, simulatedTokensRaw: "1990", quoteTokensRaw: "2000" } as never);
-  if (!scaled.filled) throw new Error("harusnya fill");
-  eq(scaled.fillOutRaw, applyLatencySlippage("1990", 0.5), "re-quote atas kuantitas sim × potongan latensi");
+  const fresh = simulateFill({ ...happy, quoteAmountOut: "2000", quoteAgeMs: 5_000 });
+  if (!fresh.filled) throw new Error("harusnya fill: quote segar");
+  eq(fresh.fillOutRaw, "1990", "exit = re-quote(simQty) ×(1−l) SEKALI — double-count v2 dihapus");
+  // Bukti anti-double-count: hasil ≠ (1−l)² atas quote (1980 = bug v2 — dikoreksi jadi 1990).
+  eq(applyLatencySlippage(applyLatencySlippage("2000", 0.5), 0.5), "1980", "bug v2: 1980 — TIDAK sama dengan hasil v3");
 });

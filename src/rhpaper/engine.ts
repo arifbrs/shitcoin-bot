@@ -3,7 +3,8 @@
  * not a proven total loss. Historical gas is an assumption, not measured execution cost.
  */
 import { quoteBuy, quoteSell, ethUsdOf } from "./exec.js";
-import { simulateFill, FILL_MODEL_VERSION } from "./fillmodel.js";
+import { simulateFill, FILL_MODEL_VERSION, rationalPct } from "./fillmodel.js";
+export { rationalPct }; // re-export: otoritas tunggal (tes lama mengimpor dari sini)
 import { createHash, randomUUID } from "node:crypto";
 import { cacheStale, liquiditySnapshot, loadCandidates, scanCandidates } from "./scanner.js";
 import { appendLedger, loadState, saveState, withLockAsync, type Position } from "./state.js";
@@ -12,23 +13,6 @@ export interface Cfg { maker: string; usd: number; maxPositions: number; stopPct
 
 // Historical gas assumption, NOT a measured fee for each OKX transaction. Keep units exact.
 export const ROUND_TRIP_GAS_WEI = 11_400_000_000_000n;
-/**
- * (FINAL-2) Konversi rasional→double yang aman-2^53: pp = delta/entry×100 dihitung sebagai
- * bilangan bulat 25-digit (BigInt, tanpa kehilangan), lalu decimal-string → Number (pembulatan
- * double terdekat yang deterministik). Mendukung delta/entry di ATAS 2^53, perubahan 1-wei,
- * nilai negatif, dan entry hingga 10^21+ wei. -0 dinormalisasi ke 0 (serialisasi deterministik).
- */
-export function rationalPct(delta: bigint, entry: bigint): number {
-  if (entry <= 0n) throw new Error("rationalPct: entry harus > 0");
-  if (delta === 0n) return 0;
-  const sign = delta < 0n ? -1 : 1;
-  const I = (delta < 0n ? -delta : delta) * 10n ** 25n / entry; // pp × 10^23 (100×2 digit)
-  const s = I.toString().padStart(24, "0");
-  const intPart = s.slice(0, s.length - 23) || "0";
-  const fracPart = s.slice(s.length - 23);
-  const v = Number(`${sign < 0 ? "-" : ""}${intPart}.${fracPart}`);
-  return v === 0 ? 0 : v; // -0 → 0 (deterministik)
-}
 
 export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_GAS_WEI): { grossPct: number; netPct: number; netWethRaw: string } {
   const entry = BigInt(entryRaw), exit = BigInt(exitRaw);
@@ -39,7 +23,7 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
   // Metode: rasional eksak via BigInt — I = |delta|×10^25 / entry merepresentasikan pp×10^23
   // (25 digit di bawah koma), lalu string → Number() membulatkan KE TERDEKAT double secara
   // deterministik. Tidak ada konversi Number(BigInt) yang kehilangan digit signifikan.
-  const pct = (delta: bigint): number => rationalPct(delta, entry);
+  const pct = (delta: bigint): number => rationalPct(delta, entry); // dari fillmodel (satu definisi)
   return { grossPct: pct(gross), netPct: pct(net), netWethRaw: net.toString() };
 }
 
@@ -122,8 +106,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             ? { filled: false as const, reason: simEntry == null ? "ENTRY_SIM_MISSING" : simEntry.filled === false ? `ENTRY_SIM_REJECTED:${simEntry.reason ?? "?"}` : "ENTRY_SIM_VERSION_MISMATCH", version: FILL_MODEL_VERSION }
             : simulateFill({ quoteAmountIn: p.qtyRaw, quoteAmountOut: sell.quote!.amountOut, impactPct: sell.quote!.impactPct,
             liquidityUsd: exitLiq?.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await (io.ethUsd ?? ethUsdOf)(),
-            quoteAgeMs: Date.now() - (sell.quote!.ts ?? Date.now()),
-            simulatedTokensRaw: simEntry!.fillOutRaw!, quoteTokensRaw: p.qtyRaw });
+            quoteAgeMs: Date.now() - (sell.quote!.ts ?? Date.now()) }); // (FINAL §1) quote SUDAH utk kuantitas sim (re-quote nyata) — tanpa penskalaan kedua
           appendLedger({
             ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
             tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen", measurementVersion: "rhpaper-units-arm-v3",

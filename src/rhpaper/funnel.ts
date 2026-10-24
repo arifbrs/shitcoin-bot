@@ -4,8 +4,8 @@
  * setiap penolakan punya alasan primer + waktu. Scanner-accept ≠ fill-eligible — terpisah jelas.
  */
 import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
-import { simulatedExitWeth } from "./fillmodel.js";
-import { quotePnl, ROUND_TRIP_GAS_WEI } from "./engine.js";
+import { simNetFor } from "./fillmodel.js";
+import { ROUND_TRIP_GAS_WEI } from "./engine.js";
 import { join } from "node:path";
 
 export interface FunnelCounts {
@@ -134,8 +134,11 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
         entryWethRaw: j.entryWethRaw, exitQuoteWethRaw: j.exitWethRaw,
         entrySimFill: o?.simFillEntry, exitSimFill: xs,
         netPctQuote: j.netPct,
-        netPctSim: j.fillModelVersion != null && typeof j.entryWethRaw === "string" && typeof j.exitWethRaw === "string"
-          ? quotePnl(j.entryWethRaw, simulatedExitWeth(j.exitWethRaw).toString()).netPct : null,
+        // (FINAL §2) OTORITAS TUNGGAL: net sim dari simNetFor (versi-sadar), bukan hitung sendiri.
+        netPctSim: (() => { const o = openRowById.get(id); const es2 = o?.simFillEntry as { fillOutRaw?: string } | undefined; const xs2 = j.simFillExit as { fillOutRaw?: string } | undefined;
+          if (typeof j.entryWethRaw !== "string" || typeof j.exitWethRaw !== "string") return null;
+          return simNetFor({ version: j.fillModelVersion as string | null, entryWethRaw: j.entryWethRaw, exitQuoteWethRaw: j.exitWethRaw,
+            entrySimFillOutRaw: es2?.fillOutRaw ?? null, exitSimFillOutRaw: xs2?.fillOutRaw ?? null }).netPct; })(),
         gasWeiPerRoundTrip: ROUND_TRIP_GAS_WEI.toString(), fillModelVersion: j.fillModelVersion ?? null,
       });
     }

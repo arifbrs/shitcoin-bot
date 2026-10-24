@@ -174,7 +174,7 @@ test("FINAL-P0-1: sim entry PERSIST di posisi (restart-safe); exit re-quote kuan
     const disk = JSON.parse(readFileSync(join(process.env.RHPAPER_DIR!, "state.json"), "utf8")) as { positions: Array<{ simFillEntry?: { filled: boolean; fillOutRaw?: string; version?: string } }> };
     const sim = disk.positions[0]!.simFillEntry;
     eq(sim?.filled, true, "sim entry tersimpan di state crash-safe");
-    eq(sim?.version, "rhpaper-fillmodel-v2", "versi model tersimpan");
+    eq(sim?.version, "rhpaper-fillmodel-v3", "versi model tersimpan (v3 = koreksi double-count)");
     eq(sim?.fillOutRaw, applyLatencySlippage("2000000000000000000000", 0.5), "kuantitas sim = quote entry ×(1−l)");
     // EXIT: quote jual harus minta KUANTITAS SIM (bukan qty penuh), dan exit sim terisi.
     phase = 1;

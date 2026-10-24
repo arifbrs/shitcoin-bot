@@ -11,8 +11,8 @@
  */
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { quotePnl } from "./engine.js";
-import { simulatedExitWeth } from "./fillmodel.js";
+import { simNetFor, quoteNet } from "./fillmodel.js";
+import { countFunnel } from "./funnel.js";
 
 export interface ReplayRecord {
   tradeId: string; arm: string; symbol: string; token: string;
@@ -24,13 +24,18 @@ export interface ReplayRecord {
   consistent: boolean;
 }
 
-export function replay(dir = "logs/rhpaper", now = Date.now()): { ok: boolean; byVersion: Record<string, number>; mismatches: number; records: ReplayRecord[] } {
-  const opens = new Map<string, Record<string, unknown>>();
+export function replay(dir = "logs/rhpaper", now = Date.now()): { ok: boolean; byVersion: Record<string, number>; mismatches: number; records: ReplayRecord[]; reconciliation: Record<string, unknown> } {
+  const rawRows: Array<Record<string, unknown>> = [];
   const files = readdirSync(dir).filter((f) => /^ledger-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
   for (const f of files) for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
-    if (!line.includes('"action":"OPEN"')) continue;
-    try { const j = JSON.parse(line) as Record<string, unknown>; if (j.tradeId) opens.set(String(j.tradeId), j); } catch { /* rusak */ }
+    if (!line.trim()) continue;
+    try { rawRows.push(JSON.parse(line) as Record<string, unknown>); } catch { /* rusak */ }
   }
+  // (FINAL §2) VALIDATOR YANG SAMA dgn funnel: hanya tradeId di validCompletedIds yang layak.
+  const fc = countFunnel(rawRows);
+  const validIds = new Set(fc.validCompletedIds);
+  const opens = new Map<string, Record<string, unknown>>();
+  for (const j of rawRows) if (String(j.action ?? "") === "OPEN" && j.tradeId) opens.set(String(j.tradeId), j);
   const records: ReplayRecord[] = [];
   let mismatches = 0;
   for (const f of files) for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
@@ -38,41 +43,30 @@ export function replay(dir = "logs/rhpaper", now = Date.now()): { ok: boolean; b
     let c: Record<string, unknown>;
     try { c = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
     const o = opens.get(String(c.tradeId ?? ""));
+    const isValidCompleted = validIds.has(String(c.tradeId ?? ""));
     const entry = String(c.entryWethRaw ?? ""), exitQuote = String(c.exitWethRaw ?? "");
     if (!/^\d+$/.test(entry) || !/^\d+$/.test(exitQuote)) continue;
     const version = typeof c.fillModelVersion === "string" ? c.fillModelVersion : null;
     const xs = c.simFillExit as { filled?: boolean; fillOutRaw?: string; version?: string } | undefined;
     const es = o?.simFillEntry as { filled?: boolean; fillOutRaw?: string; version?: string } | undefined;
-    let bucket: ReplayRecord["bucket"], replayNetWethRaw: string, replayNetPct: number;
-    if (version === "rhpaper-fillmodel-v2" && es?.filled === true && xs?.filled === true && xs.fillOutRaw != null) {
-      // v2: exitSimFill.fillOutRaw = bukti eksekusi sim keluar (re-quote kuantitas sim ×(1−l)).
-      const r = quotePnl(entry, xs.fillOutRaw);
-      bucket = "v2"; replayNetWethRaw = r.netWethRaw; replayNetPct = r.netPct;
-    } else if (version === "rhpaper-fillmodel-v1" && es?.filled === true && xs?.filled === true) {
-      // v1: komposit dua-potongan atas quote keluar penuh (dibekukan; jangan diubah).
-      const r = quotePnl(entry, simulatedExitWeth(exitQuote).toString());
-      bucket = "v1"; replayNetWethRaw = r.netWethRaw; replayNetPct = r.netPct;
-    } else if (version == null) {
-      const r = quotePnl(entry, exitQuote);
-      bucket = "quote-only"; replayNetWethRaw = r.netWethRaw; replayNetPct = r.netPct;
-    } else {
-      bucket = "invalid"; replayNetWethRaw = "0"; replayNetPct = 0; // sim setengah jalan / versi campur
-    }
-    // Konsistensi = NILAI LEDGER harus terekonstrusi persis dari bukti mentahnya:
-    // netWethRaw (bila tersimpan) === quotePnl(entry, exitQuote); netPct (bila ada) ≈ sama
-    // (toleransi 1e-4 untuk baris presisi-4-desimal lama). Net SIM per versi dilaporkan
-    // terpisah — v1/v2 tidak punya kembaran tersimpan, jadi tidak dibandingkan dengannya.
+    // (FINAL §2) OTORITAS TUNGGAL: rekonstruksi net sim via simNetFor (versi-sadar).
+    const s = simNetFor({ version, entryWethRaw: entry, exitQuoteWethRaw: exitQuote,
+      entrySimFillOutRaw: es?.fillOutRaw ?? null, exitSimFillOutRaw: xs?.fillOutRaw ?? null });
+    const bucket = s.bucket as unknown as ReplayRecord["bucket"];
+    const replayNetWethRaw = s.netWethRaw, replayNetPct = s.netPct;
+    // Konsistensi = NILAI LEDGER harus terekonstrusi persis dari bukti mentahnya — via
+    // simNetFor bucket quote-only (net gas, satu otoritas): netWethRaw (bila tersimpan) harus
+    // cocok; netPct (bila ada) ≈ sama (toleransi 1e-4 utk baris presisi-4-desimal lama).
     const storedRaw = typeof c.netWethRaw === "string" && /^-?\d+$/.test(c.netWethRaw) ? c.netWethRaw : null;
     const storedPct = Number.isFinite(Number(c.netPct)) ? Number(c.netPct) : null;
     // (FINAL §3) Basis ditentukan oleh DATA, bukan string versi: baris yang MENYIMPAN netWethRaw
     // = basis net (gas dipotong — termasuk baris transisi tanpa measurementVersion); baris yang
     // hanya menyimpan netPct = basis gross v0 (netPct == grossPct di baris itu, terverifikasi).
-    const quoteReplay = quotePnl(entry, exitQuote);
     const expectedPct = storedRaw != null
-      ? quoteReplay.netPct
+      ? quoteNet(entry, exitQuote).netPct
       : (Number(BigInt(exitQuote) - BigInt(entry)) / Number(entry)) * 100;
     let consistent = true;
-    if (storedRaw != null && storedRaw !== quoteReplay.netWethRaw) consistent = false;
+    if (storedRaw != null && storedRaw !== quoteNet(entry, exitQuote).netWethRaw) consistent = false;
     // Toleransi 1,5e-4: baris v3 lama disimpan dengan formula 4-desimal (kuantum 1e-4, truncation
     // toward-zero utk negatif) + noise float — kesalahan riil ≥ 1 bp tetap tertangkap.
     if (storedPct != null && Math.abs(storedPct - expectedPct) > 1.5e-4) consistent = false;
@@ -84,13 +78,19 @@ export function replay(dir = "logs/rhpaper", now = Date.now()): { ok: boolean; b
   }
   const byVersion: Record<string, number> = {};
   for (const r of records) byVersion[`${r.bucket}:${r.fillModelVersion}`] = (byVersion[`${r.bucket}:${r.fillModelVersion}`] ?? 0) + 1;
-  return { ok: mismatches === 0, byVersion, mismatches, records };
+  const byVersionValid: Record<string, number> = {};
+  for (const r of records) if (validIds.has(r.tradeId)) byVersionValid[`${r.bucket}:${r.fillModelVersion}`] = (byVersionValid[`${r.bucket}:${r.fillModelVersion}`] ?? 0) + 1;
+  const reconciliation = { funnelCompleted: fc.completed, evidenceCount: fc.validCompletedIds.length,
+    replayValidRows: Object.values(byVersionValid).reduce((a, b) => a + b, 0),
+    consistent: fc.completed === fc.validCompletedIds.length && fc.validCompletedIds.length === Object.values(byVersionValid).reduce((a, b) => a + b, 0),
+    note: "COMPLETED === bukti unik === replay valid; duplikat/invalid dilaporkan terpisah" };
+  return { ok: mismatches === 0 && reconciliation.consistent, byVersion, mismatches, records, reconciliation };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const r = replay();
-  console.log(JSON.stringify({ ok: r.ok, byVersion: r.byVersion, mismatches: r.mismatches }, null, 1));
   const day = new Date().toISOString().slice(0, 10);
   writeFileSync(join("logs", `rh-replay-${day}.json`), JSON.stringify(r, null, 2));
+  console.log(JSON.stringify({ ok: r.ok, byVersion: r.byVersion, mismatches: r.mismatches, reconciliation: r.reconciliation }, null, 1));
   if (!r.ok) process.exitCode = 1;
 }

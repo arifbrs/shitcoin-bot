@@ -20,7 +20,7 @@ const LATENCY_PCT_PER_SIDE = DEFAULT_ASSUMPTIONS.latencySlippagePct; // SATU SUM
 const OVERLAY_PP = latencyOverlayPct(); // eksak: (1-(1-lat)^2)*100
 const GAS_WEI_PER_ROUND_TRIP = 11_400_000_000_000n;
 
-interface CloseRow { arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null; entryWethRaw: string | null; exitWethRaw: string | null; fillOutRaw: string | null; version: string; simEntryFilled: boolean | null; simExitFilled: boolean | null }
+interface CloseRow { entrySimFillOutRaw?: string | null; arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null; entryWethRaw: string | null; exitWethRaw: string | null; fillOutRaw: string | null; version: string; simEntryFilled: boolean | null; simExitFilled: boolean | null }
 
 function bootstrapCi(values: number[], resamples = 2000, seed = 42): { lo: number; hi: number } {
   if (!values.length) return { lo: NaN, hi: NaN };
@@ -76,7 +76,8 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
         version: typeof j.measurementVersion === "string" ? j.measurementVersion : "pre-units(v0, netPct=gross)",
         simEntryFilled: (() => { const s = j.simFillEntry as { filled?: boolean } | undefined; return s && typeof s.filled === "boolean" ? s.filled : null; })(),
         simExitFilled: (() => { const s = j.simFillExit as { filled?: boolean } | undefined; return s && typeof s.filled === "boolean" ? s.filled : null; })(),
-        fillOutRaw: (() => { const s = j.simFillExit as { fillOutRaw?: string } | undefined; return typeof s?.fillOutRaw === "string" && /^\d+$/.test(s.fillOutRaw) ? s.fillOutRaw : null; })() });
+        fillOutRaw: (() => { const s = j.simFillExit as { fillOutRaw?: string } | undefined; return typeof s?.fillOutRaw === "string" && /^\d+$/.test(s.fillOutRaw) ? s.fillOutRaw : null; })(),
+        entrySimFillOutRaw: (() => { const s = j.simFillEntry as { fillOutRaw?: string } | undefined; return typeof s?.fillOutRaw === "string" && /^\d+$/.test(s.fillOutRaw) ? s.fillOutRaw : null; })() });
     }
   }
 
