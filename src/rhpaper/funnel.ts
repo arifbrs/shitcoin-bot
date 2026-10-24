@@ -76,6 +76,9 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
     { stage: "EXIT_SIM_FILLED", count: exitSimFilled, note: `tak-bisa-keluar (model)=${exitSimRejected}` },
     { stage: "COMPLETED_SIM_TRADE", count: completed, note: "entry-fill DAN exit-fill lolos model — satu-satunya kohor net-sim yang sah" });
 
+  // (FINAL C) invarian konsistensi internal — funnel tidak boleh lolos dengan hitungan bocor.
+  if (opens !== opensWithLiq + opensNoLiq) throw new Error(`funnel: OPEN ${opens} ≠ liq ${opensWithLiq} + no-liq ${opensNoLiq}`);
+  if (entrySimFilled + entrySimRejected > opens) throw new Error("funnel: sim-entry melebihi OPEN");
   const rate = (n: number, d: number): number | null => (d > 0 ? Number((100 * n / d).toFixed(2)) : null);
   return { generatedAt: new Date(now).toISOString(), calcVersion: "rh-funnel-r8",
     stages, conversion: { dataValidPct: rate(dataValid, discovered), liquidityVerifiedPct: rate(liquidityVerified, dataValid),

@@ -422,3 +422,24 @@ plist+service). Coverage tetap: 7,43% trailing-7d / 29,48% cohort-span.
 
 182 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. Withdraw tetap LEGACY = RISIKO TERBUKA.
 PROFITABILITY NOT YET VALIDATED — 4 completed sim trade pertama (semua rugi kecil di stop) bukan bukti.
+
+## MATRIKS PENYELESAIAN KANONIK (FINAL DIRECTIVE — satu backlog, status stabil)
+
+| ID | Komponen | Status | Bukti / verifikasi |
+|---|---|---|---|
+| A1 | Presisi netPct (kasus DELL −2,622791450244%) | **DONE** | quotePnl 10-desimal (commit ini); fillmodel.test kasus eksak; ledger-audit 1.282 baris 0 mismatch (toleransi 1e-4 utk baris 4dp lama) |
+| A2 | Satu otoritas akuntansi | **DONE** | quotePnl+simulatedExitWeth satu definisi; semua laporan (cohort-stats/funnel/ledger-audit/ft-daily) memanggilnya |
+| A3 | Kohort versi akuntansi | **DONE** | v0 1.207 / v3-quote / v3-fillmodel saling-lepas, sum-check di rh:cohort-stats |
+| A4 | Metodologi latensi | **DONE** | A-multiplikatif eksak BigInt (simulatedExitWeth); jalur pp dibatalkan utk per-trade; dites |
+| B | Pipeline sim eksekusi ujung-ke-ujung | **DONE + AWAITING_OBSERVATION** | 5 COMPLETED_SIM_TRADE prospektif nyata (funnel); replay otomatis = rh:ledger-audit |
+| C | Corong kanonik | **DONE** | rh:funnel + invarian internal; alasan+timestamp per penolakan |
+| D1 | Akar outage | **DONE** (diagnosis) | mesin SLEEP (pmset) — bukan crash; dokumentasi di deploy/README |
+| D2 | Operasi 24/7 | **BLOCKED_EXTERNAL** | butuh keputusan operator: caffeinate/pmset/VPS (plist & service siap, TIDAK dimuat) |
+| D3 | Integritas observasi | **DONE** | ft:progress coverage 2-denominator + gap windows + 88 missed; tidak ada backfill |
+| E | Riset perilaku | **AWAITING_OBSERVATION** | H-A/C INSUFFICIENT, H-B terukur, H-D/E PENDING DATA (registri §6); C1–C5 di signal-study |
+| F | Status strategi | **DONE** (kerangka) | arm A/B/C TESTING (n belum cukup); baseline terdefinisi; verdict menunggu sampel |
+| G | Keamanan | **DONE** (yang bisa) + **BLOCKED_EXTERNAL** | deny/policy teruji tidak-aktif; legacy = RISIKO TERBUKA; duplikat .env = peringatan+tolak-arming |
+| — | Withdraw mode, sleep 24/7, dedup .env, gilet exit, pool-swap wiring | **BLOCKED_EXTERNAL** | keputusan operator (sekali, di bawah) |
+
+ENGINEERING STATUS: Level-1 terpenuhi untuk sisi yang bisa dikerjakan tanpa otorisasi.
+PROFITABILITY: NOT YET VALIDATED — 5 completed sim trade (semua stop kecil) bukan bukti.

@@ -166,3 +166,13 @@ different strategies.** Do not wipe logs to "clean up"; filter by hash instead.
 
 Restarts are not automatically bad — a watchdog restart means it *worked*. Restarts every few
 minutes mean something is genuinely wrong; read the journal before changing strategy.
+
+## RESEARCH KEEPALIVE — atas temuan round-8 (mesin SLEEP, bukan crash) · 2026-10-24
+Outage 29,86 jam = MacBook masuk Maintenance Sleep (pmset, baterai). Dua opsi, KEDUANYA butuh
+keputusan operator (mengubah perilaku daya mesin):
+1. Sesi riset aktif: `caffeinate -ism ./run-rhpaper-supervised.sh` (atau jalankan
+   `caffeinate -ism` di terminal terpisah selama sesi riset — mencegah sleep idle+sistem).
+2. 24/7 sejati: pindahkan lane zero-capital ke VPS (`micincloud-bot.service` sudah ada di
+   deploy/) atau ubah pengaturan sleep macOS (System Settings →-lock screen/energy).
+LaunchAgent KeepAlive (`com.shitcoin.lanes.plist`) hanya menghidupkan ulang PROSES mati —
+tidak mencegah sleep; kombinasi keduanya diperlukan untuk coverage penuh.

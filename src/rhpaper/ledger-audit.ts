@@ -41,7 +41,9 @@ export function ledgerAudit(dir = "logs/rhpaper"): { lines: string[]; mismatches
       // Basis v0: netPct == gross (float, tanpa gas). Basis v3: quotePnl (gas bigint, presisi 4 des).
       const expectNet = version === "rhpaper-units-arm-v3" ? quotePnl(entry, exit).netPct : grossFloat;
       const storedNet = Number(j.netPct);
-      if (!Number.isFinite(storedNet) || Math.abs(storedNet - expectNet) > 1e-6) {
+      // (FINAL A1) toleransi 1e-4: baris lama disimpan dengan presisi 4 desimal (formula lama);
+      // rekomputasi kini 10 desimal — selisih ≤ 5e-5 wajar, kesalahan riil ≥ 1 bp tetap tertangkap.
+      if (!Number.isFinite(storedNet) || Math.abs(storedNet - expectNet) > 1e-4) {
         stats.bad++; badNet++;
         if (samples.length < 5) samples.push(`netPct tersimpan ${storedNet} ≠ rekomputasi-${version} ${expectNet.toFixed(6)} (${String(j.arm)}/${String(j.symbol)} ${f})`);
       }

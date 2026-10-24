@@ -16,8 +16,11 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
   const entry = BigInt(entryRaw), exit = BigInt(exitRaw);
   if (entry <= 0n || exit < 0n || gasWei < 0n) throw new Error("invalid quote amounts");
   const gross = exit - entry, net = gross - gasWei;
-  return { grossPct: Number(gross * 1_000_000n / entry) / 10_000,
-    netPct: Number(net * 1_000_000n / entry) / 10_000, netWethRaw: net.toString() };
+  // (FINAL A1) PRESISI 10 DESIMAL pp — dulu ×1e6/1e4 yang memotong ke 4 desimal dan kehilangan
+  // 0,0000914 pp pada kasus DELL (−2,6227 vs benar −2,622791450244). pp = gross/entry×100 =
+  // (gross×1e12/entry)/1e10; hasil bagi BigInt tetap < 2^53 untuk rasio realistis (|rasio| < 9000).
+  return { grossPct: Number(gross * 1_000_000_000_000n / entry) / 1e10,
+    netPct: Number(net * 1_000_000_000_000n / entry) / 1e10, netWethRaw: net.toString() };
 }
 
 type CycleIO = Pick<typeof import("./exec.js"), "quoteBuy" | "quoteSell"> &
