@@ -333,3 +333,33 @@ arm-A PROSPECTIVE quote-only −9,80% (8 → dikoreksi hitung unik), MDD/ekspekt
 12,4%/0-12% per arm; downtime 29,86 jam (7 hari) tercatat eksplisit.
 
 171 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. PROFITABILITY NOT YET VALIDATED.
+
+## ROUND-6 AUDIT (2026-10-24, sesi keenam) — INTEGRITAS KUANTITATIF (commit c356979)
+
+**Koreksi ketiga (laporan, bukan kode)**: tabel BE round-5 saya salah 3 sel — fungsi produksi
+benar sejak awal. `benchmarkTable()` kini SATU-SATUNYA sumber angka (tes mengunci: 71,428571 /
+INFEASIBLE / 53,500000 / 90,000000 / 44,857143 / 65,714286 = persis ekspektasi auditor);
+laporan menyalin keluaran verbatim, dilarang mengetik tangan.
+
+**TEMUAN MATERIAL BARU (dari rh:ledger-audit)**: ledger punya DUA BASIS akuntansi —
+- v0 (1.207 baris, ≤10-23, tanpa measurementVersion): netPct == grossPct PERSIS → gas TIDAK pernah
+  dipotong. Klaim round-5 "threshold sudah memuat gas" HANYA sah untuk v3; untuk v0 BE=(SL+d+gas)/(TP+SL).
+- v3 (48 baris, 10-24+): netPct = gross − gas(11,4e12) via quotePnl bigint.
+Rekonsiliasi: 1.253 baris → 0 mismatch terhadap basis versinya masing-masing ✓. cohort-stats kini
+memilah per versi dan TIDAK PERNAH mencampur; overlay latensi = satu definisi (fillmodel.
+latencyOverlayPct = 0,9975 pp eksak, bukan aproksimasi 1,0); baris v3 pakai jalur fillOutRaw model.
+
+**tx-truth diperluas + 4 tes adversarial baru**: native-out (butuh bukti saldo — dilabel), fee-on-
+transfer (log = batas atas; partial <98% ekspektasi ditandai), log rusak dilewati-terhitung,
+multi-hop dijumlahkan, determinisme lintas-path.
+
+**Kejujuran forward-test**: coverage 7 hari = 28,78% (satu gap 29,86 jam 10-23→10-24); 88 observasi
+sinyal hilang dalam gap — 14 hari kalender BUKAN forward-test 14 hari (dicatat di ft:progress).
+
+**Sinyal segar vs basa (C5)**: ≤5m n=12 (15m: med −6,04%) · 5–15m n=15 (med +3,88%) · >60m n=79 —
+DESKRIPTIF; tidak ada klaim profit/worthless dari n sekecil ini.
+
+**Withdraw**: antrean seri (race audit plafon ditutup); pemisahan izin dashboard-vs-CLI didokumen-
+kan; status TETAP legacy = RISIKO TERBUKA menunggu keputusan operator (paket keputusan siap).
+
+178 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. PROFITABILITY NOT YET VALIDATED.
