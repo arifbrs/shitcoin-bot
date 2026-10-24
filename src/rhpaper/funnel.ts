@@ -12,7 +12,7 @@ export interface FunnelCounts {
   opens: number; rejects: number; opensWithLiq: number; opensNoLiq: number;
   entrySimFilled: number; entrySimRejected: number;
   exitSignals: number; exitSimFilled: number; exitSimRejected: number; completed: number;
-  invalidCloses: number; rejectReasons: Record<string, number>;
+  invalidCloses: number; validCompletedIds: string[]; rejectReasons: Record<string, number>;
 }
 
 /** (FINAL P0-3) inti corong MURNI — bukti ketat, bisa diuji offline:
@@ -23,41 +23,49 @@ export interface FunnelCounts {
 export function countFunnel(rows: Array<Record<string, unknown>>): FunnelCounts {
   const out: FunnelCounts = { opens: 0, rejects: 0, opensWithLiq: 0, opensNoLiq: 0, entrySimFilled: 0,
     entrySimRejected: 0, exitSignals: 0, exitSimFilled: 0, exitSimRejected: 0, completed: 0,
-    invalidCloses: 0, rejectReasons: {} };
-  const openById = new Map<string, { row: Record<string, unknown>; count: number }>();
-  const closeCount = new Map<string, number>();
+    invalidCloses: 0, validCompletedIds: [], rejectReasons: {} };
+  // (FINAL P0-3/P0-4) DUA-PASS: hitung SEMUA duplikat lebih dulu — tradeId dengan OPEN/CLOSE
+  // ganda mana pun DITOLAK seluruhnya (bukan hanya kejadian kedua).
+  const openAgg = new Map<string, { rows: Array<Record<string, unknown>> }>();
+  const closeAgg = new Map<string, { rows: Array<Record<string, unknown>> }>();
   for (const j of rows) {
     const action = String(j.action ?? "");
-    if (action === "OPEN") {
-      out.opens++;
-      const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
-      const prev = openById.get(id);
-      openById.set(id, { row: j, count: (prev?.count ?? 0) + 1 });
+    const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
+    if (action === "OPEN") { out.opens++; const a = openAgg.get(id) ?? { rows: [] }; a.rows.push(j); openAgg.set(id, a); }
+    else if (action === "CLOSE") { out.exitSignals++; const a = closeAgg.get(id) ?? { rows: [] }; a.rows.push(j); closeAgg.set(id, a); }
+    else if (action === "REJECT") { out.rejects++; const why = String(j.reason ?? "?"); out.rejectReasons[why] = (out.rejectReasons[why] ?? 0) + 1; }
+  }
+  for (const [id, a] of openAgg) {
+    for (const j of a.rows) {
       if (typeof j.liquidityUsd === "number" && j.liquidityUsd > 0) out.opensWithLiq++; else out.opensNoLiq++;
       const s = j.simFillEntry as { filled?: boolean; reason?: string } | undefined;
       if (s?.filled === true) out.entrySimFilled++;
       else if (s) { out.entrySimRejected++; out.rejectReasons[`entry_sim:${s.reason ?? "?"}`] = (out.rejectReasons[`entry_sim:${s.reason ?? "?"}`] ?? 0) + 1; }
-    } else if (action === "REJECT") {
-      out.rejects++;
-      const why = String(j.reason ?? "?");
-      out.rejectReasons[why] = (out.rejectReasons[why] ?? 0) + 1;
-    } else if (action === "CLOSE") {
-      out.exitSignals++;
-      const id = String(j.tradeId ?? `${j.ts}:${j.token}`);
-      closeCount.set(id, (closeCount.get(id) ?? 0) + 1);
-      const o = openById.get(id);
-      const es = o?.row.simFillEntry as { filled?: boolean } | undefined;
+    }
+  }
+  for (const [id, a] of closeAgg) {
+    const o = openAgg.get(id);
+    const oRow = o?.rows[0];
+    const es = oRow?.simFillEntry as { filled?: boolean } | undefined;
+    const unique = a.rows.length === 1 && o?.rows.length === 1;
+    for (const j of a.rows) {
       const xs = j.simFillExit as { filled?: boolean; reason?: string } | undefined;
-      const openVersion = o?.row.fillModelVersion ?? null;
-      const closeVersion = j.fillModelVersion ?? null;
-      const versionsMatch = openVersion != null && openVersion === closeVersion;
-      const unique = closeCount.get(id) === 1 && (o?.count ?? 0) === 1;
-      if (es?.filled === true && xs?.filled === true && unique && versionsMatch) out.completed++;
-      else if (xs?.filled === false) { out.exitSimRejected++; out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] = (out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] ?? 0) + 1; }
-      else out.invalidCloses++; // tanpa bukti exit / pasangan tidak unik / versi tak cocok — DILAPOR, tidak dihitung
+      const openVersion = oRow?.fillModelVersion ?? null;
+      const versionsMatch = openVersion != null && openVersion === j.fillModelVersion;
+      if (es?.filled === true && xs?.filled === true && unique && versionsMatch) {
+        out.completed++; out.validCompletedIds.push(id);
+      } else if (xs?.filled === false) { out.exitSimRejected++; out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] = (out.rejectReasons[`exit_sim:${xs.reason ?? "?"}`] ?? 0) + 1; }
+      else out.invalidCloses++; // duplikat / tanpa bukti / versi beda — dilaporkan, tidak dihitung
     }
   }
   return out;
+}
+
+/** Indeks CLOSE per tradeId (untuk bukti per-trade, validator sama dgn countFunnel). */
+function closeAggForEvidence(rows: Array<Record<string, unknown>>): Map<string, Record<string, unknown>> {
+  const m = new Map<string, Record<string, unknown>>();
+  for (const j of rows) if (String(j.action ?? "") === "CLOSE" && j.tradeId && !m.has(String(j.tradeId))) m.set(String(j.tradeId), j);
+  return m;
 }
 
 export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, unknown> {
@@ -111,17 +119,14 @@ export function funnel(now = Date.now(), dir = "logs/rhpaper"): Record<string, u
   const completedTrades: Array<Record<string, unknown>> = [];
   const openRowById = new Map<string, Record<string, unknown>>();
   for (const j of rawRows) if (String(j.action ?? "") === "OPEN" && j.tradeId) openRowById.set(String(j.tradeId), j);
-  const seenEvidence = new Set<string>();
-  for (const j of rawRows) {
-    if (String(j.action ?? "") !== "CLOSE") continue;
+  // (P0-4) bukti per-trade memakai VALIDATOR YANG SAMA dengan hitungan ringkasan:
+  const validIds = new Set(fc.validCompletedIds);
+  for (const id of fc.validCompletedIds) {
     {
-      const id = String(j.tradeId ?? "");
-      if (seenEvidence.has(id)) continue; // bukti hanya untuk CLOSE pertama (sama dengan countFunnel)
-      seenEvidence.add(id);
+      const j = closeAggForEvidence(rawRows).get(id)!;
       const o = openRowById.get(id);
       const es = o?.simFillEntry as { filled?: boolean } | undefined;
       const xs = j.simFillExit as { filled?: boolean } | undefined;
-      if (es?.filled !== true || xs?.filled !== true) continue; // (P0-3) bukti ketat, tanpa warisan state entry
       completedTrades.push({
         tradeId: id, arm: j.arm, symbol: j.symbol, token: j.token,
         openedAt: o?.ts, closedAt: j.ts, heldWhy: j.why,

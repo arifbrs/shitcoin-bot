@@ -125,32 +125,54 @@ export async function blockAtTimestamp(rpc: RpcCall, tsMs: number, lo = 1, hi = 
   return a;
 }
 
-/** Konfirmasi event ACTIVE_LIQUIDITY_CHANGE: ambil logs pool pada jendelanya, decode Mint/Burn
- *  V3, idempoten berdasarkan eventKey. Dipanggil oleh rh:liq-events --confirm. */
-export async function confirmLpEvents(rpc: RpcCall, events: LiqEvent[], opts: { chainId: number; latest: number; maxChunk: number } = { chainId: 4663, latest: 200_000_000, maxChunk: 5_000 }): Promise<LiqEvent[]> {
+export interface ConfirmedLpEvent {
+  kind: "LP_ADD_CONFIRMED" | "LP_REMOVE_CONFIRMED";
+  liquidityAmountRaw: string; poolAddress: string; chainId: number;
+  txHash: string; logIndex: number; blockNumber: number; timestampMs: number | null;
+  eventKey: string; owner: string | null; tickLower: string | null; tickUpper: string | null;
+  observedVia: "pool-log-backfill"; // provenance: cara event ini ditemukan (bukan identitas)
+}
+
+/** (FINAL §5) Konfirmasi LP ops dengan PROVENANCE MURNI dari decode — TIDAK menyebar event
+ *  snapshot lain ke dalamnya (bug lama: spread event snapshot tak terkait). Identitas lengkap:
+ *  txHash, logIndex, blockNumber, pool, chainId, eventKey, owner, ticks, timestamp dari blok.
+ *  Jendela blok dibatasi per interval observasi (±1 jam sekitar event snapshot, chunk kecil).
+ *  Idempoten: pemanggil memfilter eventKey yang sudah ada di lp-events.jsonl. */
+export async function confirmLpEvents(rpc: RpcCall, snapshotEvents: LiqEvent[], opts: { chainId: number; latest: number; maxChunk?: number }): Promise<ConfirmedLpEvent[]> {
+  const out: ConfirmedLpEvent[] = [];
   const byPool = new Map<string, LiqEvent[]>();
-  for (const e of events) if (e.poolAddress) byPool.set(e.poolAddress, [...(byPool.get(e.poolAddress) ?? []), e]);
-  const confirmed: LiqEvent[] = [];
+  for (const e of snapshotEvents) if (e.poolAddress) byPool.set(e.poolAddress, [...(byPool.get(e.poolAddress) ?? []), e]);
+  const maxChunk = opts.maxChunk ?? 5_000;
   for (const [pool, evs] of byPool) {
-    const from = await blockAtTimestamp(rpc, Math.min(...evs.map((e) => e.ts)) - 60_000);
-    for (let lo = from; lo <= opts.latest; lo += opts.maxChunk) {
-      const hi = Math.min(lo + opts.maxChunk - 1, opts.latest);
-      const r = await rpc("eth_getLogs", [{ address: pool, fromBlock: "0x" + lo.toString(16), toBlock: "0x" + hi.toString(16), topics: [[MINT_TOPIC, BURN_TOPIC]] }]);
-      if (r.error) break; // provider menolak rentang — jangan paksa; event tetap ACTIVE_LIQUIDITY_CHANGE
-      const logs = (r.result as Array<Record<string, unknown>>) ?? [];
-      const blkTs = new Map<number, number>();
-      for (const decoded of decodeV3PoolEvents(logs as never, { poolAddress: pool, chainId: opts.chainId, timestampMs: null })) {
-        if (!blkTs.has(decoded.blockNumber)) {
-          const b = await rpc("eth_getBlockByNumber", ["0x" + decoded.blockNumber.toString(16), false]);
-          blkTs.set(decoded.blockNumber, Number(((b.result as Record<string, unknown>)?.timestamp ?? 0)) * 1000);
+    const windows: Array<{ lo: number; hi: number }> = [];
+    for (const e of evs) {
+      const lo = Math.max(1, await blockAtTimestamp(rpc, e.ts - 3_600_000));
+      const hi = Math.min(opts.latest, await blockAtTimestamp(rpc, e.ts + 3_600_000));
+      windows.push({ lo, hi });
+    }
+    const merged: Array<{ lo: number; hi: number }> = [];
+    for (const w of windows.sort((a, b) => a.lo - b.lo)) {
+      const last = merged[merged.length - 1];
+      if (last && w.lo <= last.hi) last.hi = Math.max(last.hi, w.hi); else merged.push({ ...w });
+    }
+    for (const w of merged) {
+      for (let lo = w.lo; lo <= w.hi; lo += maxChunk) {
+        const hi = Math.min(lo + maxChunk - 1, w.hi);
+        const r = await rpc("eth_getLogs", [{ address: pool, fromBlock: "0x" + lo.toString(16), toBlock: "0x" + hi.toString(16), topics: [[MINT_TOPIC, BURN_TOPIC]] }]);
+        if (r.error) continue; // provider menolak rentang: event tetap ACTIVE_LIQUIDITY_CHANGE, tanpa fallback
+        const logs = (r.result as Array<Record<string, unknown>>) ?? [];
+        for (const decoded of decodeV3PoolEvents(logs as never, { poolAddress: pool, chainId: opts.chainId, timestampMs: null })) {
+          let ts: number | null = null;
+          try { ts = Number(((await rpc("eth_getBlockByNumber", ["0x" + decoded.blockNumber.toString(16), false])).result as Record<string, unknown>)?.timestamp ?? 0) * 1000 || null; } catch { ts = null; }
+          out.push({ kind: decoded.kind, liquidityAmountRaw: decoded.liquidityAmountRaw, poolAddress: decoded.poolAddress,
+            chainId: decoded.chainId, txHash: decoded.txHash, logIndex: decoded.logIndex, blockNumber: decoded.blockNumber,
+            timestampMs: ts, eventKey: decoded.eventKey, owner: decoded.owner, tickLower: decoded.tickLower,
+            tickUpper: decoded.tickUpper, observedVia: "pool-log-backfill" });
         }
-        const near = evs.find((e) => Math.abs(e.ts - (blkTs.get(decoded.blockNumber) ?? 0)) < 3_600_000);
-        confirmed.push({ ...near ?? events[0]!, ...{ kind: decoded.kind, deltaRaw: decoded.liquidityAmountRaw,
-          ts: blkTs.get(decoded.blockNumber) ?? 0, poolAddress: pool }, } as LiqEvent);
       }
     }
   }
-  return confirmed;
+  return out;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -165,14 +187,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const rpc: import("./liquidity-events.js").RpcCall = async (m, p) => (await fetch(process.env.ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: m, params: p }) })).json() as never;
       const latestBlk = await rpc("eth_blockNumber", []);
       const confirmed = await confirmLpEvents(rpc, r.events, { chainId: 4663, latest: Number((latestBlk.result as string) ?? "0x0"), maxChunk: 5_000 });
-      const seen = new Set<string>();
-      const fresh = confirmed.filter((e) => { const k = `${e.kind}:${e.poolAddress}:${e.ts}`; if (seen.has(k)) return false; seen.add(k); return true; });
-      for (const e of fresh) appendLpEvent(e);
-      console.log(`[liq-events] --confirm: ${fresh.length} LP ops terkonfirmasi (idempoten) → logs/rhpaper/lp-events.jsonl`);
+      // IDEMPOTEN: kunci = eventKey (txHash:logIndex) — proses ulang/restart tidak menduplikasi.
+      const store = "logs/rhpaper/lp-events.jsonl";
+      const known = new Set<string>();
+      if (existsSync(store)) for (const line of readFileSync(store, "utf8").split("\n")) { try { known.add((JSON.parse(line) as { eventKey?: string }).eventKey ?? ""); } catch { /* rusak */ } }
+      let fresh = 0;
+      for (const e of confirmed) {
+        if (known.has(e.eventKey)) continue;
+        known.add(e.eventKey);
+        appendLpEvent(e); fresh++;
+      }
+      console.log(`[liq-events] --confirm: ${confirmed.length} LP ops terdekode, ${fresh} baru (idempoten eventKey) → ${store}`);
     })();
   }
 }
-function appendLpEvent(e: LiqEvent): void {
+function appendLpEvent(e: ConfirmedLpEvent): void {
   mkdirSync("logs/rhpaper", { recursive: true });
   appendFileSync("logs/rhpaper/lp-events.jsonl", JSON.stringify(e) + "\n");
 }

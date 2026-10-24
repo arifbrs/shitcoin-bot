@@ -21,7 +21,7 @@ test("P0-3: bukti penuh di baris masing-masing = completed; duplikat tradeId dit
   const full = countFunnel([OPEN_OK, CLOSE_FULL]);
   eq(full.completed, 1, "entry-fill di OPEN + exit-fill di CLOSE = sah");
   const dupClose = countFunnel([OPEN_OK, CLOSE_FULL, { ...CLOSE_FULL, ts: 999 }]);
-  eq(dupClose.completed, 1, "CLOSE ganda untuk tradeId sama → tetap 1 (uniqueness)");
+  eq(dupClose.completed, 0, "CLOSE ganda untuk tradeId sama → SEMUA ditolak (ambigu)");
   const dupOpen = countFunnel([{ ...OPEN_OK }, { ...OPEN_OK, ts: 5 }, CLOSE_FULL]);
   eq(dupOpen.completed, 0, "OPEN ganda → pasangan tidak unik → 0 completed");
 });

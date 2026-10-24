@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # (FINAL §6) pemindaian rahasia menyasar SEJARAH penuh — butuh checkout penuh
       - uses: actions/setup-node@v4
         with:
           node-version: "20.18.0" # (P0-1) dikunci: @solana/* butuh >=20.18 — versi reproducible

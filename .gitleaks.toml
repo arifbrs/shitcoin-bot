@@ -1,22 +1,29 @@
-# Konfigurasi gitleaks (FINAL) — extend aturan bawaan + allowlist TERTARGET:
-#  - file tes: alamat/hex adalah FIXTURE publik (bukan rahasia)
-#  - alamat kontrak EVM 40-hex di seluruh repo: data rantai PUBLIK (WETH/USDG/pool)
-#    (kunci privat 0x = 64 hex — TIDAK termasuk allowlist ini)
-#  - hash tx/topik 64-hex hanya di file tes & docs
-# Keamanan tetap menangkap: kunci privat 64-hex, PEM, token API, password assignment di luar template.
+# Konfigurasi gitleaks (FINAL §6) — pengecualian berbasis FINGERPRINT kelas, bukan path luas.
+# Tiga kelas data PUBLIK yang memicu aturan entropi generik:
+#   1. alamat EVM/wallet 40-hex (kontrak & pool publik: WETH/USDG/pool) — 0x + 40 hex
+#   2. hash tx / event topic 64-hex DENGAN prefiks 0x (data rantai publik)
+#   3. alamat Solana base58 32–44 char (publik) — kunci privat base58 = 87–88 char,
+#      DI LUAR rentang ini sehingga TETAP tertangkap; kunci privat EVM 64-hex tanpa 0x
+#      juga TETAP tertangkap (hanya 0x-64hex yang di-allowlist).
+# Tidak ada pengecualian path: dokumen, arsip, fixture, dan history penuh dipindai
+# dengan fingerprint yang sama — rahasia non-kelas-ini tetap dilaporkan.
 [extend]
 useDefault = true
 
 [allowlist]
-description = "fixture tes + alamat kontrak publik + dokumentasi + arsip ledger historis (lokal)"
-paths = [
-  '''\.test\.ts$''',
-  '''^docs/''',
-  '''^\.commandcode/''',
-  '''^web/test/''',
-  '''^web/scripts/fixtures/''',
-  '''^archive/''',
-]
+description = "identifier rantai publik (alamat, hash, alamat Solana) — bukan kredensial"
 regexes = [
-  '''0x[0-9a-fA-F]{40}\b''',   # alamat kontrak/wallet PUBLIK (40 hex, bukan kunci 64-hex)
+  '''\b0x[0-9a-fA-F]{40}\b''',
+  '''\b0x[0-9a-f]{64}\b''',
+  '''\b[1-9A-HJ-NP-Za-km-z]{32,44}\b''',
 ]
+
+# RULE TAMBAHAN (adversarial test menemukan celah): hex 64-char TANPA prefiks 0x =
+# kandidat kunci privat EVM (kunci .key proyek disimpan tanpa 0x). Hex sah di repo
+# selalu 0x-prefixed atau selector pendek — aman untuk dilarang keras.
+[[rules]]
+id = "evm-private-key-no-prefix"
+description = "EVM private key candidate (64 hex tanpa 0x)"
+regex = '''\b[0-9a-fA-F]{64}\b'''
+entropy = 3.0
+keywords = ["key", "private", "secret", "wallet", "signer"]

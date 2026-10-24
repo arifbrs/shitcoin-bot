@@ -10,6 +10,9 @@
  *   net sim     = quoteWethOut×(1−l)² − wethIn − gas   (BigInt, pemotongan per kaki = saldo
  *   aktual yang diterima; BUKAN desimal ideal). Dampak nonlinear pool TIDAK dimodelkan linear
  *   di sini — quote OKX sudah memuat dampak; (1−l) hanya latensi antara quote dan landing.
+ *   (P0-4 v2) EXIT sekarang RE-QUOTE NYATA atas kuantitas sim entry (engine memanggil
+ *   quoteSell(simTokens)) — bukan penskalaan proporsional; (1−l) tetap APROKSIMASI LATENSI
+ *   yang dimodelkan (belum terkalibrasi fill nyata) — dilabel, tidak diklaim biaya terukur.
  *
  * Asumsi v1 (dibekukan; ubah = versi baru + kohort baru, jangan sentuh sampel lama):
  *   LIKUIDITAS TIDAK DIKETAHUI   → TIDAK ADA FILL (fail-closed; bukan fill dengan tebakan).

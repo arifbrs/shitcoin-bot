@@ -75,7 +75,10 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
       for (const p of s.positions) {
         // Each supervisor invocation owns only its arm. Frozen positions retain their entry policy.
         if (p.arm !== armName) continue;
-        const sell = await io.quoteSell(p.token, p.qtyRaw, cfg.maker);
+        // (FINAL-P0-2) exit QUOTE untuk kuantitas sim entry yang sesungguhnya (re-quote nyata,
+        // bukan penskalaan proporsional) — hanya bila bukti sim entry tersimpan & versinya cocok.
+        const entrySimUsablePre = p.simFillEntry?.filled === true && p.simFillEntry?.fillOutRaw != null && p.simFillEntry?.version === FILL_MODEL_VERSION;
+        const sell = await io.quoteSell(p.token, entrySimUsablePre ? p.simFillEntry!.fillOutRaw! : p.qtyRaw, cfg.maker);
         if (!sell.ok || !sell.quote) {
           // GALAT SEMENTARA (429/timeout/rate/chainIndex) ≠ tidak ada pembeli. Jangan cap STUCK permanen.
           const reason = sell.reason ?? "quote jual gagal";
@@ -110,14 +113,17 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
           s.netWethRaw = (BigInt(s.netWethRaw ?? "0") + BigInt(pnl.netWethRaw)).toString();
           // (B3) simFillExit: model fill TERPISAH untuk akuntansi simulasi — tidak mengubah keputusan
           // keluar di atas, tidak pernah digabung ke PnL nyata/quote.
-          // (P0-4) likuiditas WAKTU-KELUAR (snapshot segar siklus ini, bukan likuiditas entry);
-          // kuantitas keluar = token yang benar-benar diterima sim entry; usia quote dibatasi.
-          const simEntry = p.simFillEntry as { fillOutRaw?: string } | undefined;
+          // (FINAL-P0-1) EXIT fail-closed: tanpa sim entry tersimpan (hilang/versi beda/entri gagal
+          // model) → sim exit DITOLAK dengan alasan spesifik; TIDAK pernah memakai qty quote penuh.
+          const simEntry = p.simFillEntry;
           const exitLiq = exitLiquidity.get(p.token) ?? null;
-          const simFillExit = simulateFill({ quoteAmountIn: p.qtyRaw, quoteAmountOut: sell.quote!.amountOut, impactPct: sell.quote!.impactPct,
+          const entrySimUsable = simEntry?.filled === true && simEntry?.fillOutRaw != null && simEntry?.version === FILL_MODEL_VERSION;
+          const simFillExit = !entrySimUsable
+            ? { filled: false as const, reason: simEntry == null ? "ENTRY_SIM_MISSING" : simEntry.filled === false ? `ENTRY_SIM_REJECTED:${simEntry.reason ?? "?"}` : "ENTRY_SIM_VERSION_MISMATCH", version: FILL_MODEL_VERSION }
+            : simulateFill({ quoteAmountIn: p.qtyRaw, quoteAmountOut: sell.quote!.amountOut, impactPct: sell.quote!.impactPct,
             liquidityUsd: exitLiq?.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await (io.ethUsd ?? ethUsdOf)(),
             quoteAgeMs: Date.now() - (sell.quote!.ts ?? Date.now()),
-            simulatedTokensRaw: simEntry?.fillOutRaw ?? null, quoteTokensRaw: p.qtyRaw });
+            simulatedTokensRaw: simEntry!.fillOutRaw!, quoteTokensRaw: p.qtyRaw });
           appendLedger({
             ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
             tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen", measurementVersion: "rhpaper-units-arm-v3",
@@ -163,12 +169,17 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             appendLedger({ ts: Date.now(), action: "REJECT", arm: armName, token: c.token, symbol: c.symbol, reason: "round trip already beyond stop", roundTripFloorPct: floor.netPct });
             errors.push(c.symbol + ": round trip already beyond stop"); continue;
           }
-          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null, liquiditySource: c.liquiditySource ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null,
-          imbalanceH1: c.imbalanceH1 ?? null, txnsH1: c.txnsH1 ?? null, priceChangeH1: c.priceChangeH1 ?? null, pairAgeDays: c.pairAgeDays ?? null };
-          s.positions.push(pos); opened++;
-          // (B3) simFillEntry: model fill untuk akuntansi simulasi — tidak mengubah keputusan buka.
+          // (FINAL-P0-1) sim entry dihitung SEBELUM pos dibuat dan DISIMPAN di posisi (crash-safe:
+          // ikut saveState/loadState) — exit nanti membaca kuantitas sim yang nyata, bukan tebakan.
           const simFillEntry = simulateFill({ quoteAmountIn: buy.quote!.amountIn, quoteAmountOut: buy.quote!.amountOut, impactPct: buy.quote!.impactPct,
             liquidityUsd: c.liquidityUsd ?? null, sizeWethRaw: buy.quote!.amountIn, ethUsd: await (io.ethUsd ?? ethUsdOf)() });
+          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null, liquiditySource: c.liquiditySource ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null,
+          imbalanceH1: c.imbalanceH1 ?? null, txnsH1: c.txnsH1 ?? null, priceChangeH1: c.priceChangeH1 ?? null, pairAgeDays: c.pairAgeDays ?? null,
+          simFillEntry: simFillEntry.filled
+            ? { filled: true, fillOutRaw: simFillEntry.fillOutRaw, version: FILL_MODEL_VERSION }
+            : { filled: false, reason: simFillEntry.reason, version: FILL_MODEL_VERSION } };
+          s.positions.push(pos); opened++;
+          // (B3) simFillEntry: model fill untuk akuntansi simulasi — tidak mengubah keputusan buka.
           appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, tradeId: pos.tradeId, policyId, exitPolicy, measurementVersion: "rhpaper-units-arm-v3", executionState: "QUOTE_ONLY_NOT_SIMULATED", roundTripFloorPct: floor.netPct, reverseQuoteRef: JSON.stringify(reverse.quote), decimals: c.decimals, usd: cfg.usd, entryWethRaw: pos.entryWethRaw, qtyRaw: pos.qtyRaw, entryImpactPct: buy.quote!.impactPct, entrySlippagePct: buy.quote!.slippagePct, quoteRef: pos.entryQuoteRef,
             liquidityUsd: c.liquidityUsd ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null,
             imbalanceH1: c.imbalanceH1 ?? null, txnsH1: c.txnsH1 ?? null, priceChangeH1: c.priceChangeH1 ?? null, pairAgeDays: c.pairAgeDays ?? null, simFillEntry, fillModelVersion: FILL_MODEL_VERSION });

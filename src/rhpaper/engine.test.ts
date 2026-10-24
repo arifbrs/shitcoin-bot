@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test, eq, approx, assert } from "../testing/harness.js";
 import { cycle, quotePnl, rationalPct, type Cfg } from "./engine.js";
+import { applyLatencySlippage } from "./fillmodel.js";
+import { countFunnel } from "./funnel.js";
 import { simulatedExitWeth, latencyOverlayPct } from "./fillmodel.js";
 import { emptyState, loadState, saveState, type Position } from "./state.js";
 import type { QuoteResult } from "./exec.js";
@@ -147,3 +149,42 @@ test("FINAL-2 properti: rasional × entry/100 merekonstruksi delta (inversi, 500
   }
   void rnd;
 });
+
+test("FINAL-P0-1: sim entry PERSIST di posisi (restart-safe); exit re-quote kuantitas SIM, fail-closed tanpa bukti", async () => {
+  const previous = process.env.RHPAPER_DIR;
+  process.env.RHPAPER_DIR = mkdtempSync(join(tmpdir(), "rhpaper-persist-"));
+  try {
+    const now = Date.now();
+    const entryQuote = { ts: now, route: "test", amountIn: "1000000000000000", amountOut: "2000000000000000000000", impactPct: 0.1, slippagePct: 1 };
+    const liqCandidate = { token: "0xliq", symbol: "LIQ", decimals: 18, buyOk: true, sellOk: true, liquidityUsd: 50_000, liquiditySource: "dexscreener" as const, liquidityAt: 1 };
+    let phase = 0;
+    const exitQtys: string[] = []; // hanya panggilan saat fase EXIT (posisi ada → exit loop jalan dulu)
+    const hasPosition = (): boolean => {
+      try { const s = JSON.parse(readFileSync(join(process.env.RHPAPER_DIR!, "state.json"), "utf8")); return (s.positions ?? []).length > 0; } catch { return false; }
+    };
+    const mkIo = () => ({
+      quoteBuy: async () => ({ ok: true, quote: entryQuote }),
+      quoteSell: async (_t: string, qty: string) => { if (phase === 1 && hasPosition()) exitQtys.push(qty); return { ok: true, quote: { ...entryQuote, ts: Date.now() + 1000, amountOut: phase === 1 ? "980000000000000" : "1010000000000000" } }; },
+      loadCandidates: () => [liqCandidate], cacheStale: () => false, scanCandidates: async () => [liqCandidate],
+      ethUsd: async () => 2361,
+      liquiditySnapshot: async (tokens: string[]) => new Map(tokens.map((t) => [t, { liquidityUsd: 50_000, at: Date.now() }])),
+    });
+    await cycle({ ...base, maxPositions: 1 }, mkIo());
+    // RESTART: baca state dari DISK (bukan objek hidup) — sim entry harus utuh dgn versi+kuantitas.
+    const disk = JSON.parse(readFileSync(join(process.env.RHPAPER_DIR!, "state.json"), "utf8")) as { positions: Array<{ simFillEntry?: { filled: boolean; fillOutRaw?: string; version?: string } }> };
+    const sim = disk.positions[0]!.simFillEntry;
+    eq(sim?.filled, true, "sim entry tersimpan di state crash-safe");
+    eq(sim?.version, "rhpaper-fillmodel-v2", "versi model tersimpan");
+    eq(sim?.fillOutRaw, applyLatencySlippage("2000000000000000000000", 0.5), "kuantitas sim = quote entry ×(1−l)");
+    // EXIT: quote jual harus minta KUANTITAS SIM (bukan qty penuh), dan exit sim terisi.
+    phase = 1;
+    await cycle({ ...base, maxPositions: 1 }, mkIo());
+    const ledger = readFileSync(join(process.env.RHPAPER_DIR!, "ledger-" + new Date().toISOString().slice(0, 10) + ".jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const closeRow = ledger.find((r) => r.action === "CLOSE")!;
+    eq(exitQtys[0], applyLatencySlippage("2000000000000000000000", 0.5), "re-quote nyata atas kuantitas sim (panggilan EXIT pertama; panggilan reverse-quote entry yang penuh bukan exit)");
+    eq((closeRow.simFillExit as { filled: boolean }).filled, true, "sim exit terisi dari bukti tersimpan");
+    eq((closeRow as { exitLiquidityUsd?: number }).exitLiquidityUsd, 50_000, "likuiditas exit-time tersimpan");
+    // FAIL-CLOSED tanpa bukti entry: dites di funnel.test (P0-3); jalur engine = ENTRY_SIM_MISSING.
+  } finally { if (previous === undefined) delete process.env.RHPAPER_DIR; else process.env.RHPAPER_DIR = previous; }
+});
+const OPEN_OK_FIXTURE = { action: "OPEN", tradeId: "x", simFillEntry: { filled: false } };
