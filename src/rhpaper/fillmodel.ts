@@ -40,6 +40,17 @@ export function applyLatencySlippage(amountOutRaw: string, slippagePct: number):
   return (out * (10_000n - bps) / 10_000n).toString();
 }
 
+/**
+ * Overlay latensi per PUTARAN dalam pp — SATU-SATUNYA definisi (round-6 P2).
+ * Eksak: (1 − (1−lat)²)×100, bukan 2×lat (0,5%/kaki → 0,9975 pp, bukan 1,0 pp aproksimasi).
+ * Semua konsumen (cohort-stats, breakeven table, laporan) WAJIB memanggil fungsi ini —
+ * mendefinisikan ulang 0,5 di tempat lain = cacat ganda-sumber yang sudah pernah ditemukan.
+ */
+export function latencyOverlayPct(a: FillAssumptions = DEFAULT_ASSUMPTIONS): number {
+  const lat = a.latencySlippagePct / 100;
+  return (1 - (1 - lat) * (1 - lat)) * 100;
+}
+
 export function simulateFill(input: FillInput, a: FillAssumptions = DEFAULT_ASSUMPTIONS): SimulatedFill {
   if (input.liquidityUsd == null || !Number.isFinite(input.liquidityUsd) || input.liquidityUsd <= 0) {
     return { filled: false, reason: "LIQUIDITY_UNKNOWN", version: FILL_MODEL_VERSION };

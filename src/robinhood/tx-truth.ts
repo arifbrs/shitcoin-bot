@@ -21,26 +21,40 @@ function topicToAddress(topic: string): string {
   return "0x" + topic.replace(/^0x/, "").padStart(64, "0").slice(24).toLowerCase();
 }
 
-/** Murni: bukti fill dari logs receipt. Nilai BigInt — tanpa konversi float. */
+/** Murni: bukti fill dari logs receipt. Nilai BigInt — tanpa konversi float.
+ *  R6 P3: native-ETH output tak punya log ERC-20 → butuh bukti saldo terpisah (dilabel eksplisit);
+ *  fee-on-transfer → nilai log = batas ATAS yang diterima (saldo delta tetap wajib); partial fill
+ *  ditandai bila expectedAmountOut diberikan dan amountOut < 98% ekspektasi. */
+export const NATIVE_ETH = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
 export function fillFromReceiptLogs(
   logs: ParsedLog[],
-  opts: { status: string; owner: string; tokenIn: string; tokenOut: string },
+  opts: { status: string; owner: string; tokenIn: string; tokenOut: string; expectedAmountOut?: bigint },
 ): FillProof {
   const owner = opts.owner.toLowerCase(), tokenIn = opts.tokenIn.toLowerCase(), tokenOut = opts.tokenOut.toLowerCase();
+  if (tokenOut === NATIVE_ETH) {
+    return { filled: false, reason: "NATIVE_OUT_NEEDS_BALANCE_PROOF", amountIn: null, amountOut: null };
+  }
   if (opts.status !== "0x1") return { filled: false, reason: "RECEIPT_FAILED", amountIn: null, amountOut: null };
-  let amountIn: bigint | null = null, amountOut: bigint | null = null;
+  let amountIn: bigint | null = null, amountOut: bigint | null = null, malformedLogs = 0;
   for (const l of logs) {
     if (!l.topics || l.topics.length < 3 || l.topics[0]?.toLowerCase() !== TRANSFER_TOPIC) continue;
     const token = l.address.toLowerCase();
     const from = topicToAddress(l.topics[1]!), to = topicToAddress(l.topics[2]!);
     const data = l.data.slice(2);
-    if (data.length < 64) continue;
+    if (data.length < 64 || data.length % 64 !== 0) { malformedLogs++; continue; } // log rusak/aneh: dilewati & terhitung
     const value = BigInt("0x" + data.slice(-64));
     if (token === tokenIn && from === owner) amountIn = (amountIn ?? 0n) + value;
     if (token === tokenOut && to === owner) amountOut = (amountOut ?? 0n) + value;
   }
+  void malformedLogs;
   if (amountOut == null || amountOut === 0n) {
     return { filled: false, reason: amountOut == null ? "NO_TOKEN_OUT_TRANSFER" : "ZERO_TOKEN_OUT", amountIn, amountOut };
+  }
+  // Fee-on-transfer / slippage ekstrem: jumlah log bisa MELEBIH yang benar-benar diterima —
+  // itulah sebabnya pemanggil WAJIB menuntut delta saldo juga (live-executor mewajibkan keduanya).
+  if (opts.expectedAmountOut != null && amountOut * 100n < opts.expectedAmountOut * 98n) {
+    return { filled: true, reason: "PARTIAL_FILL", amountIn, amountOut };
   }
   return { filled: true, reason: null, amountIn, amountOut };
 }

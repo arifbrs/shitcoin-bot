@@ -3004,6 +3004,66 @@ function buildOkxOverview(): Record<string, unknown> {
 
 // ── Router ───────────────────────────────────────────────────────────────────
 // Named so BOTH loopback listeners (IPv4 below, IPv6 at the bottom) share one implementation.
+// R6 P6: antrean seri withdraw — permintaan dalam satu proses dashboard dieksekusi satu-per-satu,
+// sehingga cek plafon-harian + baris audit tidak bisa dilompati oleh permintaan bersamaan.
+let withdrawChain: Promise<unknown> = Promise.resolve();
+
+async function handleWithdraw(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  let b: { destination?: string; amount?: number | "all" } = {};
+  try { b = JSON.parse(body || "{}"); } catch { /* ignore */ }
+  const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin ?? null;
+  const proto = String(req.headers["x-forwarded-proto"] ?? "http");
+  const expectedOrigin = `${proto}://${req.headers.host ?? ""}`;
+  const policy = withdrawPolicyFromEnv(process.env, originHeader, expectedOrigin);
+  const audit = (result: Record<string, unknown>): void => {
+    try { logRecord("events", { type: "withdraw-audit", destination: b.destination, amount: b.amount ?? null, ...result }); } catch { /* audit tidak boleh menggagalkan jalur */ }
+  };
+  if ("error" in policy) {
+    audit({ outcome: "REJECTED", reason: policy.error });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: policy.error })); return;
+  }
+  // MODE eksplisit (round-4): deny = semua ditolak; policy = wajib allowlist; legacy = perilaku lama.
+  const mode = withdrawModeFromEnv(process.env);
+  if (typeof mode !== "string") {
+    audit({ outcome: "REJECTED", reason: mode.error });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: mode.error })); return;
+  }
+  let balance = Number.NaN;
+  try { balance = await balanceSol(config.rpcUrl); } catch { /* gagal baca → validateWithdraw menolak fail-closed */ }
+  let decision = validateWithdraw(
+    { destination: String(b.destination ?? ""), amount: b.amount === "all" ? "all" : Number(b.amount), balanceSol: balance, feeSol: 5_000 / 1e9 },
+    policy,
+  );
+  decision = applyWithdrawMode(mode, decision, policy);
+  // Plafon harian opsional (replay protection praktis): total SENT hari ini dari baris audit.
+  if (decision.ok && mode !== "legacy") {
+    const dailyMax = Number(process.env.WITHDRAW_DAILY_MAX_SOL ?? "");
+    if (process.env.WITHDRAW_DAILY_MAX_SOL && Number.isFinite(dailyMax) && dailyMax > 0) {
+      let sentToday = 0;
+      try { sentToday = withdrawnTodaySol(readFileSync(join(config.logDir, `events-${new Date().toISOString().slice(0, 10)}.jsonl`), "utf8")); } catch { /* tanpa berkas = 0 */ }
+      if (sentToday + decision.amountSol > dailyMax) {
+        audit({ outcome: "REJECTED", reason: `plafon harian: ${sentToday} + ${decision.amountSol} > WITHDRAW_DAILY_MAX_SOL ${dailyMax}` });
+        res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `daily limit: ${sentToday.toFixed(4)} SOL already sent today` })); return;
+      }
+    }
+  }
+  if (!decision.ok) {
+    audit({ outcome: "REJECTED", reason: decision.reason, balanceSol: Number.isFinite(balance) ? balance : null });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: decision.reason })); return;
+  }
+  try {
+    const r = await withdrawSol(config.rpcUrl, b.destination!, decision.amountSol);
+    audit({ outcome: "SENT", signature: r.signature, sentSol: r.sentSol });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, signature: r.signature, sentSol: r.sentSol }));
+  } catch (e) {
+    audit({ outcome: "FAILED", error: (e as Error).message.slice(0, 200) });
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+  }
+}
+
 const handler = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -3320,61 +3380,11 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   // on-chain transfer — needs the destination + amount. Never touches trading.
   // A1 (round-3): gerbang additif — env OFF = perilaku lama utuh; env ON = allowlist/plafon.
   // Origin mismatch (CSRF) dan jumlah NaN kini ditolak; SETIAP percobaan diaudit ke events.
+  // R6 P6: permintaan DISERIALISASI (rantai promise) — dua withdraw bersamaan tidak lagi bisa
+  // lolos cek plafon-harian sebelum baris audit keduanya tertulis (race audit ditemukan audit).
   if (path === "/api/wallet/withdraw" && req.method === "POST") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
-    const body = await readBody(req);
-    let b: { destination?: string; amount?: number | "all" } = {};
-    try { b = JSON.parse(body || "{}"); } catch { /* ignore */ }
-    const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin ?? null;
-    const proto = String(req.headers["x-forwarded-proto"] ?? "http");
-    const expectedOrigin = `${proto}://${req.headers.host ?? ""}`;
-    const policy = withdrawPolicyFromEnv(process.env, originHeader, expectedOrigin);
-    const audit = (result: Record<string, unknown>): void => {
-      try { logRecord("events", { type: "withdraw-audit", destination: b.destination, amount: b.amount ?? null, ...result }); } catch { /* audit tidak boleh menggagalkan jalur */ }
-    };
-    if ("error" in policy) {
-      audit({ outcome: "REJECTED", reason: policy.error });
-      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: policy.error })); return;
-    }
-    // MODE eksplisit (round-4): deny = semua ditolak; policy = wajib allowlist; legacy = perilaku lama.
-    const mode = withdrawModeFromEnv(process.env);
-    if (typeof mode !== "string") {
-      audit({ outcome: "REJECTED", reason: mode.error });
-      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: mode.error })); return;
-    }
-    let balance = Number.NaN;
-    try { balance = await balanceSol(config.rpcUrl); } catch { /* gagal baca → validateWithdraw menolak fail-closed */ }
-    let decision = validateWithdraw(
-      { destination: String(b.destination ?? ""), amount: b.amount === "all" ? "all" : Number(b.amount), balanceSol: balance, feeSol: 5_000 / 1e9 },
-      policy,
-    );
-    decision = applyWithdrawMode(mode, decision, policy);
-    // Plafon harian opsional (replay protection praktis): total SENT hari ini dari baris audit.
-    if (decision.ok && mode !== "legacy") {
-      const dailyMax = Number(process.env.WITHDRAW_DAILY_MAX_SOL ?? "");
-      if (process.env.WITHDRAW_DAILY_MAX_SOL && Number.isFinite(dailyMax) && dailyMax > 0) {
-        let sentToday = 0;
-        try { sentToday = withdrawnTodaySol(readFileSync(join(config.logDir, `events-${new Date().toISOString().slice(0, 10)}.jsonl`), "utf8")); } catch { /* tanpa berkas = 0 */ }
-        if (sentToday + decision.amountSol > dailyMax) {
-          audit({ outcome: "REJECTED", reason: `plafon harian: ${sentToday} + ${decision.amountSol} > WITHDRAW_DAILY_MAX_SOL ${dailyMax}` });
-          res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `daily limit: ${sentToday.toFixed(4)} SOL already sent today` })); return;
-        }
-      }
-    }
-    if (!decision.ok) {
-      audit({ outcome: "REJECTED", reason: decision.reason, balanceSol: Number.isFinite(balance) ? balance : null });
-      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: decision.reason })); return;
-    }
-    try {
-      const r = await withdrawSol(config.rpcUrl, b.destination!, decision.amountSol);
-      audit({ outcome: "SENT", signature: r.signature, sentSol: r.sentSol });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, signature: r.signature, sentSol: r.sentSol }));
-    } catch (e) {
-      audit({ outcome: "FAILED", error: (e as Error).message.slice(0, 200) });
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
-    }
+    withdrawChain = withdrawChain.then(() => handleWithdraw(req, res)).catch(() => { /* sudah direspons */ });
     return;
   }
 

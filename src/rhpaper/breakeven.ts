@@ -59,10 +59,39 @@ export function scenarioTable(arms: Array<{ name: string; takePct: number; stopP
   ];
   const lines: string[] = [];
   for (const arm of arms) {
-    lines.push(`arm ${arm.name} (TP +${arm.takePct}% / SL −${arm.stopPct}%):`);
+    lines.push(`arm ${arm.name} (TP ${arm.takePct}% / SL ${arm.stopPct}%):`);
     for (const { label, d } of drags) {
       const r = breakeven(arm.takePct, arm.stopPct, d);
       lines.push(`  ${label} → pemenang net ${r.netWinnerPct.toFixed(2)}% · pecundang net ${r.netLoserPct.toFixed(2)}% · BE=${r.breakEvenWinRate == null ? "MUSTAHIL" : (r.breakEvenWinRate * 100).toFixed(1) + "%"}${r.feasible ? "" : " ← TIDAK LAYAK"}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * TABEL BENCHMARK AUDITOR (round-6 P1) — SATU-SATUNYA sumber angka BE yang boleh dikutip laporan.
+ * Invariant anti-transkripsi: laporan menyalin keluaran ini verbatim (tools/breakeven-table.ts);
+ * breakeven.test.ts mengunci tiap nilai terhadap fungsi produksi yang sama.
+ * Ekspektasi auditor round-6: A/1,0=71,428571 · A/2,6=INFEASIBLE · B/1,14=53,50 · B/2,6=90,00 ·
+ * C/1,14=44,857143 · C/2,6=65,714286 — semuanya direproduksi.
+ */
+export function benchmarkTable(): string[] {
+  const ARMS: Array<{ name: string; takePct: number; stopPct: number }> = [
+    { name: "A", takePct: 2, stopPct: 1.5 },
+    { name: "B", takePct: 3, stopPct: 1 },
+    { name: "C", takePct: 5, stopPct: 2 },
+  ];
+  const DRAGS = [0, 1.0, 1.14, 2.6];
+  const lines = [
+    "Rumus: BE = (SL + d) / (TP + SL); layak ⇔ TP > d. Threshold SUDAH memuat gas + fee quote;",
+    "d = drag INKREMENTAL (fillmodel-v1 latensi 0,5%/kaki → d = 1,0 pp). Gas = wei absolut.", "",
+  ];
+  for (const arm of ARMS) {
+    lines.push(`Arm ${arm.name} (TP ${arm.takePct}% / SL ${arm.stopPct}%):`);
+    for (const d of DRAGS) {
+      const r = breakeven(arm.takePct, arm.stopPct, d);
+      const be = r.breakEvenWinRate == null ? "INFEASIBLE" : (r.breakEvenWinRate * 100).toFixed(6) + "%";
+      lines.push(`  d=${d.toFixed(2)} pp → netWin=${r.netWinnerPct.toFixed(2)}% netLoss=${r.netLoserPct.toFixed(2)}% BE=${be}${r.feasible ? "" : "  [TP ≤ d]"}`);
     }
   }
   return lines;

@@ -1,6 +1,6 @@
 /** Round-5 #1: matematika break-even analitik + verifikasi semantik biaya (anti-ganda-hitung). */
-import { test, eq, approx, assert } from "../testing/harness.js";
-import { breakeven, scenarioTable, gasPctForNotional, roundTripDragPct } from "./breakeven.js";
+import { test, eq, approx, assert, throws } from "../testing/harness.js";
+import { breakeven, scenarioTable, benchmarkTable, gasPctForNotional, roundTripDragPct } from "./breakeven.js";
 import { ROUND_TRIP_GAS_WEI, quotePnl } from "./engine.js";
 import { applyLatencySlippage } from "./fillmodel.js";
 
@@ -66,8 +66,44 @@ test("R5 tabel skenario: setiap arm dilaporkan pada 4 benchmark, verdict TIDAK L
     { name: "B", takePct: 3, stopPct: 1 },
     { name: "C", takePct: 5, stopPct: 2 },
   ]);
-  assert(lines.some((l) => l.includes("MUSTAHIL")), "d=2,6 → TP A/B tidak layak, C layak dibatas");
+  assert(lines.some((l) => l.includes("MUSTAHIL")), "d=2,6 → TP A tidak layak, B/C layak dibatas");
   assert(lines.some((l) => l.includes("71.4%")), "arm A d=1,0 → 71,4%");
   // C dengan d=1,0: BE = (2+1)/(5+2) = 42,9% — paling tahan biaya dari ketiganya.
   approx(breakeven(5, 2, 1.0).breakEvenWinRate!, 3 / 7, 1e-12, "arm C d=1,0");
+});
+
+test("R6 benchmark auditor (6 kasus eksak) dikunci ke fungsi produksi — transkripsi tangan tidak sah", () => {
+  approx(breakeven(2, 1.5, 1.0).breakEvenWinRate!, 2.5 / 3.5, 1e-12, "A/1,0 = 71,428571%");
+  const a26 = breakeven(2, 1.5, 2.6);
+  eq(a26.breakEvenWinRate, null, "A/2,6 = INFEASIBLE (netWin −0,60)");
+  approx(breakeven(3, 1, 1.14).breakEvenWinRate!, 2.14 / 4, 1e-12, "B/1,14 = 53,500000% — BUKAN 52,7% (koreksi laporan round-5)");
+  approx(breakeven(3, 1, 2.6).breakEvenWinRate!, 3.6 / 4, 1e-12, "B/2,6 = 90,000000% — LAYAK (TP 3 > d 2,6; koreksi laporan round-5)");
+  approx(breakeven(5, 2, 1.14).breakEvenWinRate!, 3.14 / 7, 1e-12, "C/1,14 = 44,857143%");
+  approx(breakeven(5, 2, 2.6).breakEvenWinRate!, 4.6 / 7, 1e-12, "C/2,6 = 65,714286% — BUKAN 56,0% (koreksi laporan round-5)");
+});
+
+test("R6 invariant anti-transkripsi: benchmarkTable() menghasilkan angka yang dikunci tes", () => {
+  const table = benchmarkTable().join("\n");
+  for (const expect of ["BE=71.428571%", "BE=INFEASIBLE", "BE=53.500000%", "BE=90.000000%", "BE=44.857143%", "BE=65.714286%"]) {
+    assert(table.includes(expect), `tabel harus memuat ${expect} — angka laporan = angka produksi`);
+  }
+  assert(table.includes("B/2,6") === false, "tabel bukan teks manual");
+});
+
+test("R6 batas: d mendekati TP, tepat TP, melewati TP; d=0; distribusi tak-simetris; exit waktu", () => {
+  // d → TP: pemenang menyusut ke 0; di d=TP tepat, netWin=0 → infeasible (semua exit ≤ 0).
+  approx(breakeven(2, 1.5, 1.99).breakEvenWinRate!, 3.49 / 3.5, 1e-12, "d=1,99 → BE 99,71% (menuju 100%)");
+  eq(breakeven(2, 1.5, 2.0).breakEvenWinRate, null, "d=TP tepat → netWin=0 → tidak layak");
+  eq(breakeven(2, 1.5, 3.0).breakEvenWinRate, null, "d>TP → tidak layak");
+  // d=0: simetris dasar.
+  approx(breakeven(5, 2, 0).breakEvenWinRate!, 2 / 7, 1e-12, "d=0 → SL/(TP+SL)");
+  throws(() => breakeven(2, 1.5, -1), "drag negatif ditolak");
+  throws(() => breakeven(0, 1.5, 0), "TP=0 ditolak");
+  // Distribusi tak-simetris (exit 'waktu' punya hasil variabel): teoretis BE threshold TIDAK
+  // berlaku — yang sah adalah expectancy & PF empiris (dilaporkan terpisah oleh cohort-stats).
+  const realized = { wins: [1.9, 2.1, 2.0], losses: [-1.6, -2.9] }; // 1 take + 2 waktu menang, 2 rugi
+  const beEmpirical = (realized.losses.reduce((a, b) => a + b, 0) / realized.losses.length * -1) /
+    ((realized.losses.reduce((a, b) => a + b, 0) / realized.losses.length * -1) + realized.wins.reduce((a, b) => a + b, 0) / realized.wins.length);
+  assert(beEmpirical > 0 && beEmpirical < 1, "BE empiris dari distribusi realisasi dihitung terpisah");
+  assert(beEmpirical !== breakeven(2, 1.5, 1.0).breakEvenWinRate, "BE empiris ≠ BE teoretis threshold — tidak boleh dicampur");
 });

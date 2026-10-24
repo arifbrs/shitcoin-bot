@@ -13,10 +13,14 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const LATENCY_PCT_PER_SIDE = 0.5; // fillmodel-v1 (diekspos ulang agar laporan mandiri)
+import { latencyOverlayPct, DEFAULT_ASSUMPTIONS } from "./fillmodel.js";
+import { gasPctForNotional } from "./breakeven.js";
+import { quotePnl } from "./engine.js";
+const LATENCY_PCT_PER_SIDE = DEFAULT_ASSUMPTIONS.latencySlippagePct; // SATU SUMBER: fillmodel-v1
+const OVERLAY_PP = latencyOverlayPct(); // eksak: (1-(1-lat)^2)*100
 const GAS_WEI_PER_ROUND_TRIP = 11_400_000_000_000n;
 
-interface CloseRow { arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null }
+interface CloseRow { arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null; entryWethRaw: string | null; fillOutRaw: string | null; version: string }
 
 function bootstrapCi(values: number[], resamples = 2000, seed = 42): { lo: number; hi: number } {
   if (!values.length) return { lo: NaN, hi: NaN };
@@ -66,7 +70,10 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
         cohortStatus: String(j.cohortStatus ?? "?"), why: String(j.why ?? "?"), ts: Number(j.ts ?? 0),
         fillModelVersion: typeof j.fillModelVersion === "string" ? j.fillModelVersion : null,
         token: String(j.token ?? "?"), peakPct: Number.isFinite(Number(j.peakPct)) ? Number(j.peakPct) : null,
-        troughPct: Number.isFinite(Number(j.troughPct)) ? Number(j.troughPct) : null });
+        troughPct: Number.isFinite(Number(j.troughPct)) ? Number(j.troughPct) : null,
+        entryWethRaw: typeof j.entryWethRaw === "string" && /^\d+$/.test(j.entryWethRaw) ? j.entryWethRaw : null,
+        version: typeof j.measurementVersion === "string" ? j.measurementVersion : "pre-units(v0, netPct=gross)",
+        fillOutRaw: (() => { const s = j.simFillExit as { fillOutRaw?: string } | undefined; return typeof s?.fillOutRaw === "string" && /^\d+$/.test(s.fillOutRaw) ? s.fillOutRaw : null; })() });
     }
   }
 
@@ -77,15 +84,29 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
   const json: Record<string, unknown> = { generatedAt: now, files: files.length, closeRows: closes.length, openRows, rejectRows, stuckRows, malformed, capitalUsd, arms: [] as unknown[] };
 
   for (const arm of [...new Set(closes.map((c) => c.arm))].sort()) {
+    for (const version of [...new Set(closes.map((c) => c.version))].sort()) {
     for (const cohort of ["PROSPECTIVE", "LEGACY_CARRYOVER"] as const) {
-      const all = closes.filter((c) => c.arm === arm && c.cohortStatus === cohort && Number.isFinite(c.netPct));
+      const all = closes.filter((c) => c.arm === arm && c.cohortStatus === cohort && c.version === version && Number.isFinite(c.netPct));
       if (!all.length) continue;
       for (const overlay of ["quote-only", "fillmodel-v1"] as const) {
         const rows = overlay === "fillmodel-v1" ? all.filter((c) => c.fillModelVersion != null) : all.filter((c) => c.fillModelVersion == null);
         if (!rows.length) continue;
         const uniqueIds = new Set(rows.map((r) => r.tradeId ?? `no-id:${r.ts}:${r.token}`));
         const net = rows.map((r) => r.netPct);
-        const sim = net.map((p) => p - 2 * LATENCY_PCT_PER_SIDE);
+        // (R6 P2) sim per-trade dari SATU sumber: baris overlay → jalur fillOutRaw eksak (model);
+        // baris quote-only → overlay pp tunggal dari fillmodel (dilabel analitik, tak pernah digabung).
+        // (R6 P2) basis per VERSI — tidak pernah dicampur:
+        //  v3: netPct sudah net-gas → sim = jalur fillOutRaw eksak (model) ATAU −overlay pp (analitik).
+        //  v0: netPct = GROSS (tanpa gas!) → normalisasi net = gross − gas(wei absolut @entry) − overlay.
+        const sim = rows.map((r) => {
+          if (version === "rhpaper-units-arm-v3") {
+            return (r.fillModelVersion != null && r.fillOutRaw != null && r.entryWethRaw != null)
+              ? quotePnl(r.entryWethRaw, r.fillOutRaw).netPct
+              : r.netPct - OVERLAY_PP;
+          }
+          const gasPct = r.entryWethRaw != null ? gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, BigInt(r.entryWethRaw)) : gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, 1_000_000_000_000_000n);
+          return r.netPct - gasPct - OVERLAY_PP;
+        });
         const wins = sim.filter((p) => p > 0), losses = sim.filter((p) => p < 0);
         const sumWin = wins.reduce((a, b) => a + b, 0), sumLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
         const pf = sumLoss > 0 ? sumWin / sumLoss : (sumWin > 0 ? Infinity : 0);
@@ -108,13 +129,14 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
           maxDrawdownPct: maxDrawdownPct(rows),
           exits: rows.reduce<Record<string, number>>((acc, r) => { acc[r.why] = (acc[r.why] ?? 0) + 1; return acc; }, {}),
         };
-        lines.push(`arm ${arm} · ${cohort} · ${overlay}: baris CLOSE=${rows.length} · trade UNIK=${uniqueIds.size}`,
+        lines.push(`arm ${arm} · ${version} · ${cohort} · ${overlay}: baris CLOSE=${rows.length} · trade UNIK=${uniqueIds.size}`,
           `  gross Σ=${block.grossPctSum}% · net Σ=${block.netPctSum}% (${netWethSum.toString()} wei)`,
-          `  sim(overlay latensi 1,0 pp): winrate=${block.winRateSim}% · rata menang=${block.avgWinnerSim ?? "—"}% · rata rugi=${block.avgLoserSim ?? "—"}% · PF=${block.profitFactorSim} · expectancy=${block.expectancySimPct}% CI95=${JSON.stringify(block.expectancySimCi95)}`,
+          `  sim(overlay ${OVERLAY_PP.toFixed(4)} pp): winrate=${block.winRateSim}% · rata menang=${block.avgWinnerSim ?? "—"}% · rata rugi=${block.avgLoserSim ?? "—"}% · PF=${block.profitFactorSim} · expectancy=${block.expectancySimPct}% CI95=${JSON.stringify(block.expectancySimCi95)}`,
           `  break-even winrate dari DISTRIBUSI REALISASI (bukan rumus threshold): ${block.breakEvenWinRateOfRealizedDist}% · MDD=${block.maxDrawdownPct}%`,
           `  exits: ${JSON.stringify(block.exits)}`);
         (json.arms as unknown[]).push(block);
       }
+    }
     }
   }
   lines.push("", "BATAS JUJUR (round-5): 'break-even dari distribusi realisasi' ≠ rumus threshold — keduanya dilaporkan",

@@ -109,6 +109,37 @@ export function study(now = Date.now(), dir = observationDir()): string[] {
     lines.push("");
   }
 
+  // C5 (round-6): kohort USIA — segmen segar vs basa dinilai TERPISAH (jangan dicampur).
+  lines.push("", "── C5 kohort usia-saat-request (segar vs basa) ──");
+  const BUCKETS: Array<{ label: string; lo: number; hi: number }> = [
+    { label: "≤5m (bisa dieksekusi)", lo: 0, hi: 5 },
+    { label: "5–15m", lo: 5, hi: 15 },
+    { label: "15–60m", lo: 15, hi: 60 },
+    { label: ">60m (basa)", lo: 60, hi: Infinity },
+  ];
+  for (const b of BUCKETS) {
+    const sigs = j.signals.filter((s) => {
+      if (s.triggerAt == null) return false;
+      const ageM = (s.requestStartedAt - s.triggerAt) / 60_000;
+      return ageM >= b.lo && ageM < b.hi;
+    });
+    const marks = new Map(j.marks.map((m) => [m.markId, m]));
+    const parts: string[] = [`n=${sigs.length}`, `token=${new Set(sigs.map((s) => s.mint)).size}`];
+    for (const h of [15, 60]) {
+      const ret: number[] = [];
+      for (const s of sigs) {
+        if (now < s.observedAt + h * 60_000) continue;
+        const m = marks.get(`${s.signalId}:${s.policy.id}:${h}`);
+        if (m?.status === "OBSERVED" && m.priceChangePct != null && Number.isFinite(m.priceChangePct)) ret.push(m.priceChangePct);
+      }
+      const ci = ret.length >= 5 ? ` CI95=[${bootstrapCi(ret).meanLo.toFixed(1)}, ${bootstrapCi(ret).meanHi.toFixed(1)}]` : " (n<5: tidak bermakna)";
+      parts.push(`${h}m: n=${ret.length} med=${f2(med(ret))} mean=${f2(mean(ret))}${ci}`);
+    }
+    lines.push(`   ${b.label.padEnd(20)} ${parts.join(" · ")}`);
+  }
+  lines.push("   ATURAN: kohort ini DESKRIPTIF. Dengan n segar ~10, tidak ada klaim profit/worthless —",
+    "   keputusan hanya setelah kejadian baru terkumpul dengan harga keputusan + likuiditas + waktu.");
+
   // C4: join wallet point-in-time (bukan skor terkini yang bocor masa depan)
   lines.push("── C4 join wallet × outcome point-in-time ──");
   const statePath = join(config.logDir, "gmgn-full-watch-state.json");

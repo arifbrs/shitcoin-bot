@@ -69,3 +69,37 @@ test("R5 ADVERSARIAL: duel saldo-vs-tx — saldo dompet naik (aktivitas bersamaa
   assert(balanceDeltaSaysFilled, "skenario: saldo memang naik (aktivitas bersamaan)");
   eq(txProof.filled, false, "verifikasi per-tx menolak — inilah alasannya wajib");
 });
+
+test("R6 P3: native-ETH output = butuh bukti saldo terpisah (log ERC-20 tidak ada)", () => {
+  const p = fillFromReceiptLogs([], { status: "0x1", owner: OWNER, tokenIn: TOKEN, tokenOut: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
+  eq(p.filled, false, "tidak mengarang fill dari ketiadaan log");
+  eq(p.reason, "NATIVE_OUT_NEEDS_BALANCE_PROOF", "batas metode dinyatakan eksplisit");
+});
+
+test("R6 P3: fee-on-transfer — nilai log = batas ATAS; label partial saat <98% ekspektasi", () => {
+  const logs = [transfer(WETH, OWNER, ROUTER, 1000000000000000n), transfer(TOKEN, ROUTER, OWNER, 970000n)];
+  const p = fillFromReceiptLogs(logs, { ...OPTS, expectedAmountOut: 1000000n });
+  eq(p.filled, true, "tetap fill (token masuk nyata)");
+  eq(p.reason, "PARTIAL_FILL", "97% < 98% ekspektasi → ditandai partial, bukan dianggap penuh");
+  const full = fillFromReceiptLogs(logs, { ...OPTS, expectedAmountOut: 975000n });
+  eq(full.reason, null, "≥98% ekspektasi → fill penuh");
+  // Konsekuensi fot: angka log TIDAK boleh jadi satu-satunya dasar akuntansi — delta saldo wajib.
+});
+
+test("R6 P3: log rusak/aneh dilewati terhitung; multi-transfer dijumlahkan", () => {
+  const bad: ParsedLog = { address: TOKEN, topics: [TRANSFER_TOPIC, padAddr(ROUTER), padAddr(OWNER)], data: "0x short" };
+  const logs = [bad, transfer(TOKEN, ROUTER, OWNER, 100n), transfer(TOKEN, ROUTER, OWNER, 50n)];
+  const p = fillFromReceiptLogs(logs, OPTS);
+  eq(p.filled, true, "log rusak tidak membunuh bukti yang sah");
+  eq(p.amountOut, 150n, "multi-transfer dijumlahkan (BigInt)");
+});
+
+test("R6 P3: konsistensi akuntansi — jumlah sama untuk path berbeda pada tradeId yang sama", () => {
+  // engine menyimpan netPct SEKALI; cohort-stats/ledger-audit menghitung ULANG dari raw yang sama
+  // (bukan menjumlahkan overlay dua kali) — diuji penuh di ledger-audit (rh:ledger-audit, 1253 baris).
+  const logs = [transfer(WETH, OWNER, ROUTER, 1000000000000000n), transfer(TOKEN, ROUTER, OWNER, 7379306217214733n)];
+  const a = fillFromReceiptLogs(logs, OPTS);
+  const b = fillFromReceiptLogs([...logs], OPTS); // urutan/instansi berbeda
+  eq(a.amountOut, b.amountOut, "deterministik");
+  eq(a.amountIn, b.amountIn, "deterministik (in)");
+});
