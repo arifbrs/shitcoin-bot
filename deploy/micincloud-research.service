@@ -1,0 +1,27 @@
+# LAYANAN RISET 24/7 (VPS, TANPA KUNCI SIGNING) — systemd unit, FINAL.
+# Lingkup: lane paper 1:1 (quote-only, nol modal) + lane GMGN read-only + hunter.
+# SENGAJA TIDAK memuat: rh-wallet.key, .keys/, S2_EXEC_ROUTE=gmgn, OKX execution env —
+# file ini TIDAK PERNAH memindahkan dana. Deploy (butuh operator + VPS):
+#   1) scp repo ke VPS, buat user riset tanpa akses kunci: `useradd -m research`
+#   2) salin HANYA: src/, package.json, tsconfig, run-rhpaper-supervised.sh,
+#      run-gmgn-supervised.sh, run-hunter-supervised.sh, .env riset (GMGN_API_KEY read-only,
+#      TANPA GMGN_PRIVATE_KEY / OKX secret / apapun yang menandatangani)
+#   3) systemctl daemon-reload && systemctl enable --now micincloud-research
+# Rollback: systemctl disable --now micincloud-research (proses mati, data tetap di logs/).
+[Unit]
+Description=Micincloud zero-capital research lanes (paper + GMGN read-only + hunter)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=research
+WorkingDirectory=/opt/micincloud-bot
+ExecStart=/bin/bash ./bot.sh-research
+Restart=always
+RestartSec=30
+# Pemulihan otomatis: supervisor scripts punya loop while-true sendiri; systemd hanya
+# menghidupkan ulang supervisor yang mati. Tidak ada kunci signing di unit ini.
+
+[Install]
+WantedBy=multi-user.target

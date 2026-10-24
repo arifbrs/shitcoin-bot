@@ -43,10 +43,14 @@ export function roundTripDragPct(stack: CostStack): number {
   return stack.gasPct + stack.quoteSidePct + stack.latencyPct;
 }
 
-/** Gas persen dari notional: wei FLAT → persen = gas/notional. */
+/** Gas persen dari notional: wei FLAT → persen = gas/notional (rasional aman-2^53, FINAL-2). */
 export function gasPctForNotional(gasWei: bigint, notionalWei: bigint): number {
   if (notionalWei <= 0n) throw new Error("gasPctForNotional: notional harus > 0");
-  return Number(gasWei * 1_000_000n / notionalWei) / 10_000;
+  const sign = gasWei < 0n ? -1 : 1;
+  const I = (gasWei < 0n ? -gasWei : gasWei) * 10n ** 25n / notionalWei; // pct × 10^23
+  const s = I.toString().padStart(24, "0");
+  const v = Number(`${sign < 0 ? "-" : ""}${s.slice(0, s.length - 23) || "0"}.${s.slice(s.length - 23)}`);
+  return v === 0 ? 0 : v;
 }
 
 /** Tabel skenario analitik: 0 biaya · 1,14 (gas-bruto hipotetis) · 1,0 (fillmodel) · 2,6 (hipotetis). */

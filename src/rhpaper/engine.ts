@@ -12,18 +12,33 @@ export interface Cfg { maker: string; usd: number; maxPositions: number; stopPct
 
 // Historical gas assumption, NOT a measured fee for each OKX transaction. Keep units exact.
 export const ROUND_TRIP_GAS_WEI = 11_400_000_000_000n;
+/**
+ * (FINAL-2) Konversi rasional→double yang aman-2^53: pp = delta/entry×100 dihitung sebagai
+ * bilangan bulat 25-digit (BigInt, tanpa kehilangan), lalu decimal-string → Number (pembulatan
+ * double terdekat yang deterministik). Mendukung delta/entry di ATAS 2^53, perubahan 1-wei,
+ * nilai negatif, dan entry hingga 10^21+ wei. -0 dinormalisasi ke 0 (serialisasi deterministik).
+ */
+export function rationalPct(delta: bigint, entry: bigint): number {
+  if (entry <= 0n) throw new Error("rationalPct: entry harus > 0");
+  if (delta === 0n) return 0;
+  const sign = delta < 0n ? -1 : 1;
+  const I = (delta < 0n ? -delta : delta) * 10n ** 25n / entry; // pp × 10^23 (100×2 digit)
+  const s = I.toString().padStart(24, "0");
+  const intPart = s.slice(0, s.length - 23) || "0";
+  const fracPart = s.slice(s.length - 23);
+  const v = Number(`${sign < 0 ? "-" : ""}${intPart}.${fracPart}`);
+  return v === 0 ? 0 : v; // -0 → 0 (deterministik)
+}
+
 export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_GAS_WEI): { grossPct: number; netPct: number; netWethRaw: string } {
   const entry = BigInt(entryRaw), exit = BigInt(exitRaw);
   if (entry <= 0n || exit < 0n || gasWei < 0n) throw new Error("invalid quote amounts");
   const gross = exit - entry, net = gross - gasWei;
-  // (FINAL A1, revisi) PRESISI RASIONAL-PENUH: kini langsung membagi dua integer EKSAK dalam
-  // double (keduanya < 2^53 untuk nilai wei realistis) — hasil = pembulatan-correct dari bilangan
-  // rasional, tanpa artefak truncation (kasus DELL: −2,622791450244 persis; dulu −2,6227 oleh
-  // truncation ×1e6/1e4). Fallback skala BigInt hanya untuk magnitudo di luar 2^53 (non-realistis).
-  const pct = (delta: bigint): number =>
-    delta >= -9_000_000_000_000_000n && delta <= 9_000_000_000_000_000n && entry <= 9_000_000_000_000_000n
-      ? Number(delta) / Number(entry) * 100
-      : Number(delta * 1_000_000_000_000n / entry) / 1e10;
+  // (FINAL-2 REVISI) PRESISI AMAN-2^53: klaim "wei realistis < 2^53" SALAH (2^53 ≈ 9,007 ETH).
+  // Metode: rasional eksak via BigInt — I = |delta|×10^25 / entry merepresentasikan pp×10^23
+  // (25 digit di bawah koma), lalu string → Number() membulatkan KE TERDEKAT double secara
+  // deterministik. Tidak ada konversi Number(BigInt) yang kehilangan digit signifikan.
+  const pct = (delta: bigint): number => rationalPct(delta, entry);
   return { grossPct: pct(gross), netPct: pct(net), netWethRaw: net.toString() };
 }
 

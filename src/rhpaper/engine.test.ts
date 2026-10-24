@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test, eq, approx, assert } from "../testing/harness.js";
-import { cycle, quotePnl, type Cfg } from "./engine.js";
+import { cycle, quotePnl, rationalPct, type Cfg } from "./engine.js";
 import { simulatedExitWeth, latencyOverlayPct } from "./fillmodel.js";
 import { emptyState, loadState, saveState, type Position } from "./state.js";
 import type { QuoteResult } from "./exec.js";
@@ -116,4 +116,32 @@ test("FINAL-2: representasi persis — netWethRaw = bilangan rasional eksak; net
   eq(pnl.netPct, -2.622791450244, "netPct terbaca 10 desimal — double memuat 13 digit signifikan ini persis");
   // Yang DISIMPAN di ledger = keduanya (netWethRaw string eksak + netPct number); yang DITAMPILKAN
   // laporan boleh dibulatkan, asal berasal dari nilai ini (rh:ledger-audit memvalidasi tiap baris).
+});
+
+test("FINAL-2 aman-2^53: posisi 10 ETH (wei > 2^53), perubahan 1 wei, negatif, dan -0 deterministik", () => {
+  // 10 ETH = 1e19 wei > 2^53 — jalur Number(BigInt) lama akan kehilangan presisi di sini.
+  const big = quotePnl("10000000000000000000", "9800000000000000000"); // 10 ETH → 9,8 ETH
+  approx(big.netPct, (9.8e18 - 1e19 - 11.4e12) / 1e19 * 100, 1e-12, "wei > 2^53 tetap presisi");
+  eq(big.grossPct, -2, "gross −2% eksak");
+  const oneWei = quotePnl("1000000000000000000000", "1000000000000000000001"); // 1 wei di 1000 ETH
+  approx(oneWei.grossPct, 1e-19, 1e-23, "1 wei pada 1000 ETH = 1e-19% — tetap terwakili");
+  const neg = quotePnl("1000000000000000", "1"); // kehilangan hampir total
+  assert(neg.netPct < -99.99, "negatif ekstrem benar");
+  eq(quotePnl("1000000000000000", "1000000000000000").netPct, -1.14, "net = −gas persis");
+  // -0 dinormalisasi (serialisasi deterministik — JSON.stringify(-0)="-0" berbahaya untuk diff).
+  eq(Object.is(quotePnl("1000000000000000", "1000000000000000").grossPct, -0), false, "tanpa -0");
+});
+
+test("FINAL-2 properti: rasional × entry/100 merekonstruksi delta (inversi, 500 kasus acak deterministik)", () => {
+  let s = 987654321 >>> 0;
+  const rnd = (): bigint => BigInt(Math.floor((s = (s * 1_664_525 + 1_013_904_223) >>> 0) / 2 ** 32 * 1e6));
+  for (let i = 0; i < 500; i++) {
+    const entry = 10n ** 12n + rnd() * 10n ** 6n; // 1e12 .. ~1e18
+    const delta = -entry + rnd() * 1000n; // rugi hampir total .. profit kecil
+    const pct = rationalPct(delta, entry);
+    const back = BigInt(Math.round(pct / 100 * Number(entry)));
+    const err = back - delta;
+    if (delta !== 0n) assert(Math.abs(Number(err)) / Number(delta < 0n ? -delta : delta) < 1e-11, `inversi terbalik: ${delta}/${entry}`);
+  }
+  void rnd;
 });

@@ -2,7 +2,7 @@
  * SCANNER paper 1:1 — kandidat HANYA dari token yang lolos QUOTE BELI + QUOTE JUAL.
  * Aturan plan: jika salah satu arah tidak punya rute, token TIDAK masuk kandidat (tidak ada mark).
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { CHAIN, WETH, decimalsOf, envOf, okxGet, quoteBuy, quoteSell } from "./exec.js";
 import { dir } from "./state.js";
 
@@ -13,6 +13,9 @@ export interface Candidate { token: string; symbol: string; decimals: number; bu
   txnsH1?: number | null; // total transaksi jam-1 — intensitas
   priceChangeH1?: number | null; // % perubahan harga jam-1 — momentum
   pairAgeDays?: number | null; // umur pair (hari) — siklus hidup token
+  poolAddress?: string | null; // (FINAL-3b) alamat pool point-in-time (DexScreener)
+  poolLiquidityRaw?: string | null; // (FINAL-3b) liquidity() V3 ON-CHAIN (raw, aman-2^53 via BigInt-string)
+  sqrtPriceX96?: string | null; // (FINAL-3b) harga pool on-chain mentah — untuk deteksi gerak likuiditas
 }
 
 /** (B3) Baris DexScreener terbaik (likuiditas terbesar) untuk mint — murni, bisa diuji. */
@@ -73,6 +76,15 @@ export function isAcceptable(symbol: string, token: string): boolean {
   return /^0x[0-9a-f]{40}$/i.test(token);
 }
 
+/** (FINAL-3b) Keadaan pool V3 on-chain: liquidity() + slot0 → string mentah (BigInt aman). */
+export async function poolStateRaw(poolAddress: string): Promise<{ liquidity: string; sqrtPriceX96: string }> {
+  const { rpc } = await import("./exec.js");
+  const liq = await rpc("eth_call", [{ to: poolAddress, data: "0x1a686502" }, "latest"]); // liquidity()
+  const slot0 = await rpc("eth_call", [{ to: poolAddress, data: "0x3850c7fb" }, "latest"]); // slot0()[0]
+  const hexVal = (v: unknown): string => (typeof v === "string" && v !== "0x" ? BigInt(v).toString() : "0");
+  return { liquidity: hexVal(liq.result), sqrtPriceX96: hexVal((slot0.result as string | undefined)?.slice(0, 66)) };
+}
+
 /** Uji dua arah. Gagal salah satu → TIDAK kandidat. */
 export async function probe(token: string, symbol: string, maker: string, usdRaw = "1000000000000000"): Promise<Candidate> {
   const dec = await decimalsOf(token);
@@ -128,10 +140,24 @@ export async function scanCandidates(maker: string, want = 5, limit = 40): Promi
       c.liquiditySource = usd != null ? "dexscreener" : null;
       c.liquidityReason = usd != null ? null : "DEXSCREENER_NO_PAIR"; // provider memang tak punya pair ≠ kondisi pasar
       Object.assign(c, behaviorFromDexRow(best)); // fitur perilaku point-in-time (FINAL-3)
+      const pairAddr = typeof best?.pairAddress === "string" ? best.pairAddress : null;
+      c.poolAddress = pairAddr;
+      if (pairAddr) {
+        // (FINAL-3b) keadaan pool ON-CHAIN (bukan agregat provider): liquidity() + slot0.sqrtPriceX96.
+        try {
+          const liq = await poolStateRaw(pairAddr);
+          c.poolLiquidityRaw = liq.liquidity; c.sqrtPriceX96 = liq.sqrtPriceX96;
+        } catch { c.poolLiquidityRaw = null; c.sqrtPriceX96 = null; }
+      } else { c.poolLiquidityRaw = null; c.sqrtPriceX96 = null; }
     }
   }
   mkdirSync(dir(), { recursive: true });
   writeFileSync(cachePath(), JSON.stringify({ ts: Date.now(), candidates: out }));
+  // (FINAL-3b) SNAPSHOT APPEND-ONLY — cache harian tertimpa tiap scan; riwayat likuiditas pool
+  // untuk deteksi GERAK likuiditas (tambah/lepas) butuh seri waktu yang tidak hilang.
+  appendFileSync(dir() + "/liquidity-snapshots.jsonl", JSON.stringify({ ts: Date.now(),
+    rows: out.map((c) => ({ token: c.token, symbol: c.symbol, liquidityUsd: c.liquidityUsd ?? null,
+      poolAddress: c.poolAddress ?? null, poolLiquidityRaw: c.poolLiquidityRaw ?? null, sqrtPriceX96: c.sqrtPriceX96 ?? null })) }) + "\n");
   return out;
 }
 

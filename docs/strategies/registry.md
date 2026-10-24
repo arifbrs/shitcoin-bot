@@ -81,3 +81,11 @@ bukti prospektif (≥14 hari, ≥100 trade selesai, CI tidak melewati nol).
 Aturan: label "smart money"/winrate wallet TIDAK dipakai sebagai bukti (klasifikasi pihak ketiga /
 bocor masa depan); tidak ada optimasi parameter retrospektif; hipotesis hanya naik status setelah
 n & coverage memenuhi ambang yang ditetapkan SEBELUM pengukuran.
+
+## 7. HIPOTESIS BARU DARI FITUR ON-CHAIN (FINAL) — data mengalir, verdict menunggu
+| # | Mekanisme | Sumber data (authorized, point-in-time) | Status |
+|---|---|---|---|
+| H-F | GERAK LIKUIDITAS ON-CHAIN (liquidity() pool V3, Δ≥±10% antar-snapshot) → pergerakan lanjutan | liquidity-snapshots.jsonl (append-only) → rh:liq-events | **AWAITING_PROSPECTIVE_DATA** (snapshot mulai mengalir hari ini) |
+| H-G | IMBALANCE 1-jam + intensitas (txns.h1) memprediksi arah | baris OPEN/DexScreener (imbalanceH1/txnsH1) | **AWAITING_PROSPECTIVE_DATA** |
+| H-H | UMUR PAIR (lifecycle) memoderasi hasil trade | pairAgeDays pada OPEN | **AWAITING_PROSPECTIVE_DATA** |
+Aturan tetap: fitur point-in-time; baseline = arm beku; tidak ada optimasi retrospektif.
