@@ -455,3 +455,10 @@ PROFITABILITY: NOT YET VALIDATED — 5 completed sim trade (semua stop kecil) bu
 | D2 | 24/7 | BLOCKED_EXTERNAL (operator: caffeinate/pmset/VPS) |
 | E | Riset H-A..H-E | AWAITING_OBSERVATION / PENDING DATA (fitur F-2 kini mengalir prospektif) |
 | Level-2 | Profitabilitas | PENDING — butuh hari observasi valid + ≥100 trade/arm |
+
+## SUPERVISI DIPERBAIKI (FINAL-3c) — commit terakhir
+Akar kematian serentak 10-24 19:2x: lane di-nohup dari sesi terminal/agen tetap satu process-group;
+sesi berakhir → killpg membunuh semuanya (bukan crash, bukan sleep saat itu). setsid tak ada di macOS;
+launchctl submit diblokir TCC (Documents). Solusi terpasang: `node deploy/start-lanes-detached.mjs`
+(spawn detached, PGID baru, idempoten) — SEMUA LANE OK terverifikasi; collector/tracker/rhpaper
+menulis data segar. Sisa riset: AWAITING_OBSERVATION (H-A..H-H); D2 24/7: operator (caffeinate/VPS).
