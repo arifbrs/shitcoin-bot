@@ -54,10 +54,14 @@ export function ledgerAudit(dir = "logs/rhpaper"): { lines: string[]; mismatches
           stats.bad++; badWei++;
           if (samples.length < 5) samples.push(`netWethRaw tersimpan ${storedWei} ≠ rekomputasi ${expectWei} (${String(j.symbol)} ${f})`);
         }
-        const s = j.simFillExit as { filled?: boolean; fillOutRaw?: string } | undefined;
+        const s = j.simFillExit as { filled?: boolean; fillOutRaw?: string; version?: string } | undefined;
         if (s?.filled === true) { // baris yang modelnya MENOLAK tidak punya fillOutRaw — sesuai desain
+          // (FINAL §1) versi-sadar: v2 = DEFECT (double-count, dibekukan) → fillOutRaw-nya TIDAK
+          // divalidasi dgn formula v1/v3 (memang beda); v3 = re-quote kuantitas sim ×(1−l) —
+          // exitWethRaw pada baris v3 ADALAH re-quote utk kuantitas sim, jadi formula berlaku.
+          const isV2 = s.version === "rhpaper-fillmodel-v2";
           const expect = applyLatencySlippage(exit, DEFAULT_ASSUMPTIONS.latencySlippagePct);
-          if (s.fillOutRaw !== expect) {
+          if (!isV2 && s.fillOutRaw !== expect) {
             stats.bad++; badFillOut++;
             if (samples.length < 5) samples.push(`simFillExit.fillOutRaw ${s.fillOutRaw} ≠ model ${expect} (${String(j.symbol)} ${f})`);
           }
