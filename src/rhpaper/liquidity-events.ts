@@ -8,17 +8,38 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export interface LiqEvent { ts: number; token: string; symbol: string; kind: "LIQUIDITY_ADD" | "LIQUIDITY_REMOVE"; deltaRaw: string; fromRaw: string; toRaw: string; poolAddress: string | null }
+export type LiqKind = "ACTIVE_LIQUIDITY_CHANGE" | "LP_ADD_CONFIRMED" | "LP_REMOVE_CONFIRMED";
+export interface LiqEvent { ts: number; token: string; symbol: string; kind: LiqKind; deltaRaw: string; fromRaw: string; toRaw: string; poolAddress: string | null }
 
-/** Murni: delta antar dua snapshot token (raw, relatif — threshold proporsional). */
-export function classifyDelta(prevRaw: string, nextRaw: string): { kind: "LIQUIDITY_ADD" | "LIQUIDITY_REMOVE" | null; deltaRaw: string } {
+// Topik event V3 (Uniswap V3 pool — implementasi RH terverifikasi V3-style): Mint/Burn = operasi
+// LP SEBENARNYA; perubahan liquidity() tanpa Mint/Burn = lintas-tick (in-range), BUKAN LP op.
+export const MINT_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
+export const BURN_TOPIC = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
+
+/** Murni: delta antar dua snapshot token (raw, relatif — threshold proporsional).
+ *  (FINAL-2B) KLASIFIKASI DIKOREKSI: perubahan liquidity() adalah perubahan likuiditas
+ *  AKTIF-in-range (bisa karena lintas-tick), BUKAN bukti deposit/penarikan LP. Label
+ *  LP_ADD/LP_REMOVE hanya boleh setelah Mint/Burn pool terdekode (lihat lpKindFromLogs). */
+export function classifyDelta(prevRaw: string, nextRaw: string): { kind: LiqKind | null; deltaRaw: string } {
   const a = BigInt(prevRaw), b = BigInt(nextRaw);
   const delta = b - a;
   if (a === 0n) return { kind: null, deltaRaw: delta.toString() }; // dari nol = pool baru, bukan "add" ke pool hidup
   const ratio = Number(delta * 10000n / (a < 0n ? -a : a)) / 10000; // proporsional, aman
-  if (ratio >= 0.1) return { kind: "LIQUIDITY_ADD", deltaRaw: delta.toString() };
-  if (ratio <= -0.1) return { kind: "LIQUIDITY_REMOVE", deltaRaw: delta.toString() };
+  if (Math.abs(ratio) >= 0.1) return { kind: "ACTIVE_LIQUIDITY_CHANGE", deltaRaw: delta.toString() };
   return { kind: null, deltaRaw: delta.toString() };
+}
+
+/** Murni: dari logs pool, apakah ada operasi LP sebenarnya? Mengembalikan jenis + bukti. */
+export function lpKindFromLogs(logs: Array<{ topics?: string[]; transactionHash?: string; blockNumber?: number; data?: string }>): { kind: "LP_ADD_CONFIRMED" | "LP_REMOVE_CONFIRMED" | null; amountRaw: string; txHash: string | null; blockNumber: number | null } {
+  let amount = 0n, kind: "LP_ADD_CONFIRMED" | "LP_REMOVE_CONFIRMED" | null = null, txHash: string | null = null, block: number | null = null;
+  for (const l of logs) {
+    const t0 = l.topics?.[0]?.toLowerCase();
+    if (t0 !== MINT_TOPIC && t0 !== BURN_TOPIC) continue;
+    const amountRaw = "0x" + String(l.data ?? "0x0").slice(2).padStart(64, "0").slice(0, 64); // uint128 amount = word pertama data
+    const v = BigInt(amountRaw);
+    if (v > amount) { amount = v; kind = t0 === MINT_TOPIC ? "LP_ADD_CONFIRMED" : "LP_REMOVE_CONFIRMED"; txHash = l.transactionHash ?? null; block = l.blockNumber ?? null; }
+  }
+  return { kind, amountRaw: amount.toString(), txHash, blockNumber: block };
 }
 
 export function liquidityEvents(file = "logs/rhpaper/liquidity-snapshots.jsonl"): { events: LiqEvent[]; snapshots: number; tokens: number } {
@@ -40,7 +61,7 @@ export function liquidityEvents(file = "logs/rhpaper/liquidity-snapshots.jsonl")
       if (prev && prev.raw !== r.poolLiquidityRaw) {
         const { kind, deltaRaw } = classifyDelta(prev.raw, r.poolLiquidityRaw);
         if (kind) events.push({ ts: row.ts, token: r.token, symbol: r.symbol ?? "?", kind, deltaRaw, fromRaw: prev.raw, toRaw: r.poolLiquidityRaw, poolAddress: r.poolAddress ?? prev.pool });
-      }
+      } // (FINAL-2B) konfirmasi LP ops (decode Mint/Burn) = fungsi confirmLpEvents di bawah; snapshot delta TIDAK otomatis jadi LP op
       last.set(r.token, { raw: r.poolLiquidityRaw, ts: row.ts, symbol: r.symbol ?? "?", pool: r.poolAddress ?? null });
     }
   }

@@ -78,9 +78,15 @@ export function simulateFill(input: FillInput, a: FillAssumptions = DEFAULT_ASSU
   if (input.ethUsd == null || !Number.isFinite(input.ethUsd) || input.ethUsd <= 0) {
     return { filled: false, reason: "ETH_USD_UNKNOWN", version: FILL_MODEL_VERSION };
   }
-  const sizeUsd = (Number(BigInt(input.sizeWethRaw)) / 1e18) * input.ethUsd;
-  if (!Number.isFinite(sizeUsd) || sizeUsd <= 0) return { filled: false, reason: "SIZE_INVALID", version: FILL_MODEL_VERSION };
-  if (sizeUsd > input.liquidityUsd * (a.maxLiquiditySharePct / 100)) {
+  // (FINAL-2) pangsa likuiditas dihitung BigInt murni (mikro-USD) — aman-2^53 untuk posisi besar;
+  // ethUsd float dikonversi ke mikro sekali dengan pembulatan eksplisit (satu-satunya Number di sini).
+  if (!Number.isFinite(input.ethUsd) || input.ethUsd <= 0) {
+    return { filled: false, reason: "ETH_USD_UNKNOWN", version: FILL_MODEL_VERSION };
+  }
+  const sizeUsdMicro = BigInt(input.sizeWethRaw) * BigInt(Math.round(input.ethUsd * 1e6)) / 10n ** 18n;
+  const liquidityUsdMicro = BigInt(Math.round(input.liquidityUsd * 1e6));
+  if (sizeUsdMicro <= 0n) return { filled: false, reason: "SIZE_INVALID", version: FILL_MODEL_VERSION };
+  if (sizeUsdMicro * 100n > liquidityUsdMicro * BigInt(Math.round(a.maxLiquiditySharePct))) {
     return { filled: false, reason: "REJECT_LIQUIDITY_SHARE", version: FILL_MODEL_VERSION };
   }
   if (input.impactPct != null && Math.abs(input.impactPct) >= a.rejectImpactPct) {

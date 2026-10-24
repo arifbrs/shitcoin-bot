@@ -34,7 +34,8 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
   const entry = BigInt(entryRaw), exit = BigInt(exitRaw);
   if (entry <= 0n || exit < 0n || gasWei < 0n) throw new Error("invalid quote amounts");
   const gross = exit - entry, net = gross - gasWei;
-  // (FINAL-2 REVISI) PRESISI AMAN-2^53: klaim "wei realistis < 2^53" SALAH (2^53 ≈ 9,007 ETH).
+  // (FINAL-2 REVISI) PRESISI AMAN-2^53: 2^53−1 wei ≈ 0,009007199 ETH — posisi ≥0,009 ETH SUDAH
+  // melewatinya, jadi Number(BigInt) langsung BUKAN otoritas yang sah untuk akuntansi.
   // Metode: rasional eksak via BigInt — I = |delta|×10^25 / entry merepresentasikan pp×10^23
   // (25 digit di bawah koma), lalu string → Number() membulatkan KE TERDEKAT double secara
   // deterministik. Tidak ada konversi Number(BigInt) yang kehilangan digit signifikan.
