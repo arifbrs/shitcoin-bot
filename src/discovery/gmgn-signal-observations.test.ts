@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, eq, assert, approx, throws } from "../testing/harness.js";
 import { acquireObservationLock, appendObservation, dexPriceSnapshot, dueMarkTargets, gmgnPriceSnapshot,
@@ -26,7 +27,7 @@ test("GMGN observations: missing identity/trigger is explicit, not invented", ()
 });
 
 test("GMGN observations: durable entry/marks survive restart and never enter events stream", () => {
-  const root = mkdtempSync(join(process.env.TMPDIR!, "gmgn-journal-"));
+  const root = mkdtempSync(join(tmpdir(), "gmgn-journal-"));
   const s = signal(); appendObservation(s, root);
   const target = dueMarkTargets(readObservationJournal(root), 120_000)[0]!;
   appendObservation(makeSignalMark(target, dexPriceSnapshot("sol", s.mint, pairs(), 120_000), 120_000), root);
@@ -83,7 +84,7 @@ test("GMGN observations: reject quote-token price and do not substitute FDV for 
 });
 
 test("GMGN observations: corrupt/duplicate journals fail closed without overwriting evidence", () => {
-  const root = mkdtempSync(join(process.env.TMPDIR!, "gmgn-corrupt-"));
+  const root = mkdtempSync(join(tmpdir(), "gmgn-corrupt-"));
   appendObservation(signal(), root); appendObservation(signal(), root);
   throws(() => readObservationJournal(root), "duplicate detected"); eq(readObservationJournal(root, false).duplicates, 1, "offline report can diagnose");
   writeFileSync(journalPath(root), "{incomplete");
@@ -91,7 +92,7 @@ test("GMGN observations: corrupt/duplicate journals fail closed without overwrit
 });
 
 test("GMGN observations: exclusive role lock refuses duplicate collector", () => {
-  const root = mkdtempSync(join(process.env.TMPDIR!, "gmgn-lock-"));
+  const root = mkdtempSync(join(tmpdir(), "gmgn-lock-"));
   const release = acquireObservationLock("collector", root);
   try { throws(() => acquireObservationLock("collector", root), "same process cannot acquire twice"); }
   finally { release(); }
