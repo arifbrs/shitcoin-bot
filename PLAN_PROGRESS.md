@@ -363,3 +363,33 @@ DESKRIPTIF; tidak ada klaim profit/worthless dari n sekecil ini.
 kan; status TETAP legacy = RISIKO TERBUKA menunggu keputusan operator (paket keputusan siap).
 
 178 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · lane SEMUA OK. PROFITABILITY NOT YET VALIDATED.
+
+## ROUND-7 AUDIT (2026-10-24, sesi ketujuh) — COVERAGE JUJUR & ALJABAR LATENSI (commit 3723e30)
+
+**Koreksi coverage (denominator round-6 salah)**: 28,78% adalah rasio atas SPAN ledger (42,35 jam),
+bukan 168 jam. Rekonsiliasi eksak 7 hari: aktif 12,48 + OUTAGE 29,86 (10-23T04:28→10-24T10:20) +
+BEFORE_COHORT 125,65 (sebelum kohort 10-22T19:47) = 168,0 jam ✓. Dua angka dilabel:
+availabilityPctTrailing7d = **7,43%** (168j penuh) · availabilityPctCohortSpan = **29,48%**.
+GMGN tracker: 1,34% (log baru ada sejak restart 10-24). 88 observasi sinyal hilang di OUTAGE.
+→ Klaim "forward-test 14 hari" dilarang sampai coverage nyata.
+
+**Aljabar latensi dikunci**: dua kaki masing-masing ×(1−l) sekali → putaran (1−l)² = overlay eksak
+0,9975 pp (fillmodel.latencyOverlayPct, satu definisi). Jalur fillOutRaw-tunggal round-6 = undercount
+(~0,5 pp terlalu optimis) — dibetulkan. Kesamaan lintas-modul dites (overlay ≡ komposit).
+
+**Pilahan akuntansi saling-lepas**: v0=1207 · v3-quote=44 · v3-fillmodel=4 → 1255 = total ✓
+(fillmodel NESTED di dalam v3). Baris v0: PnL asli = gross; normalisasi biaya = HIPOTETIS.
+
+**Sim state classification (temuan jujur)**: kohort fillmodel-v1 kini = 3 CLOSE dengan **0 sim
+trade layak** — entry likuiditas tak tercatat → model menolak fail-closed (simNoEntry/simUnexitable
+dilaporkan terpisah, bukan dijadikan rugi sim). Kapasitas keluar (H-B): 24/29 kandidat punya
+likuiditas (p10 $3,1k · p50 $102,7k) — semua lolos 2% rule di notional $2,5.
+
+**ft:daily**: rekaman harian machine-readable (coverage flags, eligible/accepted/rejected, PF/MDD,
+sensitivitas BE, versi strategi, kualitas data) — semuanya dari fungsi produksi.
+
+**Hipotesis edge (registri H-A..H-E)**: H-A INSUFFICIENT (n segar 27) · H-B terukur netral ·
+H-C INSUFFICIENT · H-D/E PENDING DATA. TIDAK ADA klaim edge; hasil negatif dipertahankan.
+
+180 tes / 28 berkas ✓ · typecheck ✓ · gate ✓ · ledger-audit exit 0 · lane SEMUA OK.
+PROFITABILITY NOT YET VALIDATED.
