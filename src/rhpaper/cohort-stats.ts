@@ -13,14 +13,14 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { latencyOverlayPct, DEFAULT_ASSUMPTIONS } from "./fillmodel.js";
+import { latencyOverlayPct, simulatedExitWeth, DEFAULT_ASSUMPTIONS } from "./fillmodel.js";
 import { gasPctForNotional } from "./breakeven.js";
 import { quotePnl } from "./engine.js";
 const LATENCY_PCT_PER_SIDE = DEFAULT_ASSUMPTIONS.latencySlippagePct; // SATU SUMBER: fillmodel-v1
 const OVERLAY_PP = latencyOverlayPct(); // eksak: (1-(1-lat)^2)*100
 const GAS_WEI_PER_ROUND_TRIP = 11_400_000_000_000n;
 
-interface CloseRow { arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null; entryWethRaw: string | null; fillOutRaw: string | null; version: string; simEntryFilled: boolean | null; simExitFilled: boolean | null }
+interface CloseRow { arm: string; tradeId: string | null; netPct: number; grossPct: number; netWethRaw: bigint; cohortStatus: string; why: string; ts: number; fillModelVersion: string | null; token: string; peakPct: number | null; troughPct: number | null; entryWethRaw: string | null; exitWethRaw: string | null; fillOutRaw: string | null; version: string; simEntryFilled: boolean | null; simExitFilled: boolean | null }
 
 function bootstrapCi(values: number[], resamples = 2000, seed = 42): { lo: number; hi: number } {
   if (!values.length) return { lo: NaN, hi: NaN };
@@ -72,6 +72,7 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
         token: String(j.token ?? "?"), peakPct: Number.isFinite(Number(j.peakPct)) ? Number(j.peakPct) : null,
         troughPct: Number.isFinite(Number(j.troughPct)) ? Number(j.troughPct) : null,
         entryWethRaw: typeof j.entryWethRaw === "string" && /^\d+$/.test(j.entryWethRaw) ? j.entryWethRaw : null,
+        exitWethRaw: typeof j.exitWethRaw === "string" && /^\d+$/.test(j.exitWethRaw) ? j.exitWethRaw : null,
         version: typeof j.measurementVersion === "string" ? j.measurementVersion : "pre-units(v0, netPct=gross)",
         simEntryFilled: (() => { const s = j.simFillEntry as { filled?: boolean } | undefined; return s && typeof s.filled === "boolean" ? s.filled : null; })(),
         simExitFilled: (() => { const s = j.simFillExit as { filled?: boolean } | undefined; return s && typeof s.filled === "boolean" ? s.filled : null; })(),
@@ -126,7 +127,12 @@ export function cohortStats(now = Date.now(), dir = "logs/rhpaper"): { lines: st
         const simNoEntry = rows.filter((r) => r.simEntryFilled === false).length;
         const simNoExit = rows.filter((r) => r.simExitFilled === false).length;
         const sim = simTradeRows.map((r) => {
-          if (version === "rhpaper-units-arm-v3") return r.netPct - OVERLAY_PP;
+          if (version === "rhpaper-units-arm-v3") {
+            // (R8 P4) metodologi A eksak: net sim = quotePnl(entry, exitOut×(1−l)²) — BigInt.
+            return r.exitWethRaw != null && r.entryWethRaw != null
+              ? quotePnl(r.entryWethRaw, simulatedExitWeth(r.exitWethRaw).toString()).netPct
+              : r.netPct - OVERLAY_PP; // fallback analitik hanya bila raw exit tak ada (baris lama)
+          }
           const gasPct = r.entryWethRaw != null ? gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, BigInt(r.entryWethRaw)) : gasPctForNotional(GAS_WEI_PER_ROUND_TRIP, 1_000_000_000_000_000n);
           return r.netPct - gasPct - OVERLAY_PP;
         });

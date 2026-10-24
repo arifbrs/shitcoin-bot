@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { CHAIN, WETH, decimalsOf, envOf, okxGet, quoteBuy, quoteSell } from "./exec.js";
 import { dir } from "./state.js";
 
-export interface Candidate { token: string; symbol: string; decimals: number; buyOk: boolean; sellOk: boolean; buyOut?: string; sellOut?: string; impactPct?: number | null; liquidityUsd?: number | null }
+export interface Candidate { token: string; symbol: string; decimals: number; buyOk: boolean; sellOk: boolean; buyOut?: string; sellOut?: string; impactPct?: number | null;
+  liquidityUsd?: number | null; liquiditySource?: "dexscreener" | null; liquidityReason?: string | null; liquidityAt?: number | null }
 
 /** (B3) Likuiditas USD dari baris DexScreener untuk mint — murni, bisa diuji. */
 export function liquidityFromDexRows(chain: string, mint: string, rows: unknown[]): number | null {
@@ -67,14 +68,37 @@ export async function scanCandidates(maker: string, want = 5, limit = 40): Promi
     if (c.buyOk && c.sellOk) out.push(c);
     if (out.length >= want) break;
   }
-  // Satu panggilan batch DexScreener untuk semua kandidat lolos (≤30 mint/panggilan).
+  // (R8 P3) Likuiditas point-in-time dengan PROVENANCE: sumber, alasan, waktu — supaya
+  // LIQUIDITY_UNKNOWN bisa dibedakan (provider tak punya pair vs gagal fetch vs kondisi pasar).
+  // Satu percobaan ulang berbatas pada kegagalan jaringan; TANPA fallback snapshot tua.
   if (out.length) {
-    try {
-      const res = await fetch(`https://api.dexscreener.com/tokens/v1/${"robinhood"}/${out.map((c) => c.token).join(",")}`, { signal: AbortSignal.timeout(10_000) });
-      const data: unknown = await res.json();
-      const rows: unknown[] = Array.isArray(data) ? data as unknown[] : [];
-      for (const c of out) c.liquidityUsd = liquidityFromDexRows("robinhood", c.token, rows);
-    } catch { /* likuiditas tidak tersedia → model fill fail-closed, bukan tebakan */ }
+    const fetchLiq = async (): Promise<{ ok: boolean; rows: unknown[]; error: string | null }> => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(`https://api.dexscreener.com/tokens/v1/${"robinhood"}/${out.map((c) => c.token).join(",")}`, { signal: AbortSignal.timeout(10_000) });
+          if (res.ok) {
+            const data: unknown = await res.json();
+            return { ok: true, rows: Array.isArray(data) ? data as unknown[] : [], error: Array.isArray(data) ? null : "DEX_RESPONSE_SHAPE" };
+          }
+          if (res.status === 429 || res.status >= 500) { await new Promise((r) => setTimeout(r, 2_000)); continue; } // retry berbatas
+          return { ok: false, rows: [], error: `DEX_HTTP_${res.status}` };
+        } catch (e) {
+          if (attempt === 0) { await new Promise((r) => setTimeout(r, 2_000)); continue; }
+          return { ok: false, rows: [], error: `DEX_NETWORK:${(e as Error).name}` };
+        }
+      }
+      return { ok: false, rows: [], error: "DEX_UNREACHABLE" };
+    };
+    const liq = await fetchLiq();
+    const at = Date.now();
+    for (const c of out) {
+      c.liquidityAt = at;
+      if (!liq.ok || liq.error) { c.liquidityUsd = null; c.liquiditySource = null; c.liquidityReason = liq.error ?? "DEX_FAILED"; continue; }
+      const usd = liquidityFromDexRows("robinhood", c.token, liq.rows);
+      c.liquidityUsd = usd;
+      c.liquiditySource = usd != null ? "dexscreener" : null;
+      c.liquidityReason = usd != null ? null : "DEXSCREENER_NO_PAIR"; // provider memang tak punya pair ≠ kondisi pasar
+    }
   }
   mkdirSync(dir(), { recursive: true });
   writeFileSync(cachePath(), JSON.stringify({ ts: Date.now(), candidates: out }));

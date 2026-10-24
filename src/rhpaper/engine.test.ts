@@ -1,8 +1,9 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { test, eq, approx } from "../testing/harness.js";
+import { test, eq, approx, assert } from "../testing/harness.js";
 import { cycle, quotePnl, type Cfg } from "./engine.js";
+import { simulatedExitWeth, latencyOverlayPct } from "./fillmodel.js";
 import { emptyState, loadState, saveState, type Position } from "./state.js";
 import type { QuoteResult } from "./exec.js";
 
@@ -60,3 +61,50 @@ test("rhpaper: full-size reverse floor below stop refuses entry", async () => {
     eq(loadState().positions.length, 0, "no invalid position");
   } finally { if (previous === undefined) delete process.env.RHPAPER_DIR; else process.env.RHPAPER_DIR = previous; }
 });
+
+test("R8 P6: fixture ujung-ke-ujung — likuiditas → entry sim → posisi → exit sim → net eksak (offline, deterministik)", async () => {
+  const previous = process.env.RHPAPER_DIR;
+  process.env.RHPAPER_DIR = mkdtempSync(join(tmpdir(), "rhpaper-e2e-"));
+  try {
+    const ethUsd = async (): Promise<number | null> => 2361; // disuntik: deterministik, tanpa jaringan
+    const liqCandidate = { token: "0xliq", symbol: "LIQ", decimals: 18, buyOk: true, sellOk: true, liquidityUsd: 50_000, liquiditySource: "dexscreener" as const, liquidityAt: 1 };
+    // Entry quote: 1e15 wei → 2.000 token. Exit quote (qty penuh): 1.020.000 wei → gross +2%.
+    const entryQuote = { ts: 1, route: "test", amountIn: "1000000000000000", amountOut: "2000000000000000000000", impactPct: 0.1, slippagePct: 1 };
+    const exitQuote = { ts: 2, route: "test", amountIn: "2000000000000000000000", amountOut: "1020000000000000", impactPct: 0.1, slippagePct: 1 };
+    let phase = 0;
+    const io = {
+      quoteBuy: async () => ({ ok: true, quote: entryQuote }),
+      quoteSell: async () => ({ ok: true, quote: exitQuote }),
+      loadCandidates: () => [liqCandidate], cacheStale: () => false, scanCandidates: async () => [liqCandidate], ethUsd,
+    };
+    // Siklus 1: buka (sim entry harus fill — likuiditas $50k ≫ 2% × $2,36).
+    await cycle({ ...base, maxPositions: 1 }, io);
+    const afterOpen = loadState();
+    eq(afterOpen.positions.length, 1, "posisi terbuka");
+    eq(afterOpen.positions[0]!.liquidityUsd, 50_000, "likuiditas tersimpan di posisi");
+    assert(afterOpen.positions[0]!.tradeId, "tradeId ada");
+    phase++;
+    // Siklus 2: tutup (netPct = (1.020.000−1.000.000−11.400)/1.000.000 ... dalam pp = +0,86% → di bawah TP 5%? base.takePct=5 → tidak keluar.
+    // Paksa keluar via stop: exit quote 980.000 → net −3,14% < −1 (base.stopPct=1)... base di atas: stopPct 1.
+    const exitQuoteLoss = { ...exitQuote, amountOut: "980000000000000" };
+    const io2 = { ...io, quoteSell: async () => ({ ok: true, quote: exitQuoteLoss }) };
+    await cycle({ ...base, maxPositions: 1 }, io2);
+    const ledger = readFileSync(join(afterOpenPositionsDir(), "ledger-" + new Date().toISOString().slice(0, 10) + ".jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const openRow = ledger.find((r) => r.action === "OPEN")!;
+    const closeRow = ledger.find((r) => r.action === "CLOSE")!;
+    eq((openRow.simFillEntry as { filled: boolean }).filled, true, "sim entry fill (fixture)");
+    eq((openRow.liquidityUsd as number), 50_000, "likuiditas di baris OPEN");
+    eq((closeRow.simFillExit as { filled: boolean }).filled, true, "sim exit fill (fixture)");
+    // Net sim eksak: quotePnl(entry, simulatedExitWeth(exitQuoteOut)) — jalur yang sama dengan cohort-stats.
+    const simOut = simulatedExitWeth("980000000000000").toString();
+    const expected = quotePnl("1000000000000000", simOut).netPct;
+    // Jalur komposit (eksak, metodologi A) vs aproksimasi overlay-additive: beda <0,03 pp karena
+    // drag sebenarnya menskala dengan rasio exit/entry (0,98 di fixture) — komposit yang dipakai.
+    const simExpectancy = Number(closeRow.netPct) - latencyOverlayPct();
+    approx(expected, simExpectancy, 0.03, "net sim komposit dekat aproksimasi overlay (beda = rasio exit/entry)");
+    approx(expected, Number(closeRow.netPct) - 0.9975 * 0.98, 1e-4, "komposit eksak = netPct − overlay×(exit/entry)");
+    void phase;
+  } finally { if (previous === undefined) delete process.env.RHPAPER_DIR; else process.env.RHPAPER_DIR = previous; }
+});
+
+function afterOpenPositionsDir(): string { return process.env.RHPAPER_DIR ?? "logs/rhpaper"; }

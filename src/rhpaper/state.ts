@@ -9,6 +9,9 @@ export interface Position {
   peakPct?: number; troughPct?: number; marks?: number; stuckCount?: number; stuck?: boolean; stuckReason?: string;
   tradeId?: string; policyId?: string;
   liquidityUsd?: number | null; // (B3) likuiditas pool saat entry — untuk model fill, bukan keputusan
+  liquiditySource?: "dexscreener" | null; // (R8) provenance: dari mana angka likuiditas
+  liquidityReason?: string | null; // (R8) alasan bila null (DEXSCREENER_NO_PAIR / fetch gagal)
+  liquidityAt?: number | null; // (R8) timestamp snapshot likuiditas
   exitPolicy?: { stopPct: number; takePct: number; tpHoldMin: number };
 }
 export interface PaperState {

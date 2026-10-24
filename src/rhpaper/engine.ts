@@ -21,8 +21,10 @@ export function quotePnl(entryRaw: string, exitRaw: string, gasWei = ROUND_TRIP_
 }
 
 type CycleIO = Pick<typeof import("./exec.js"), "quoteBuy" | "quoteSell"> &
-  Pick<typeof import("./scanner.js"), "cacheStale" | "loadCandidates" | "scanCandidates">;
-const cycleIO: CycleIO = { quoteBuy, quoteSell, cacheStale, loadCandidates, scanCandidates };
+  Pick<typeof import("./scanner.js"), "cacheStale" | "loadCandidates" | "scanCandidates"> & {
+  ethUsd?: () => Promise<number | null>; // (R8 P6) dapat disuntik untuk fixture deterministik offline
+};
+const cycleIO: CycleIO = { quoteBuy, quoteSell, cacheStale, loadCandidates, scanCandidates, ethUsd: ethUsdOf };
 
 export function shouldExit(pnlPct: number, ageMin: number, cfg: Pick<Cfg, "stopPct" | "tpHoldMin" | "takePct">): string | null {
   if (pnlPct <= -Math.abs(cfg.stopPct)) return "stop";
@@ -84,7 +86,7 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
           // (B3) simFillExit: model fill TERPISAH untuk akuntansi simulasi — tidak mengubah keputusan
           // keluar di atas, tidak pernah digabung ke PnL nyata/quote.
           const simFillExit = simulateFill({ quoteAmountIn: p.qtyRaw, quoteAmountOut: sell.quote!.amountOut, impactPct: sell.quote!.impactPct,
-            liquidityUsd: p.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await ethUsdOf() });
+            liquidityUsd: p.liquidityUsd ?? null, sizeWethRaw: p.entryWethRaw, ethUsd: await (io.ethUsd ?? ethUsdOf)() });
           appendLedger({
             ts: Date.now(), action: "CLOSE", arm: p.arm, token: p.token, symbol: p.symbol, why,
             tradeId: p.tradeId ?? null, policyId: p.policyId ?? "legacy-unfrozen", measurementVersion: "rhpaper-units-arm-v3",
@@ -129,13 +131,13 @@ export async function cycle(cfg: Cfg, io: CycleIO = cycleIO): Promise<{ opened: 
             appendLedger({ ts: Date.now(), action: "REJECT", arm: armName, token: c.token, symbol: c.symbol, reason: "round trip already beyond stop", roundTripFloorPct: floor.netPct });
             errors.push(c.symbol + ": round trip already beyond stop"); continue;
           }
-          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null };
+          const pos: Position = { arm: armName, token: c.token, symbol: c.symbol, entryTs: Date.now(), entryQuoteRef: JSON.stringify(buy.quote), entryUsd: cfg.usd, entryWethRaw: buy.quote!.amountIn, qtyRaw: buy.quote!.amountOut, tradeId: randomUUID(), policyId, exitPolicy, liquidityUsd: c.liquidityUsd ?? null, liquiditySource: c.liquiditySource ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null };
           s.positions.push(pos); opened++;
           // (B3) simFillEntry: model fill untuk akuntansi simulasi — tidak mengubah keputusan buka.
           const simFillEntry = simulateFill({ quoteAmountIn: buy.quote!.amountIn, quoteAmountOut: buy.quote!.amountOut, impactPct: buy.quote!.impactPct,
-            liquidityUsd: c.liquidityUsd ?? null, sizeWethRaw: buy.quote!.amountIn, ethUsd: await ethUsdOf() });
+            liquidityUsd: c.liquidityUsd ?? null, sizeWethRaw: buy.quote!.amountIn, ethUsd: await (io.ethUsd ?? ethUsdOf)() });
           appendLedger({ ts: Date.now(), action: "OPEN", arm: pos.arm, token: c.token, symbol: c.symbol, tradeId: pos.tradeId, policyId, exitPolicy, measurementVersion: "rhpaper-units-arm-v3", executionState: "QUOTE_ONLY_NOT_SIMULATED", roundTripFloorPct: floor.netPct, reverseQuoteRef: JSON.stringify(reverse.quote), decimals: c.decimals, usd: cfg.usd, entryWethRaw: pos.entryWethRaw, qtyRaw: pos.qtyRaw, entryImpactPct: buy.quote!.impactPct, entrySlippagePct: buy.quote!.slippagePct, quoteRef: pos.entryQuoteRef,
-            liquidityUsd: c.liquidityUsd ?? null, simFillEntry, fillModelVersion: FILL_MODEL_VERSION });
+            liquidityUsd: c.liquidityUsd ?? null, liquidityReason: c.liquidityReason ?? null, liquidityAt: c.liquidityAt ?? null, simFillEntry, fillModelVersion: FILL_MODEL_VERSION });
         }
       }
       saveState(s);

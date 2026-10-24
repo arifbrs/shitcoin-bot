@@ -1,6 +1,6 @@
 /** (B3) round-3: model simulasi fill — fail-closed, batas likuiditas, matematika slippage. */
 import { test, eq, approx, assert } from "../testing/harness.js";
-import { simulateFill, applyLatencySlippage, latencyOverlayPct, DEFAULT_ASSUMPTIONS, FILL_MODEL_VERSION } from "./fillmodel.js";
+import { simulateFill, applyLatencySlippage, simulatedExitWeth, latencyOverlayPct, DEFAULT_ASSUMPTIONS, FILL_MODEL_VERSION } from "./fillmodel.js";
 import { quotePnl } from "./engine.js";
 
 const WETH = "1000000000000000000"; // 1 WETH
@@ -68,4 +68,15 @@ test("R7 P3: latensi diterapkan SEKALI per kaki — tidak digandakan di laporan"
   const perLeg = applyLatencySlippage("1000000000000000", 0.5);
   eq(perLeg, "995000000000000", "satu kaki = ×0,995 persis");
   assert(latencyOverlayPct() < 2 * DEFAULT_ASSUMPTIONS.latencySlippagePct, "komposit < 2×lat (bukan penjumlahan linear)");
+});
+
+test("R8 P4: kasus auditor eksak — metodologi A multiplikatif, produksi = floor per kaki", () => {
+  // Kasus laporan round-7 (DELL): entry 1e15, exitQuote 995098189942235, gas 11,4e12, l=0,5%/kaki.
+  const simOut = simulatedExitWeth("995098189942235");
+  eq(simOut, 985172085497560n, "floor per kaki (ideal desimal …561,25 — produksi = wei nyata per fill)");
+  const net = quotePnl("1000000000000000", simOut.toString());
+  approx(net.netPct, -2.622700, 1e-6, "net sim persis dari fungsi produksi");
+  assert(Math.abs(net.netPct - (-2.62279145)) < 0.0002, "dekat ideal desimal auditor (selisih = floor 1,2 wei)");
+  // Konsistensi lintas-modul: cohort-stats memanggil quotePnl(entry, simulatedExitWeth(exit)) —
+  // fungsi yang sama (terverifikasi di rh:cohort-stats); TIDAK ada jalur kedua yang menjumlah pp.
 });
