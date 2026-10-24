@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "20.18.0" # (P0-1) dikunci: @solana/* butuh >=20.18 — versi reproducible
           cache: npm
 
       - name: Pasang dependensi (root)
@@ -28,6 +28,13 @@ jobs:
 
       - name: Penguji (unit + regresi kelas bug)
         run: npm run test
+
+      - name: Pemindaian rahasia (gitleaks) — P0-5, bagian dari gerbang keamanan
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o /tmp/gl.tgz
+          tar -xzf /tmp/gl.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --exit-code 1 --report-format sarif --report-path /tmp/gitleaks.sarif || {
+            echo "GITLEAKS MENEMUKAN RAHASIA — lihat laporan (nilai disensor)"; /tmp/gitleaks report --report-format sarif; exit 1; }
 
       - name: Pemeriksa panel web
         run: |
