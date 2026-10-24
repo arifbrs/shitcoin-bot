@@ -1,0 +1,20 @@
+# Konfigurasi gitleaks (FINAL) — extend aturan bawaan + allowlist TERTARGET:
+#  - file tes: alamat/hex adalah FIXTURE publik (bukan rahasia)
+#  - alamat kontrak EVM 40-hex di seluruh repo: data rantai PUBLIK (WETH/USDG/pool)
+#    (kunci privat 0x = 64 hex — TIDAK termasuk allowlist ini)
+#  - hash tx/topik 64-hex hanya di file tes & docs
+# Keamanan tetap menangkap: kunci privat 64-hex, PEM, token API, password assignment di luar template.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fixture tes + alamat kontrak publik + dokumentasi"
+paths = [
+  '''\.test\.ts$''',
+  '''^docs/''',
+  '''^\.commandcode/''',
+  '''^web/test/''',
+]
+regexes = [
+  '''0x[0-9a-fA-F]{40}\b''',   # alamat kontrak/wallet PUBLIK (40 hex, bukan kunci 64-hex)
+]

@@ -20,3 +20,6 @@ config/kol-watchlist.json
 vendor/
 
 .DS_Store
+
+# Arsip data historis (bukti riset) tetap LOKAL — tidak dipublikasikan ke GitHub
+archive/
