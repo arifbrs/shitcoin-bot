@@ -34,9 +34,10 @@ async function main(): Promise<void> {
   const now = Date.now();
   let entries = loadWatchlist();
   for (const m of mints) {
-    const res = admit(entries, { mint: m, source: "manual", priority: 1_000_000, bondingCurveKey: bondingCurvePda(m) }, policy, 0, now);
+    // (S11) kohor discovery TERPISAH: GMGN trending = backfill manual, BUKAN feed launch real-time.
+    const res = admit(entries, { mint: m, source: "gmgn-trending", priority: 1_000_000, bondingCurveKey: bondingCurvePda(m) }, policy, 0, now);
     entries = res.entries;
-    append({ type: "token-observed", ts: now, mint: m, source: "manual", detectedAt: now });
+    append({ type: "token-observed", ts: now, mint: m, source: "gmgn-trending", discoveredBy: "gmgn-trending-backfill", detectedAt: now });
     console.log(`  ${m.slice(0, 8)}... ${res.admitted ? "di-admit" : `DITOLAK: ${res.reason}`}`);
   }
   saveWatchlist(entries);

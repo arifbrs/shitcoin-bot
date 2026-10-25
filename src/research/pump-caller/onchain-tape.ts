@@ -60,6 +60,10 @@ export interface DecodedTrade extends TradeEvent {
   signature: string; slot: number | null; sourceTs: number | null; poolSide?: boolean;
   state: TradeState; tokenAmountRaw: string | null; decimals: number | null;
   solInclFeesRent: boolean; closedTokenAccount: boolean; openedTokenAccount: boolean;
+  // (S11) identitas swap kanonik: signature + ixIndex + trader — ixIndex hanya bila TEPAT SATU
+  // instruksi program pump di tx (jsonParsed tak mem-parse IDL pump → multi-swap ambigu = null,
+  // dilabel, bukan dikarang).
+  ixIndex: number | null; canonicalIdQuality: "SIG_IX_TRADER" | "SIG_TRADER";
   reason?: string;
 }
 
@@ -114,11 +118,17 @@ export function txSwapEvidence(tx: RawTxLike, mint: string): SwapEvidence {
 /** Murni: satu transaksi → trade per wallet pemilik (multi-wallet didukung). */
 export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | null, observedAt: number): DecodedTrade[] {
   const meta = tx.meta;
-  const keys = normalizeTx(tx).keys; // (S9) akun wallet = pubkey owner; token-account ≠ akun SOL
+  const norm = normalizeTx(tx);
+  const keys = norm.keys; // (S9) akun wallet = pubkey owner; token-account ≠ akun SOL
   const signature = String(tx.signature ?? "");
+  // (S11) ixIndex kanonik: hanya bila TEPAT SATU instruksi top-level program pump —
+  // multi-instruksi ambigu → null (atribusi per-argumen tak mungkin via jsonParsed).
+  const pumpIxIdx = norm.ixTop.map((ix, i) => (ix.program != null && PUMP_PROGRAMS.has(ix.program) ? i : -1)).filter((i) => i >= 0);
+  const ixIndex = pumpIxIdx.length === 1 ? pumpIxIdx[0]! : null;
   const mk = (p: Partial<DecodedTrade> & { wallet: string; side: "buy" | "sell" }): DecodedTrade => ({
     dedupeKey: `${signature || "sig?"}:${p.wallet}`, mint, usd: null, ts: p.sourceTs ?? observedAt,
     signature, slot: tx.slot ?? null, state: "VERIFIED_SWAP", solInclFeesRent: true,
+    ixIndex, canonicalIdQuality: ixIndex != null ? "SIG_IX_TRADER" : "SIG_TRADER",
     closedTokenAccount: false, openedTokenAccount: false, ...p,
   } as DecodedTrade);
   if (!meta) return [mk({ wallet: "?", side: "buy", sol: 0, tokenAmountRaw: null, state: "NO_META", reason: "meta null" })].filter((t) => t.state !== "NO_META") as DecodedTrade[];
@@ -138,7 +148,7 @@ export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | nul
   const out: DecodedTrade[] = [];
   // (S10-P0) poolSide: pemilik akun token ADALAH program pool (PDA) — vault bonding-curve/pool
   // AMM. Sisi pool BUKAN trade ritel; hanya dipakai konfirmasi arah, tak dihitung independen.
-  const signers = normalizeTx(tx).signers;
+  const signers = norm.signers;
   // poolSide: pemilik akun token = PDA vault (tak menandatangani tx) atau program pool itu
   // sendiri — sisi AMM, bukan trader ritel. Trader = signer (pembayar fee).
   const isPoolOwned = (owner: string): boolean => owner === PUMP_BONDING_CURVE || owner === PUMP_SWAP_AMM || !signers.has(owner);

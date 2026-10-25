@@ -126,7 +126,9 @@ export function normalizeNewTokenEvent(msg: NewTokenEvent, detectedAt = Date.now
  * Free, keyless real-time launch feed (RESEARCH.md §1).
  * Reconnects with backoff; PumpPortal allows one connection — do not open more.
  */
-export function listenNewTokens(onCandidate: (c: Candidate) => void): () => void {
+export type FeedEvent = { kind: "open" | "error" | "close" | "stale"; detail?: string };
+/** (S11) onFeed: ekspos kesehatan feed ke pemanggil (observer → jurnal feed-health) — opsional. */
+export function listenNewTokens(onCandidate: (c: Candidate) => void, onFeed?: (e: FeedEvent) => void): () => void {
   let ws: WebSocket | null = null;
   let closed = false;
   let backoffMs = 1_000;
@@ -140,6 +142,7 @@ export function listenNewTokens(onCandidate: (c: Candidate) => void): () => void
     if (closed) return;
     if (Date.now() - lastMsgAt > STALE_MS) {
       ui.warn(`[pumpportal] no messages for ${Math.round((Date.now() - lastMsgAt) / 1000)}s — connection stale, reconnecting`);
+      onFeed?.({ kind: "stale", detail: `tidak ada pesan ${Math.round((Date.now() - lastMsgAt) / 1000)}s` });
       lastMsgAt = Date.now(); // avoid rapid repeat
       try { ws?.terminate(); } catch { /* ignore */ } // terminate() fires 'close' → reconnect
     }
@@ -153,6 +156,7 @@ export function listenNewTokens(onCandidate: (c: Candidate) => void): () => void
       backoffMs = 1_000;
       lastMsgAt = Date.now();
       ui.info("[pumpportal] connected — subscribing to new-token events");
+      onFeed?.({ kind: "open" });
       ws!.send(JSON.stringify({ method: "subscribeNewToken" }));
     });
 
@@ -186,12 +190,14 @@ export function listenNewTokens(onCandidate: (c: Candidate) => void): () => void
     ws.on("close", () => {
       if (closed) return;
       ui.warn(`[pumpportal] disconnected — reconnecting in ${backoffMs / 1000}s`);
+      onFeed?.({ kind: "close", detail: `reconnect ${backoffMs / 1000}s` });
       setTimeout(connect, backoffMs);
       backoffMs = Math.min(backoffMs * 2, 60_000);
     });
 
     ws.on("error", (err: Error) => {
       ui.warn(`[pumpportal] error: ${err.message}`);
+      onFeed?.({ kind: "error", detail: err.message.slice(0, 120) });
       ws?.close();
     });
   };

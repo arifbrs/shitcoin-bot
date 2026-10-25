@@ -76,6 +76,64 @@ export function report(now = Date.now()): void {
   for (const [id, c] of trigCount) lines.push(`  ${id}: fires ${c.fires}/${c.total}`);
   if (!trigCount.size) lines.push("  (belum ada keputusan live dengan trigger terstruktur)");
 
+  // ── (S11) H2 EVENT-DRIVEN: event per large-buy, konfirmasi ber-window, keputusan per-event ──
+  const h2Events = live.filter((r) => r.type === "h2-event");
+  const h2Confs = new Map<string, Record<string, unknown>>();
+  for (const r of live) if (r.type === "h2-confirmation") h2Confs.set(String(r.h2EventId), r);
+  const h2Decisions = live.filter((r) => r.type === "h2-decision");
+  if (h2Events.length || h2Decisions.length) {
+    lines.push("", "-- H2 EVENT-DRIVEN (registrasi h2-event-v2; ambang beku $500/$1000 & $5–$100 tak diubah) --");
+    const byCls: Record<string, number> = {};
+    for (const e of h2Events) byCls[String(e.detectionClass)] = (byCls[String(e.detectionClass)] ?? 0) + 1;
+    const byCohort: Record<string, number> = {};
+    for (const e of h2Events) byCohort[String(e.discoveryCohort ?? "?")] = (byCohort[String(e.discoveryCohort ?? "?")] ?? 0) + 1;
+    const lat = h2Events.map((e) => Number(e.observationLatencyMs)).filter((v) => Number.isFinite(v));
+    const usdQ: Record<string, number> = {};
+    for (const e of h2Events) usdQ[String(e.usdQuality)] = (usdQ[String(e.usdQuality)] ?? 0) + 1;
+    const confStates: Record<string, number> = {};
+    for (const c of h2Confs.values()) confStates[String(c.state)] = (confStates[String(c.state)] ?? 0) + 1;
+    lines.push(`event unik: ${h2Events.length} (klasifikasi ${JSON.stringify(byCls)}) - kohor discovery ${JSON.stringify(byCohort)}`,
+      `konfirmasi (state terakhir): ${JSON.stringify(confStates)} - keputusan prospektif: ${h2Decisions.length} (hanya REALTIME)`,
+      `latensi observasi: med=${lat.length ? (med(lat)! / 1000).toFixed(1) + "s" : "?"} max=${lat.length ? (Math.max(...lat) / 1000).toFixed(1) + "s" : "?"} (window registrasi v2 = 90s)`,
+      `kualitas USD event: ${JSON.stringify(usdQ)} - kanonik ixIndex ${h2Events.filter((e) => e.canonicalIdQuality === "SIG_IX_TRADER").length}/${h2Events.length}`);
+    for (const d of h2Decisions) {
+      const eps = d.entryPolicies as Record<string, { evaluation: PolicyEvaluation; interval: string; availability: string }> | undefined;
+      const det: string[] = [];
+      for (const pol of POLICIES) { const pe = eps?.[pol]; if (!pe) continue; det.push(`${pol}=${pe.availability}`); }
+      lines.push(`  ${String(d.decisionId).slice(0, 44)}… ${d.decision} usd=$${Number(d.usd).toFixed(0)}(${d.usdQuality}) lat=${((Number(d.observationLatencyMs) ?? 0) / 1000).toFixed(1)}s price=${d.priceAtDecision ?? "?"} [${det.join(" ")}]`);
+    }
+    // Paper per-event per policy (horizon 15m; net setelah biaya model; hanya availability OK)
+    const paperStats = new Map<EntryPolicy, { n: number; nets: number[] }>();
+    for (const d of h2Decisions) {
+      const eps = d.entryPolicies as Record<string, { evaluation: PolicyEvaluation; interval: string; availability: string }> | undefined;
+      if (!eps) continue;
+      const store = loadCandles(String(d.mint));
+      for (const pol of POLICIES) {
+        const pe = eps[pol];
+        if (!pe || pe.availability !== "OK") continue;
+        const intervalMs = pe.interval === "1s" ? 1_000 : CANDLE_1M_MS;
+        const pr = paperForPolicy({ decisionTs: Number(d.ts), priceAtDecision: Number(d.priceAtDecision ?? 0) }, pe.evaluation, 15, store[pe.interval as "1s" | "1m"], intervalMs, now);
+        const st = paperStats.get(pol) ?? { n: 0, nets: [] };
+        if (pr.triggered && pr.netPct != null) { st.n++; st.nets.push(pr.netPct); }
+        paperStats.set(pol, st);
+      }
+    }
+    for (const [pol, st] of paperStats) {
+      const mean = st.nets.length ? st.nets.reduce((a, b) => a + b, 0) / st.nets.length : null;
+      lines.push(`  paper ${pol}: selesai=${st.n}${mean != null ? ` net mean=${mean.toFixed(2)}% (horizon 15m, biaya model)` : ""}`);
+    }
+  }
+
+  // (S11-P1) Kesehatan feed + celah sampling tape (kuota RPC dilaporkan, bukan disembunyikan)
+  const feedRows = live.filter((r) => r.type === "feed-health");
+  const lastFeed = feedRows[feedRows.length - 1];
+  const cov = live.filter((r) => r.type === "tape-coverage");
+  const missTx = cov.reduce((s2, r) => s2 + Number(r.missingTx ?? 0), 0);
+  const covErr = cov.filter((r) => r.error != null).length;
+  lines.push("", "-- Kesehatan feed & celah sampling --",
+    `pumpportal feed terakhir: ${lastFeed ? `${lastFeed.state} @${new Date(Number(lastFeed.ts)).toISOString().slice(11, 19)}${lastFeed.detail ? ` (${lastFeed.detail})` : ""}` : "tidak ada catatan"} - kohor discovery: pumpportal(real-time launch) ${live.filter((r) => r.type === "token-observed" && r.source === "pumpportal").length} vs gmgn-trending(backfill) ${live.filter((r) => r.type === "token-observed" && (r.source === "gmgn-trending" || r.source === "manual")).length} - KOHOR TERPISAH, tidak dicampur`,
+    `celah tape on-chain: tx missing=${missTx} dari ${cov.length} pass; pass dgn error RPC=${covErr}`);
+
   lines.push("", "-- Kualitas data --",
     `trades ditolak (timestamp invalid): ${live.filter((r) => r.type === "trade-rejected").length}`,
     `batch USD UNAVAILABLE (tanpa SOL/USD): ${live.filter((r) => r.type === "trade-batch" && r.usdQuality === "UNAVAILABLE_SOLUSD").length}`,
@@ -98,3 +156,5 @@ function rejectedCount(): number {
   if (!existsSync(f)) return 0;
   return readFileSync(f, "utf8").split("\n").filter((l) => l.trim()).length;
 }
+
+report();

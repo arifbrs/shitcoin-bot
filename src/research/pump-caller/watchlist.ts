@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export interface WatchEntry { mint: string; symbol?: string; admittedAt: number; source: "pumpportal" | "manual"; priority: number; lastObservedAt: number | null; bondingCurveKey?: string }
+export interface WatchEntry { mint: string; symbol?: string; admittedAt: number; source: "pumpportal" | "manual" | "gmgn-trending"; priority: number; lastObservedAt: number | null; bondingCurveKey?: string }
 export interface RejectedEntry { mint: string | null; reason: string; ts: number }
 
 export function watchDir(): string { return process.env.PUMP_CALLER_DIR?.trim() || "logs/pump-caller"; }
@@ -44,7 +44,7 @@ export function logRejected(entry: RejectedEntry): void {
 
 /** Admission murni (teruji): evict kedaluwarsa, kapasitas prioritas, sampling deterministik. */
 export function admit(
-  current: WatchEntry[], candidate: { mint: string; symbol?: string; source: "pumpportal" | "manual"; priority: number; bondingCurveKey?: string },
+  current: WatchEntry[], candidate: { mint: string; symbol?: string; source: "pumpportal" | "manual" | "gmgn-trending"; priority: number; bondingCurveKey?: string },
   policy: ReturnType<typeof policyFromEnv>, seq: number, now: number,
 ): { entries: WatchEntry[]; admitted: boolean; reason: string } {
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(candidate.mint)) { logRejected({ mint: candidate.mint, reason: "INVALID_MINT", ts: now }); return { entries: current, admitted: false, reason: "INVALID_MINT" }; }

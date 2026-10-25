@@ -21,6 +21,7 @@ import { trackCallerPosition } from "./position-tracker.js";
 import { TRIGGERS, type HypothesisId } from "./experiments.js";
 import { append, read, decisionIdFor, reduceOutcomes, markOutcome } from "./journal.js";
 import { resolveOutcome, paperForPolicy, completedCandles } from "./results.js";
+import { buildH2Event, evaluateConfirmation, eventPolicySet, priceAtTs, reduceH2Events, reduceH2Confirmations, reduceH2Decisions, H2_EVENT_VERSION, type H2Event } from "./h2-events.js";
 import { OUTCOME_HORIZONS_MIN, type Candle, type TradeEvent, type EntryPolicy, type PolicyEvaluation } from "./types.js";
 
 const TICK_MS = Math.max(15_000, Number(process.env.PUMP_OBSERVE_TICK_MS ?? 30_000));
@@ -88,7 +89,7 @@ function knownWallets(): KnownWallet[] {
   } catch { return []; }
 }
 
-export interface ObserveSummary { mints: number; newCandles: number; decisions: number; tradesSeen: number; pending: number; observed: number; missingFinal: number; fixtureExcluded: boolean }
+export interface ObserveSummary { mints: number; newCandles: number; decisions: number; tradesSeen: number; pending: number; observed: number; missingFinal: number; fixtureExcluded: boolean; h2EventsNew: number; h2Pending: number; h2Confirmed: number; h2Rejected: number; h2Decisions: number; caretakerMints: number }
 
 let passRunning = false; // (S8-P3) anti-overlap: satu pass pada satu waktu
 const PASS_MAX_MS = Math.max(60_000, Number(process.env.PUMP_OBSERVE_PASS_MAX_MS ?? 120_000));
@@ -113,7 +114,7 @@ export function enrichOnchainUsd(trades: TradeEvent[], solUsd: number | null): v
 
 /** Satu pass observasi atas watchlist (dipakai loop & manual). Tumpang-tindih = ditolak (no-op). */
 export async function observePass(fixture = false): Promise<ObserveSummary> {
-  if (passRunning) { const s: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture }; return s; }
+  if (passRunning) { const s: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture, h2EventsNew: 0, h2Pending: 0, h2Confirmed: 0, h2Rejected: 0, h2Decisions: 0, caretakerMints: 0 }; return s; }
   passRunning = true;
   try { return await observePassInner(fixture); } finally { passRunning = false; }
 }
@@ -124,7 +125,14 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
   const now = Date.now();
   const solUsd = await solUsdOf();
   const wl = (fixture ? [] : loadWatchlist()).slice(0, 64);
-  const summary: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture };
+  // (S11) firstObservedAt IMMUTABLE: dari observasi PERTAMA trade di jurnal (read() dedupe
+  // mempertahankan baris pertama = observedAt paling awal) — enrichment USD tak menggesernya.
+  const firstSeen = new Map<string, number>();
+  for (const r of read().rows) if (r.type === "trade" && typeof r.observedAt === "number") {
+    const k = String(r.dedupeKey); const v = Number(r.observedAt);
+    if (!firstSeen.has(k) || v < firstSeen.get(k)!) firstSeen.set(k, v);
+  }
+  const summary: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture, h2EventsNew: 0, h2Pending: 0, h2Confirmed: 0, h2Rejected: 0, h2Decisions: 0, caretakerMints: 0 };
   for (let i = 0; i < wl.length; i += CONCURRENCY) {
     const batch = wl.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(async (entry) => {
@@ -149,6 +157,12 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
           const valid = pass.trades.filter((t) => t.state === "VERIFIED_SWAP" && !(t as { poolSide?: boolean }).poolSide);
           for (const t of pass.trades) append({ type: "trade", ...t, source: "solana-rpc", observedAt: Date.now() }); // UNVERIFIED + poolSide ikut tersimpan dgn label
           if (valid.length) { trades = valid; tapeSource = `solana-rpc-validated trader-side (${valid.length}; pool-side terpisah)`; tapeFull = true; }
+          // (S11-P0) EVENT-DRIVEN H2: setiap large-buy → SATU event riset (id kanonik, dedupe
+          // jurnal; klasifikasi deteksi v2; hanya REALTIME yang nanti jadi keputusan prospektif).
+          for (const t of valid) {
+            const ev = buildH2Event(t, { admittedAt: entry.admittedAt, now: Date.now(), priorFirstObservedAt: firstSeen.get(t.dedupeKey) ?? null });
+            if (ev) { append({ type: "h2-event", ts: Date.now(), ...ev, discoveryCohort: entry.source }); summary.h2EventsNew++; }
+          }
         }
       }
       if (!trades.length) {
@@ -234,12 +248,15 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
     }));
   }
   saveWatchlist(wl.map((e) => ({ ...e, lastObservedAt: loadWatchlist().find((x) => x.mint === e.mint)?.lastObservedAt ?? e.lastObservedAt })));
+  // ── (S11-P0) H2 evaluation pass: konfirmasi per-event → keputusan prospektif (REALTIME saja) ──
+  await h2EvaluationPass(now, solUsd, wl, summary);
   // ── Outcome pass global (S8-P1: state = reduceOutcomes; tulis hanya saat transisi) ──
+  // (S11) h2-decision ikut jalur outcome yang SAMA (anti-premature & toleransi identik).
   const states = reduceOutcomes(read().rows);
   // (S9) keputusan dgn priceAtDecision null (belum ada candle selesai saat memutuskan) tetap
   // dievaluasi: harga keputusan di-BACKFILL hanya dari candle yang SELESAI <= ts keputusan
   // (tanpa look-ahead); bila tak ada pun, tetap PENDING — tidak diarang.
-  const decisions2 = read().rows.filter((r) => r.type === "shadow-decision" && r.marketSource);
+  const decisions2 = read().rows.filter((r) => (r.type === "shadow-decision" || r.type === "h2-decision") && r.marketSource);
   for (const d of decisions2) {
     const store = loadCandles(String(d.mint));
     if (typeof d.priceAtDecision !== "number" || !(d.priceAtDecision as number > 0)) {
@@ -269,19 +286,94 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
   return summary;
 }
 
+/**
+ * (S11-P0) Evaluasi H2 per-event: konfirmasi ber-window (PENDING→CONFIRMED/REJECTED) lalu
+ * keputusan riset ber-timestamp BARU — HANYA utk kelas REALTIME (registrasi v2); PRE_ADMISSION/
+ * BACKFILL tetap historis. Keputusan membawa paper-policy per event + outcome dijalankan oleh
+ * outcome pass global (jalur sama dgn shadow-decision). Idempoten lintas restart via jurnal.
+ */
+async function h2EvaluationPass(now: number, solUsd: number | null, wl: WatchEntry[], summary: ObserveSummary): Promise<void> {
+  const j = read();
+  const events = reduceH2Events(j.rows);
+  const confs = reduceH2Confirmations(j.rows);
+  const decided = reduceH2Decisions(j.rows);
+  const watched = new Set(wl.map((e) => e.mint));
+  // Trade VERIFIED trader-side per mint dari jurnal (dedupe read() = observasi pertama; USD
+  // dari enrichment terbaru bila ada — baris pra-patch ber-usd null dihitung UNKNOWN di window).
+  const tradesByMint = new Map<string, TradeEvent[]>();
+  for (const r of j.rows) {
+    if (r.type !== "trade" || r.state !== "VERIFIED_SWAP" || r.poolSide === true) continue;
+    const t: TradeEvent = { dedupeKey: String(r.dedupeKey), mint: String(r.mint), wallet: r.wallet ? String(r.wallet) : undefined,
+      side: r.side === "sell" ? "sell" : "buy", sol: Number(r.sol ?? 0), usd: r.usd == null ? null : Number(r.usd), ts: Number(r.ts ?? 0) };
+    const arr = tradesByMint.get(t.mint);
+    if (arr) arr.push(t); else tradesByMint.set(t.mint, [t]);
+  }
+  for (const ev of events.values()) {
+    const conf = evaluateConfirmation(ev, tradesByMint.get(ev.mint) ?? [], now);
+    const prev = confs.get(ev.h2EventId);
+    if (!prev || prev.state !== conf.state) append({ type: "h2-confirmation", ts: now, ...conf });
+    if (conf.state === "PENDING") { summary.h2Pending++; continue; }
+    if (conf.state === "CONFIRMED") summary.h2Confirmed++; else summary.h2Rejected++;
+    if (ev.detectionClass !== "REALTIME") continue; // registrasi v2: hanya REALTIME prospektif
+    const decisionId = `h2:${ev.h2EventId}:${H2_EVENT_VERSION}`;
+    if (decided.has(decisionId)) continue;
+    const store = loadCandles(ev.mint);
+    const decisionTs = conf.asOf; // keputusan PADA SAAT konfirmasi selesai — no look-ahead
+    const priceAtDecision = priceAtTs(decisionTs, store["1s"], store["1m"]);
+    append({ type: "h2-decision", ts: decisionTs, mint: ev.mint, decisionId, h2EventId: ev.h2EventId,
+      hypothesisVersion: H2_EVENT_VERSION, detectionClass: ev.detectionClass, confirmation: conf,
+      canonicalIdQuality: ev.canonicalIdQuality, ixIndex: ev.ixIndex, usd: ev.usd, usdQuality: ev.usdQuality, sol: ev.sol,
+      firstObservedAt: ev.firstObservedAt, eventTs: ev.eventTs, eligibleAt: ev.eligibleAt,
+      observationLatencyMs: ev.observationLatencyMs, priceAtDecision,
+      marketSource: `onchain-decoded; solUsd=${solUsd != null ? "OK" : "UNAVAILABLE"}`,
+      decision: conf.state === "CONFIRMED" ? "H2_CONFIRMED" : "H2_REJECTED",
+      triggerIds: [{ id: "LARGE_BUY_SMALL_SELL_ABSORPTION", fires: conf.state === "CONFIRMED", evidence: conf.reason }],
+      entryPolicies: eventPolicySet(ev.eventTs, store["1s"], store["1m"], now),
+      note: "keputusan riset PER-EVENT (S11) — terpisah dari keputusan admisi token" });
+    summary.h2Decisions++;
+  }
+  // ── (S11-P1) Caretaker lintas TTL: outcome PENDING utk mint yang sudah di-evict watchlist
+  // tetap dikejar via kline GMGN (berbatas 4 mint/pass, serialized + cooldown — kuota hormat).
+  const mintOfDecision = new Map<string, string>();
+  for (const r of j.rows) if ((r.type === "shadow-decision" || r.type === "h2-decision") && r.mint) mintOfDecision.set(String(r.decisionId), String(r.mint));
+  const pendingMints = new Set<string>();
+  for (const s of reduceOutcomes(j.rows).values()) {
+    if (s.status !== "PENDING") continue;
+    const id = s.key.split(":").slice(1, -1).join(":"); // key = outcome:<decisionId>:<horizon>
+    const mint = mintOfDecision.get(id);
+    if (mint && !watched.has(mint)) pendingMints.add(mint);
+  }
+  let n = 0;
+  for (const mint of pendingMints) {
+    if (n >= 4) break;
+    if (!gmgnAllowed(mint, "kline-caretaker")) continue;
+    const g = await serializedGmgn(() => gmgnKlineCandles(mint, 240)).catch(() => null);
+    if (g?.candles?.length) { summary.newCandles += appendCandles(mint, "1m", g.candles); summary.caretakerMints++; n++; }
+  }
+}
+
 /** Loop kontinu: feed PumpPortal → admission; tick → observePass. Kembalikan stop(). */
 export function startObserver(onEvent?: (kind: string, info?: string) => void): () => void {
   const policy = policyFromEnv();
   let seq = 0;
   mkdirSync(watchDir(), { recursive: true });
+  // (S11-P1) Kesehatan feed diekspos eksplisit (jurnal feed-health saat BERUBAH + log operator).
+  let lastFeedState = "";
+  const feedHealth = (kind: string, detail?: string): void => {
+    const st = `${kind}`;
+    if (st === lastFeedState) return;
+    lastFeedState = st;
+    append({ type: "feed-health", ts: Date.now(), feed: "pumpportal", state: kind, detail: detail ?? null });
+    onEvent?.(kind === "open" ? "feed-open" : `feed-${kind}`, detail ?? "");
+  };
   const stopFeed = listenNewTokens((c) => {
     seq++;
     const wl = loadWatchlist();
     const res = admit(wl, { mint: c.mint, symbol: c.symbol, source: "pumpportal", priority: Math.round((c.devInitialBuySol ?? 0) * 1000) + Math.round((c.marketCapSol ?? 0) / 10), bondingCurveKey: c.bondingCurveKey }, policy, seq, Date.now());
     saveWatchlist(res.entries);
-    if (res.admitted) { append({ type: "token-observed", ts: Date.now(), mint: c.mint, symbol: c.symbol, source: "pumpportal", detectedAt: c.detectedAt, feedLagMs: Date.now() - c.detectedAt }); onEvent?.("admit", `${c.symbol ?? c.mint.slice(0, 6)} (lag ${((Date.now() - c.detectedAt) / 1000).toFixed(1)}s)`); }
-  });
-  const timer = setInterval(() => { void observePass().then((s) => onEvent?.("tick", `mints=${s.mints} candles+${s.newCandles} keputusan=${s.decisions} outcome: obs=${s.observed} pend=${s.pending} miss=${s.missingFinal}`)).catch((e) => onEvent?.("error", (e as Error).message)); }, TICK_MS);
+    if (res.admitted) { append({ type: "token-observed", ts: Date.now(), mint: c.mint, symbol: c.symbol, source: "pumpportal", discoveredBy: "realtime-launch-feed", detectedAt: c.detectedAt, feedLagMs: Date.now() - c.detectedAt }); onEvent?.("admit", `${c.symbol ?? c.mint.slice(0, 6)} (lag ${((Date.now() - c.detectedAt) / 1000).toFixed(1)}s)`); }
+  }, (e) => feedHealth(e.kind, e.detail));
+  const timer = setInterval(() => { void observePass().then((s) => onEvent?.("tick", `mints=${s.mints} candles+${s.newCandles} keputusan=${s.decisions} outcome: obs=${s.observed} pend=${s.pending} miss=${s.missingFinal} | H2: event+${s.h2EventsNew} pend=${s.h2Pending} konf=${s.h2Confirmed}/${s.h2Confirmed + s.h2Rejected} keputusan=${s.h2Decisions} caretaker=${s.caretakerMints}`)).catch((e) => onEvent?.("error", (e as Error).message)); }, TICK_MS);
   onEvent?.("start", `observer kontinu: feed pumpportal, tick ${TICK_MS / 1000}s, kapasitas ${policy.capacity}, sampling 1/${policy.sampleEvery}`);
   return () => { stopFeed(); clearInterval(timer); };
 }

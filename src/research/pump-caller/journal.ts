@@ -40,7 +40,9 @@ export function read(): Journal {
  *  (S8-P1: baris PENDING lama tidak boleh MENUTUPI OBSERVED yang datang belakangan). */
 export function dedupeKeyOf(row: Record<string, unknown>): string | null {
   if (row.type === "outcome-mark") return null;
-  if (row.type === "shadow-decision") return `decision:${row.decisionId}`;
+  if (row.type === "shadow-decision" || row.type === "h2-decision") return `decision:${row.decisionId}`;
+  if (row.type === "h2-event") return `h2event:${row.h2EventId}`; // (S11) dedupe event lintas pass/restart
+  // h2-confirmation TIDAK didedupe (event stream; state terakhir per h2EventId yang menang).
   if (row.type === "trade" || row.type === "caller-event") return String(row.dedupeKey);
   if (row.type === "candle-snapshot") return `candles:${row.mint}:${row.interval}:${row.fromTs}:${row.count}`;
   if (row.type === "token-observed") return `token:${row.mint}`;

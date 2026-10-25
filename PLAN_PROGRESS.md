@@ -597,8 +597,9 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - Lane rhpaper MATI sejak ±19:46: BUKAN bug — `rpc.mainnet.chain.robinhood.com` dibajak DNS ISP
   (resolusi lokal → 103.147.157.103, sertifikat CN=xblock-content.nexa.net.id [server blokir
   nexa.net.id]; IP sejati via DoH = Cloudflare/offchainlabs 172.66.147.70 / 104.20.46.209).
-  Status: BLOCKED_EXTERNAL. TIDAK dibypass (DoH/hosts-pinning = evasi pemblokiran regulator atas
-  produk trading — di luar mandat tanpa persetujuan operator). Supervisor tetap retry tiap 5 menit;
+  Status: BLOCKED_EXTERNAL. TIDAK dibypass (DoH/hosts-pinning = memutari
+  pemblokiran atas produk trading — di luar mandat tanpa persetujuan operator; penyebab
+  kebijakan pemblokiran TIDAK diasumsikan). Supervisor tetap retry tiap 5 menit;
   pulih otomatis bila ISP berhenti membajak. Opsi operator: VPN level-sistem (keputusan sendiri).
 - Feed PumpPortal WS masih gagal (handshake error ~1s) → admission via fallback terbukti: mint
   hidup dari GMGN trending (proxy /call getTrendingSwaps, bentuk data.data.rank) → pump:collect
@@ -626,3 +627,34 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - Interpretasi jujur: infrastruktur H2 SELESAI & terbukti live; event of interest (large-buy
   organik) belum terjadi pada sampel kecil ini. Ambang beku TIDAK diubah. Lane terus berjalan —
   snapshot berikut dievaluasi saat sampel membesar (bukan refit).
+
+## S11 H2 EVENT-DRIVEN (2026-10-25)
+- P0: SATU EVENT RISET per large-buy (bukan satu keputusan per token). Modul murni h2-events.ts:
+  id kanonik signature:trader (STABIL lintas pass/restart; ixIndex dicatat bila TEPAT SATU
+  instruksi pump — jsonParsed tak mem-parse IDL pump → multi-swap ambigu = null, dilabel);
+  firstObservedAt IMMUTABLE dari jurnal (enrichment USD tak menggeser); klasifikasi deteksi
+  REGISTRASI h2-event-v2 (BARU, prospektif): PRE_ADMISSION (eventTs < admisi; ATRIBUSI
+  dev/bundler TIDAK DIKONFIRMASI tanpa bukti pendanaan — koreksi atas snapshot sebelumnya yang
+  menyebut "pola bundler/dev") / BACKFILL (post-admisi telat >90s) / REALTIME (≤90s). HANYA
+  REALTIME boleh jadi keputusan prospektif + outcome. Filter "organik >5m" BUKAN aturan beku —
+  tidak diterapkan retroaktif; klasifikasi v2 dievaluasi hanya pada observasi ke depan.
+- Konfirmasi per-event = komponen beku absorption.ts diterapkan per event: pengikut ≥2 wallet
+  dlm 30s; rapid-sell ≥70% dlm 60s; net-flow SOL 60s > 0. Window belum selesai = PENDING; jual
+  tanpa USD = UNKNOWN (bukan kepastian palsu); jual besar dgn USD null tetap MENOLAK via
+  net-flow SOL. Keputusan (h2-decision) ber-timestamp PADA SAAT konfirmasi selesai (no
+  look-ahead); policy per event: immediate/4×1s/4×1m/pullback — 1s tak tersedia = UNAVAILABLE_1S
+  (bukan gagal-trigger); outcome lewat jalur markOutcome yang SAMA dgn shadow-decision
+  (anti-premature & toleransi identik).
+- Caretaker lintas TTL: outcome PENDING utk mint ter-evict dikejar via kline GMGN (4 mint/pass,
+  serialized+cooldown) — outcome & event bertahan melewati TTL watchlist 2 jam.
+- Feed-health PumpPortal diekspos (jurnal saat berubah + log); 502 terlihat jelas. Kohor
+  discovery TERPISAH: pumpportal(real-time launch) vs gmgn-trending(backfill) — dilaporkan
+  terpisah, tak dicampur. Celah tape (tx missing, pass error RPC) dilaporkan.
+- RUN NYATA (±10m setelah restart): 5 h2-event (launch-buy $8,7k, semua PRE_ADMISSION — sesuai
+  fakta ts) → 5 konfirmasi selesai REJECTED (pengikut 0/2 — bukan absorpsi) → 0 keputusan
+  prospektif (PRE_ADMISSION dilarang). Transisi REALTIME (event→PENDING→CONFIRMED/REJECTED→
+  h2-decision→outcome→paper) didemonstrasikan deterministik di tes (225 lulus).
+- Celah lama ditutup: report.ts tidak pernah memanggil report() (npm run pump:report kosong).
+- Masih menunggu: large-buy REALTIME pertama utk bukti keputusan prospektif di data nyata;
+  lane terus berjalan. PROFITABILITY NOT YET VALIDATED. Robinhood RPC tetap BLOCKED_EXTERNAL
+  (dokumen terpisah; penyebab kebijakan TIDAK diasumsikan).

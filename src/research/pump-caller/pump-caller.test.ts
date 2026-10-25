@@ -18,6 +18,7 @@ import { reduceOutcomes, markOutcome } from "./journal.js";
 import { decodePumpTx } from "./onchain-tape.js";
 import { readFileSync } from "node:fs";
 import { enrichOnchainUsd } from "./observer.js";
+import { buildH2Event, classifyDetection, evaluateConfirmation, eventPolicySet, priceAtTs, reduceH2Events, reduceH2Confirmations, reduceH2Decisions, H2_EVENT_VERSION, REALTIME_WINDOW_MS, type H2Event } from "./h2-events.js";
 import type { CallerEvent, Candle, PolicyEvaluation, TradeEvent } from "./types.js";
 
 const MINT = "FixMint11111111111111111111111111111111111";
@@ -315,4 +316,109 @@ test("H2-P0 enrichOnchainUsd: usd = sol × solUsd; usd yang sudah ada tidak diti
   eq(view.largeBuys.length, 1, "large-buy ≥$500 terpicu dari tape on-chain");
   eq(view.smallSells, 1, "small-sell $5–$100 terpicu dari tape on-chain (jumlah)");
   approx(view.netFlowSol, 5.6, 1e-9, "net flow SOL tetap dari jumlah mentah");
+});
+
+// ── (S11) H2 EVENT-DRIVEN — transisi state deterministik (tanpa klaim sinyal nyata) ──
+
+const h2Trade = (sig: string, side: "buy" | "sell", sol: number, ts: number, wallet: string, usd: number | null = sol * 100): TradeEvent =>
+  ({ dedupeKey: `${sig}:${wallet}`, mint: MINT, wallet, side, sol, usd, ts });
+
+test("S11 klasifikasi deteksi v2: PRE_ADMISSION / BACKFILL / REALTIME (ambang beku tak disentuh)", () => {
+  const admittedAt = 1_000_000;
+  eq(classifyDetection(admittedAt - 1, admittedAt, admittedAt + 1_000).cls, "PRE_ADMISSION", "eventTs < admisi = pra-admisi (historis)");
+  eq(classifyDetection(admittedAt + 10_000, admittedAt, admittedAt + 10_000 + REALTIME_WINDOW_MS + 1).cls, "BACKFILL", "post-admisi, telat > 90s = backfill");
+  eq(classifyDetection(admittedAt + 10_000, admittedAt, admittedAt + 10_000 + REALTIME_WINDOW_MS).cls, "REALTIME", "tepat pada batas 90s = realtime");
+  eq(classifyDetection(admittedAt + 5_000, admittedAt, admittedAt + 6_000).latencyMs, 1_000, "latensi = firstObserved − eventTs");
+});
+
+test("S11 buildH2Event: non-large-buy → null; id kanonik stabil; firstObservedAt immutabel; eligibleAt hanya REALTIME", () => {
+  const admittedAt = 1_000_000;
+  // buy $400 < $500 (ambang beku) → bukan event
+  eq(buildH2Event(h2Trade("sigA", "buy", 4, admittedAt + 5_000, "W", 400), { admittedAt, now: admittedAt + 6_000 }), null, "buy < $500 bukan event");
+  const t = { ...h2Trade("sigB", "buy", 6, admittedAt + 5_000, "W"), signature: "sigB", ixIndex: 2 };
+  const e1 = buildH2Event(t, { admittedAt, now: admittedAt + 6_000 })!;
+  const e2 = buildH2Event(t, { admittedAt, now: admittedAt + 99_000, priorFirstObservedAt: e1.firstObservedAt })!; // "restart" lihat jurnal lama
+  eq(e1.h2EventId, "sigB:W", "id kanonik = signature:trader");
+  eq(e2.h2EventId, e1.h2EventId, "id stabil lintas pass/restart (satu event per swap)");
+  eq(e2.firstObservedAt, e1.firstObservedAt, "firstObservedAt IMMUTABLE (min dgn jurnal)");
+  eq(e1.eligibleAt, e1.firstObservedAt, "REALTIME: eligibleAt = firstObservedAt");
+  eq(e1.detectionClass, "REALTIME", "");
+  eq(e1.canonicalIdQuality, "SIG_IX_TRADER", "ixIndex tersedia → kualitas kanonik penuh");
+  const pre = buildH2Event({ ...h2Trade("sigC", "buy", 9, admittedAt - 60_000, "W"), signature: "sigC" }, { admittedAt, now: admittedAt + 1_000 })!;
+  eq(pre.detectionClass, "PRE_ADMISSION", "");
+  eq(pre.eligibleAt, null, "pra-admisi: TIDAK eligible prospektif");
+  assert(pre.note.includes("TIDAK dikonfirmasi"), "atribusi dev/bunker dilabel TIDAK DIKONFIRMASI");
+});
+
+test("S11 konfirmasi: PENDING → CONFIRMED (pengikut ≥2, tanpa rapid-sell, net-flow > 0) → REJECTED paths", () => {
+  const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
+  const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigE", "buy", 6, t0, "BIG"), signature: "sigE" }, { admittedAt, now: t0 + 1_000 })!;
+  // window belum selesai (asOf < t0+60s) → PENDING, bukan kepastian palsu
+  eq(evaluateConfirmation(mkEvent(), [], t0 + 30_000).state, "PENDING", "window 60s belum selesai = PENDING");
+  // CONFIRMED: 2 pengikut dlm 30s, penjual kecil, net-flow positif
+  const happy = [
+    h2Trade("sF1", "buy", 0.5, t0 + 10_000, "f1"),
+    h2Trade("sF2", "buy", 0.4, t0 + 20_000, "f2"),
+    h2Trade("sS1", "sell", 0.3, t0 + 40_000, "f1"), // small-sell $30 di rentang beku
+  ];
+  const c1 = evaluateConfirmation(mkEvent(), happy, t0 + 61_000);
+  eq(c1.state, "CONFIRMED", `harap CONFIRMED, dapat ${c1.state}: ${c1.reason}`);
+  eq(c1.flowWindow.startTs, t0, "window flow ber-timestamp eksplisit");
+  eq(c1.smallSellsInWindow, 1, "small-sell $5–$100 terhitung dlm window");
+  // REJECTED: wallet besar cepat jual ≥70% dlm 60s
+  const rapid = [...happy, h2Trade("sR1", "sell", 5.5, t0 + 50_000, "BIG")];
+  eq(evaluateConfirmation(mkEvent(), rapid, t0 + 61_000).state, "REJECTED", "rapid-sell ≥70% menolak absorpsi");
+  // REJECTED: pengikut 1/2
+  eq(evaluateConfirmation(mkEvent(), [h2Trade("sF1", "buy", 0.5, t0 + 10_000, "f1")], t0 + 61_000).state, "REJECTED", "pengikut < 2 menolak");
+  // UNKNOWN: jual tanpa USD (SOL-nya kecil, net-flow tetap positif) → rapid-sell dilabel UNKNOWN
+  const unknownSell = [...happy, h2Trade("sX", "sell", 0.1, t0 + 50_000, "BIG", null)];
+  const c2 = evaluateConfirmation(mkEvent(), unknownSell, t0 + 61_000);
+  eq(c2.rapidSell.state, "UNKNOWN", "jual tanpa USD = UNKNOWN (bukan kepastian palsu)");
+  eq(c2.state, "CONFIRMED", "aturan beku: rapid-sell !== true → tetap dinilai; UNKNOWN terlabel");
+  // jual besar (SOL besar) tetap MENOLAK walau USD-nya null — net-flow SOL adalah bukti kuat
+  const bigUnknown = [...happy, h2Trade("sY", "sell", 5.5, t0 + 50_000, "BIG", null)];
+  eq(evaluateConfirmation(mkEvent(), bigUnknown, t0 + 61_000).state, "REJECTED", "net-flow SOL ≤ 0 menolak (USD null tak menyembunyikan aliran besar)");
+});
+
+test("S11 paper per-event: 1s tak tersedia → UNAVAILABLE_1S (bukan gagal-trigger); 4×1m OK; harga keputusan no-look-ahead", () => {
+  const t0 = 10_000_000;
+  const c1m = (i: number, close = 2): Candle => ({ ts: t0 + i * 60_000, open: 2, high: 2.2, low: 1.9, close, volumeSol: 1 });
+  const c1s = (i: number, close = 2): Candle => ({ ts: t0 + i * 1_000, open: 2, high: 2.1, low: 1.95, close, volumeSol: 1 });
+  const asOf = t0 + 5 * 60_000;
+  // tanpa 1s sama sekali → 1s policies UNAVAILABLE_1S (sumber tak menyediakan), 1m OK
+  const p1 = eventPolicySet(t0, [], [c1m(0), c1m(1), c1m(2), c1m(3)], asOf);
+  eq(p1.CONFIRM_AFTER_4X_1S_CANDLES.availability, "UNAVAILABLE_1S", "1s tak tersedia = UNAVAILABLE, bukan POLICY_TIDAK_TRIGGER");
+  eq(p1.IMMEDIATE_OBSERVED_ENTRY.availability, "UNAVAILABLE_1S", "immediate juga butuh 1s");
+  eq(p1.CONFIRM_AFTER_4X_1M_CANDLES.availability, "OK", "1m cukup");
+  eq(p1.CONFIRM_AFTER_4X_1M_CANDLES.evaluation.triggered, true, "4×1m terpenuhi");
+  // 1s ada sebagian (<4) → PENDING_CANDLES
+  const p2 = eventPolicySet(t0, [c1s(0), c1s(1)], [c1m(0), c1m(1), c1m(2), c1m(3)], asOf);
+  eq(p2.CONFIRM_AFTER_4X_1S_CANDLES.availability, "PENDING_CANDLES", "candle 1s 2/4 = PENDING");
+  // priceAtTs: hanya candle SELESAI ≤ ts (no look-ahead)
+  const store1s = [c1s(0), c1s(1), c1s(2)];
+  eq(priceAtTs(t0 + 2_500, store1s, []), c1s(1)!.close, "candle in-progress (t+2s) TIDAK dipakai");
+  eq(priceAtTs(t0 + 999, store1s, [c1m(-1)]), c1m(-1)!.close, "tanpa 1s selesai → fallback 1m SELESAI sebelum ts");
+  eq(priceAtTs(t0 - 1, [], []), null, "tanpa candle selesai = null (bukan dikarang)");
+});
+
+test("S11 jurnal: h2-event dedupe lintas restart via read(); h2-decision idempoten; reduksi konfirmasi last-wins", () => {
+  const prev = process.env.PUMP_CALLER_DIR;
+  process.env.PUMP_CALLER_DIR = mkdtempSync(join(tmpdir(), "pc-h2-"));
+  try {
+    append({ type: "h2-event", ts: 1, h2EventId: "sigE:W", mint: MINT, signature: "sigE", ixIndex: 0, canonicalIdQuality: "SIG_IX_TRADER", wallet: "W", sol: 6, usd: 600, usdQuality: "APPROX_SOL_SPOT", eventTs: 900, firstObservedAt: 950, eligibleAt: 950, observationLatencyMs: 50, detectionClass: "REALTIME", admittedAt: 800, hypothesisVersion: H2_EVENT_VERSION, note: "tes" });
+    append({ type: "h2-event", ts: 2, h2EventId: "sigE:W", mint: MINT, signature: "sigE", ixIndex: 0, canonicalIdQuality: "SIG_IX_TRADER", wallet: "W", sol: 6, usd: 600, usdQuality: "APPROX_SOL_SPOT", eventTs: 900, firstObservedAt: 950, eligibleAt: 950, observationLatencyMs: 50, detectionClass: "REALTIME", admittedAt: 800, hypothesisVersion: H2_EVENT_VERSION, note: "tes" }); // pass kedua / restart
+    const j1 = read();
+    eq(j1.rows.filter((r) => r.type === "h2-event").length, 1, "h2-event duplikat dilewati read() — satu observasi per swap");
+    eq(reduceH2Events(j1.rows).size, 1, "");
+    append({ type: "h2-confirmation", ts: 3, h2EventId: "sigE:W", state: "PENDING", asOf: 1, eventTs: 900, flowWindow: { startTs: 900, endTs: 960, complete: false, netFlowSol: null }, followers: { windowMs: 30_000, distinctWallets: null, complete: false }, rapidSell: { ratio: null, unknownUsdSells: 0, state: "PENDING" }, smallSellsInWindow: 0, reason: "WINDOW_BELUM_LENGKAP" });
+    append({ type: "h2-confirmation", ts: 4, h2EventId: "sigE:W", state: "CONFIRMED", asOf: 2, eventTs: 900, flowWindow: { startTs: 900, endTs: 960, complete: true, netFlowSol: 5.6 }, followers: { windowMs: 30_000, distinctWallets: 2, complete: true }, rapidSell: { ratio: 0, unknownUsdSells: 0, state: "NO" }, smallSellsInWindow: 1, reason: "ok" });
+    const conf = reduceH2Confirmations(read().rows).get("sigE:W")!;
+    eq(conf.state, "CONFIRMED", "konfirmasi: baris terakhir menang (PENDING → CONFIRMED)");
+    // id keputusan deterministik & idempoten
+    append({ type: "h2-decision", ts: 5, mint: MINT, decisionId: `h2:sigE:W:${H2_EVENT_VERSION}`, h2EventId: "sigE:W", hypothesisVersion: H2_EVENT_VERSION, detectionClass: "REALTIME", marketSource: "tes", decision: "H2_CONFIRMED", priceAtDecision: 2, confirmation: conf, triggerIds: [], entryPolicies: {}, canonicalIdQuality: "SIG_IX_TRADER", ixIndex: 0, usd: 600, usdQuality: "APPROX_SOL_SPOT", sol: 6, firstObservedAt: 950, eventTs: 900, eligibleAt: 950, observationLatencyMs: 50 });
+    append({ type: "h2-decision", ts: 6, mint: MINT, decisionId: `h2:sigE:W:${H2_EVENT_VERSION}`, h2EventId: "sigE:W", hypothesisVersion: H2_EVENT_VERSION, detectionClass: "REALTIME", marketSource: "tes", decision: "H2_CONFIRMED", priceAtDecision: 2, confirmation: conf, triggerIds: [], entryPolicies: {}, canonicalIdQuality: "SIG_IX_TRADER", ixIndex: 0, usd: 600, usdQuality: "APPROX_SOL_SPOT", sol: 6, firstObservedAt: 950, eventTs: 900, eligibleAt: 950, observationLatencyMs: 50 });
+    const j2 = read();
+    eq(j2.rows.filter((r) => r.type === "h2-decision").length, 1, "h2-decision idempoten via read()");
+    eq(reduceH2Decisions(j2.rows).size, 1, "");
+  } finally { if (prev === undefined) delete process.env.PUMP_CALLER_DIR; else process.env.PUMP_CALLER_DIR = prev; }
 });
