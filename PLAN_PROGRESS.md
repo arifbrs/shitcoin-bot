@@ -524,3 +524,11 @@ Status: Actions GREEN (b190455); v3 aktif utk observasi baru; PROFITABILITY NOT 
 - GMGN C5: sinyal segar (≤5m) n=17 — 15m med −11,1%, 60m med −47,7% (NEGATIF kuat, CI di luar nol
   utk 60m mean); 15–60m justru positif median (n=6, tidak bermakna) — heterogen, tanpa klaim.
 - Rejeksi entry dominan: round-trip-beyond-stop 1.326 (biaya putaran > jarak TP sejak awal).
+
+## LANE PUMP-CALLER TERPASANG (2026-10-25) — commit c09b050, Actions GREEN
+Milestone-1 tercapai (offline): token → tape trades → candle → absorpsi → wick → keputusan
+bayangan ter-timestamp yang REPRODUSIBEL (fixture smoke: WATCH dgn alasan+bukti-lawan+data-hilang).
+Komponen: adapter Developer API typed (BLOCKED_EXTERNAL tanpa PUMPFUN_API_KEY — tidak ada respons
+karangan), position tracker berbasis bukti, absorpsi, wick/4-kebijakan, deteksi dini, analis
+deterministik, 3 hipotesis pre-registrasi, jurnal idempoten. 211 tes / 33 berkas LULUS.
+Status riset: INSUFFICIENT (belum ada observasi prospektif non-fixture; caller timeline butuh kunci).
