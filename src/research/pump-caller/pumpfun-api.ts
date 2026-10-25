@@ -62,6 +62,40 @@ export async function swapApiTrades(mint: string, solUsd: number | null): Promis
   } catch { return null; }
 }
 
+// ── Fallback GMGN (via PROXY LOKAL read-only — pace 10s dijaga proxy; bebas-kunci utk kita) ──
+/** Kline 1m GMGN utk mint sol/pump (OHLCV nyata; sumber dilabel). */
+export async function gmgnKlineCandles(mint: string, limit = 60): Promise<{ candles: Candle[]; source: string } | null> {
+  try {
+    const { gmgnReadResult } = await import("../../discovery/gmgn.js");
+    const r = await gmgnReadResult<{ list?: Array<Record<string, unknown>> }>("getTokenKline", ["sol", mint, "1m", limit]);
+    if (!r.ok) return null;
+    const rows = r.data.list ?? [];
+    const candles = rows.map((k) => ({
+      ts: Number(k.time), open: num(k.open), high: num(k.high), low: num(k.low), close: num(k.close), volumeSol: num(k.volume),
+    })).filter((c) => c.close > 0 && c.high >= c.low && Number.isFinite(c.ts) && c.ts > 1e12).sort((a, b) => a.ts - b.ts);
+    return candles.length ? { candles, source: "gmgn-kline-1m (proxy read-only)" } : null;
+  } catch { return null; }
+}
+
+/** Tape PARSIAL dari top-traders GMGN (agregat per wallet — BUKAN tape penuh; berlabel parsial). */
+export async function gmgnPartialTape(mint: string): Promise<{ trades: TradeEvent[]; source: string; partial: true } | null> {
+  try {
+    const { gmgnReadResult } = await import("../../discovery/gmgn.js");
+    const r = await gmgnReadResult<{ list?: Array<Record<string, unknown>> }>("getTokenTopTraders", ["sol", mint, { limit: 20, order_by: "profit", direction: "desc" }]);
+    if (!r.ok) return null;
+    const now = Date.now();
+    const trades: TradeEvent[] = [];
+    for (const t of r.data.list ?? []) {
+      const w = t.address ? String(t.address) : undefined;
+      if (!w) continue;
+      const buyVol = num(t.buy_volume ?? t.buyVol); const sellVol = num(t.sell_volume ?? t.sellVol);
+      if (buyVol > 0) trades.push({ dedupeKey: `gmgn:${w}:buy`, mint, wallet: w, side: "buy", sol: buyVol, usd: null, ts: num(t.last_trade_timestamp ?? t.lastTimestamp) * 1000 || now });
+      if (sellVol > 0) trades.push({ dedupeKey: `gmgn:${w}:sell`, mint, wallet: w, side: "sell", sol: sellVol, usd: null, ts: num(t.last_trade_timestamp ?? t.lastTimestamp) * 1000 || now });
+    }
+    return trades.length ? { trades, source: "gmgn-top-traders (PARSIAL: agregat top-20 per wallet)", partial: true } : null;
+  } catch { return null; }
+}
+
 /** OHLCV mentah (reuse endpoint candle publik; interval 1s/1m didukung sumber). */
 export async function swapApiCandles(mint: string, interval: CandleInterval, limit: number): Promise<Candle[] | null> {
   try {

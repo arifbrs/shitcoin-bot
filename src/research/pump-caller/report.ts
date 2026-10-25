@@ -1,3 +1,99 @@
-/** `npm run pump:report` — ringkasan harian operator + hasil hipotesis vs baseline. */
-import { report } from "./runner.js";
-report();
+/**
+ * LAPORAN RISET PUMP-CALLER (sprint §10-12) — `npm run pump:report`.
+ * FIXTURE DIKECUALIKAN dari seluruh sampel riset (dihitung terpisah + dilabel).
+ * Trigger dari field terstruktur triggerIds (bukan teks bebas). Paper per policy
+ * (no-look-ahead; net setelah biaya model; $3/$5) + cakupan/latensi/missing.
+ */
+import "dotenv/config";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { read } from "./journal.js";
+import { watchDir } from "./watchlist.js";
+import { OUTCOME_HORIZONS_MIN, type EntryPolicy, type PolicyEvaluation } from "./types.js";
+import { paperForPolicy } from "./results.js";
+import { loadCandles } from "./observer.js";
+import { PUMP_PAPER_COST_V1 } from "./analyst.js";
+
+const CANDLE_1M_MS = 60_000;
+
+export function report(now = Date.now()): void {
+  const j = read();
+  const all = j.rows;
+  const fixtures = all.filter((r) => r.source === "fixture" || r.fixture === true);
+  const live = all.filter((r) => r.source !== "fixture" && r.fixture !== true);
+  const decisions = live.filter((r) => r.type === "shadow-decision");
+  const marks = live.filter((r) => r.type === "outcome-mark");
+  const tokens = live.filter((r) => r.type === "token-observed");
+  const feedLags = tokens.map((t) => t.feedLagMs).filter((v): v is number => typeof v === "number" && v >= 0);
+
+  const lines: string[] = ["=== LAPORAN RISET PUMP-CALLER - observasi nyata (fixture dikecualikan) ===", "",
+    `jurnal live: ${live.length} baris - fixture: ${fixtures.length} baris (DIKECUALIKAN dari sampel) - rusak=${j.malformed} duplikat-dilewati=${j.duplicates}`,
+    `token live teramati: ${tokens.length} - latensi feed: med=${med(feedLags) != null ? (med(feedLags)! / 1000).toFixed(1) + "s" : "?"} max=${feedLags.length ? (Math.max(...feedLags) / 1000).toFixed(1) + "s" : "?"}`,
+    `keputusan bayangan live: ${decisions.length} (${JSON.stringify(tally(decisions, "decision"))}) - sosial: UNAVAILABLE (Developer API invitation-restricted; caller identity hanya KNOWN_WALLET_PROXY bila file operator ada)`];
+
+  lines.push("", "-- Outcome harga (close candle SELESAI; PENDING->OBSERVED/MISSING_FINAL) --");
+  for (const h of OUTCOME_HORIZONS_MIN) {
+    const m = marks.filter((x) => Number(x.horizonMin) === h);
+    const obs = m.filter((x) => x.status === "OBSERVED") as Array<{ changePct?: number }>;
+    const pend = m.filter((x) => x.status === "PENDING").length;
+    const fin = m.filter((x) => x.status === "MISSING_FINAL").length;
+    if (!m.length) { lines.push(`  ${h}m: -`); continue; }
+    const vals = obs.map((o) => Number(o.changePct)).filter(Number.isFinite);
+    const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    lines.push(`  ${h}m: OBS=${obs.length} PENDING=${pend} MISS_FINAL=${fin}${mean != null ? ` - mean=${mean.toFixed(2)}% (bruto harga)` : ""}`);
+  }
+
+  lines.push("", `-- Paper per policy (entry = close candle SELESAI pasca-trigger; biaya model ${PUMP_PAPER_COST_V1.roundTripOverheadPct}pp putaran; $3/$5) --`);
+  const POLICIES: EntryPolicy[] = ["IMMEDIATE_OBSERVED_ENTRY", "CONFIRM_AFTER_4X_1S_CANDLES", "CONFIRM_AFTER_4X_1M_CANDLES", "PULLBACK_WITH_BUYER_RECOVERY"];
+  for (const pol of POLICIES) {
+    let n = 0; const nets: number[] = []; let skipped = 0; let mfeSum = 0, maeSum = 0, mfeN = 0;
+    for (const d of decisions) {
+      const eps = d.entryPolicies as Record<string, Record<EntryPolicy, PolicyEvaluation>> | undefined;
+      for (const storeKey of ["1s", "1m"] as const) {
+        const ev = eps?.[storeKey]?.[pol];
+        if (!ev) continue;
+        const store = loadCandles(String(d.mint));
+        const intervalMs = storeKey === "1s" ? 1_000 : CANDLE_1M_MS;
+        const pr = paperForPolicy({ decisionTs: Number(d.ts), priceAtDecision: Number(d.priceAtDecision ?? 0) }, ev, 15, store[storeKey], intervalMs, now);
+        if (pr.triggered && pr.netPct != null) { n++; nets.push(pr.netPct); if (pr.mfePct != null) { mfeSum += pr.mfePct; mfeN++; } if (pr.maePct != null) maeSum += pr.maePct; }
+        else skipped++;
+      }
+    }
+    const mean = nets.length ? nets.reduce((a, b) => a + b, 0) / nets.length : null;
+    lines.push(`  ${pol}: selesai=${n} terlewat/belum-matang=${skipped}${mean != null ? ` - net mean=${mean.toFixed(2)}% (horizon 15m)` : ""}${mfeN ? ` - MFE~${(mfeSum / mfeN).toFixed(1)}% MAE~${(maeSum / mfeN).toFixed(1)}%` : ""}`);
+  }
+
+  lines.push("", "-- Hipotesis (trigger TERSTRUKTUR dari keputusan; H1 BLOCKED_DATA tanpa caller terverifikasi) --");
+  const trigCount = new Map<string, { fires: number; total: number }>();
+  for (const d of decisions) {
+    for (const t of (d.triggerIds as Array<{ id: string; fires: boolean }> | undefined) ?? []) {
+      const e = trigCount.get(t.id) ?? { fires: 0, total: 0 };
+      e.total++; if (t.fires) e.fires++;
+      trigCount.set(t.id, e);
+    }
+  }
+  for (const [id, c] of trigCount) lines.push(`  ${id}: fires ${c.fires}/${c.total}`);
+  if (!trigCount.size) lines.push("  (belum ada keputusan live dengan trigger terstruktur)");
+
+  lines.push("", "-- Kualitas data --",
+    `trades ditolak (timestamp invalid): ${live.filter((r) => r.type === "trade-rejected").length}`,
+    `batch USD UNAVAILABLE (tanpa SOL/USD): ${live.filter((r) => r.type === "trade-batch" && r.usdQuality === "UNAVAILABLE_SOLUSD").length}`,
+    `kandidat ditolak watchlist: ${rejectedCount()} (watchlist-rejected.jsonl)`,
+    `biaya: model v1 = fee ${PUMP_PAPER_COST_V1.takerFeePct}% + slip ${PUMP_PAPER_COST_V1.slippagePct}% per sisi - PARAMETER RISET, belum terkalibrasi`);
+  lines.push("", "SOSIAL: callout/follower/identitas caller Pump.fun = UNAVAILABLE (adapter Developer API dorman,",
+    "BUKAN di jalur kritis). KNOWN_WALLET hanya bila known-wallets.json operator diisi.");
+  console.log(lines.join("\n"));
+  writeFileSync(join("logs", `pump-caller-report-${new Date(now).toISOString().slice(0, 10)}.md`), lines.join("\n") + "\n");
+}
+
+function med(a: number[]): number | null { return a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]! : null; }
+function tally(rows: Array<Record<string, unknown>>, k: string): Record<string, number> {
+  const c: Record<string, number> = {};
+  for (const r of rows) c[String(r[k])] = (c[String(r[k])] ?? 0) + 1;
+  return c;
+}
+function rejectedCount(): number {
+  const f = join(watchDir(), "watchlist-rejected.jsonl");
+  if (!existsSync(f)) return 0;
+  return readFileSync(f, "utf8").split("\n").filter((l) => l.trim()).length;
+}

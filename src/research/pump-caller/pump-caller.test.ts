@@ -11,7 +11,11 @@ import { analyze, PUMP_PAPER_COST_V1 } from "./analyst.js";
 import { TRIGGERS, compare } from "./experiments.js";
 import { append, read, markOutcome, decisionIdFor } from "./journal.js";
 import { FIX_TRADES, FIX_CANDLES_1S, FIX_USER_POSITIONS, FIX_USER_TRADES } from "./fixtures.js";
-import type { CallerEvent } from "./types.js";
+import { normalizeTradeTs } from "./timestamps.js";
+import { admit } from "./watchlist.js";
+import { resolveOutcome, paperForPolicy } from "./results.js";
+import { readFileSync } from "node:fs";
+import type { CallerEvent, Candle, PolicyEvaluation } from "./types.js";
 
 const MINT = "FixMint11111111111111111111111111111111111";
 const ev = (dedupeKey: string, kind: "buy" | "sell", sol: number, ts: number, balanceAfter?: number): CallerEvent =>
@@ -130,4 +134,71 @@ test("PC jurnal: append/read dedupe; outcome-mark idempoten lintas restart", () 
 
 test("PC cost-model: overhead putaran v1 = 5,0pp (parameter riset, berlabel)", () => {
   eq(PUMP_PAPER_COST_V1.roundTripOverheadPct, 5.0, "2×(fee 1% + slip 1,5%)");
+});
+
+test("SPRINT timestamps: detik/ms/mikro/ISO eksplisit; invalid DITOLAK (tanpa fallback now)", () => {
+  eq(normalizeTradeTs(1_790_000_000), 1_790_000_000_000, "detik");
+  eq(normalizeTradeTs(1_790_000_000_000), 1_790_000_000_000, "ms");
+  eq(normalizeTradeTs(1_790_000_000_000_000), 1_790_000_000_000, "mikro");
+  eq(normalizeTradeTs("2026-10-25T00:00:00Z"), Date.parse("2026-10-25T00:00:00Z"), "ISO");
+  eq(normalizeTradeTs("1790000000"), 1_790_000_000_000, "string numerik detik");
+  eq(normalizeTradeTs(null), null, "null ditolak");
+  eq(normalizeTradeTs(123), null, "terlalu kecil = sampah, ditolak");
+  eq(normalizeTradeTs(-5), null, "negatif ditolak");
+  eq(normalizeTradeTs("bukan-tanggal"), null, "string sampah ditolak — BUKAN diganti waktu-sekarang");
+});
+
+test("SPRINT watchlist: bounded + sampling + TTL + alasan penolakan tercatat", () => {
+  const prev = process.env.PUMP_CALLER_DIR;
+  process.env.PUMP_CALLER_DIR = mkdtempSync(join(tmpdir(), "pc-wl-"));
+  try {
+    const policy = { capacity: 2, ttlMs: 3_600_000, sampleEvery: 1 };
+    const M = (i: number) => `${"A".repeat(i % 2)}${String(i).padStart(5, "0")}`.padEnd(44, "k"); // dummy base58-ish
+    const mint = (i: number) => ("C" + String(i).padEnd(43, "k"));
+    let wl = admit([], { mint: mint(1), source: "manual", priority: 10 }, policy, 1, 1000).entries;
+    eq(wl.length, 1, "manual selalu admit (tanpa sampling)");
+    const dup = admit(wl, { mint: mint(1), source: "manual", priority: 10 }, policy, 2, 2000);
+    eq(dup.admitted, false, "duplikat ditolak");
+    let r3 = admit(wl, { mint: mint(2), source: "pumpportal", priority: 5 }, policy, 3, 3000);
+    wl = r3.entries; eq(wl.length, 2, "kapasitas 2 tercapai");
+    const full = admit(wl, { mint: mint(3), source: "pumpportal", priority: 1 }, policy, 4, 4000);
+    eq(full.admitted, false, "kapasitas penuh + prioritas rendah = ditolak");
+    const evict = admit(wl, { mint: mint(4), source: "pumpportal", priority: 999 }, policy, 5, 5000);
+    eq(evict.admitted, true, "prioritas tinggi meng-evict terendah");
+    const sampling = { capacity: 10, ttlMs: 3_600_000, sampleEvery: 3 };
+    eq(admit([], { mint: mint(9), source: "pumpportal", priority: 1 }, sampling, 1, 1000).admitted, false, "seq 1 dari 3: sampling tolak");
+    eq(admit([], { mint: mint(9), source: "pumpportal", priority: 1 }, sampling, 3, 1000).admitted, true, "seq 3 dari 3: admit");
+    const rej = readFileSync(join(process.env.PUMP_CALLER_DIR!, "watchlist-rejected.jsonl"), "utf8");
+    assert(rej.includes("CAPACITY_FULL") && rej.includes("SAMPLING"), "alasan penolakan tercatat");
+  } finally { if (prev === undefined) delete process.env.PUMP_CALLER_DIR; else process.env.PUMP_CALLER_DIR = prev; }
+});
+
+test("SPRINT outcomes: PENDING→OBSERVED dari candle SELESAI; retry berbatas; candle in-progress TIDAK dipakai", () => {
+  const c = (ts: number, close = 2): Candle => ({ ts, open: 1, high: 3, low: 0.5, close, volumeSol: 1 });
+  // horizon 1m, target 61_000; candle 60_000 SELESAI di asOf=61_500 (60k+60s<=61.5k).
+  const r1 = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 61_000, horizonMin: 1, candles: [c(0), c(60_000, 2.2)], intervalMs: 60_000, asOf: 121_000 });
+  eq(r1.status, "OBSERVED", "close candle selesai terdekat dipakai");
+  eq(r1.priceAtTarget, 2, "harga = close candle [0,60s) (close-time 60k terdekat ke target 61k) - bukan open, bukan candle 60k yg baru selesai di 120k");
+  // satu-satunya candle yg bisa melayani target masih IN-PROGRESS (selesai 120k, asOf 110k):
+  const r2 = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 100_000, horizonMin: 1, candles: [c(60_000, 2.2)], intervalMs: 60_000, asOf: 110_000 });
+  eq(r2.status, "PENDING", "candle in-progress TIDAK dipakai → PENDING (retry), bukan MISSING permanen");
+  // kehabisan percobaan setelah grace → MISSING_FINAL.
+  const r3 = resolveOutcome({ status: "PENDING", attempts: 5, targetAt: 400_000, horizonMin: 1, candles: [c(60_000)], intervalMs: 60_000, asOf: 400_000 + 60_000 * 2 + 6 * 60_000 }); // target 400k: candle 60k (close 120k) jauh dari toleransi 30k
+  eq(r3.status, "MISSING_FINAL", "final setelah grace + 5 percobaan");
+});
+
+test("SPRINT paper no-look-ahead: entry = close candle SELESAI pasca-trigger; MFE/MAE; biaya 5pp", () => {
+  const c = (ts: number, o: number, h: number, l: number, cl: number): Candle => ({ ts, open: o, high: h, low: l, close: cl, volumeSol: 1 });
+  const candles = [c(0, 1, 1.1, .9, 1.0), c(60_000, 1.0, 1.2, .95, 1.1), c(120_000, 1.1, 1.3, 1.0, 1.2), c(180_000, 1.2, 1.25, .8, .9), c(240_000, .9, .95, .85, .88)];
+  const policy: PolicyEvaluation = { policy: "IMMEDIATE_OBSERVED_ENTRY", triggered: true, triggerTs: 10_000, entryPrice: 1.0, requiredCandles: 1, observedCandles: 5, rejectReason: null };
+  const pr = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles, 60_000, 300_000);
+  eq(pr.entryTs, 120_000, "entry = close candle SELESAI pertama ≥ trigger (candle 60k selesai di 120k)");
+  eq(pr.entryPrice, 1.1, "harga eksekusi = close 1.1 (open candle yang basi TIDAK dipakai)");
+  assert(pr.exitPrice != null && pr.grossPct != null, "exit matang");
+  assert(pr.mfePct != null && pr.maePct != null, "MFE/MAE terisi");
+  eq(pr.costPp, 5.0, "biaya model 5pp");
+  assert(pr.netPct != null && Math.abs(pr.netPct - ((pr.grossPct ?? 0) - 5)) < 1e-9, "net = gross − biaya");
+  // look-ahead: evaluasi SEBELUM candle entry selesai → skip eksplisit, bukan harga karangan.
+  const early = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles.slice(0, 1), 60_000, 60_000);
+  eq(early.skipReason, "CANDLE_ENTRY_SELESAI_BELUM_ADA", "tanpa candle selesai = skip berlabel");
 });

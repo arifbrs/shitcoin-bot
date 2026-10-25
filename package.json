@@ -32,6 +32,8 @@
     "gmgn:signal-study": "tsx src/analysis/gmgn-signal-study.ts",
     "rh:feature-study": "tsx src/analysis/feature-study.ts",
     "pump:collect": "tsx src/research/pump-caller/collect.ts",
+    "pump:watch": "tsx src/research/pump-caller/watch.ts",
+    "pump:health": "tsx src/research/pump-caller/health.ts",
     "pump:observe": "tsx src/research/pump-caller/observe.ts",
     "pump:report": "tsx src/research/pump-caller/report.ts",
     "rh:paper": "tsx src/robinhood/paper.ts",
