@@ -95,8 +95,14 @@ export function report(now = Date.now()): void {
     const confRows = live.filter((r) => r.type === "h2-confirmation");
     const dataIncomplete = confRows.filter((r) => r.dataComplete === false && r.flowWindow && (r.flowWindow as { complete?: boolean }).complete === true).length;
     const versions = new Set(confRows.map((r) => String(r.confirmationVersion ?? "h2-conf-v1")));
-    lines.push(`event unik: ${h2Events.length} (klasifikasi ${JSON.stringify(byCls)}) - kohor discovery ${JSON.stringify(byCohort)}`,
-      `konfirmasi (state terakhir): ${JSON.stringify(confStates)} - window-lewat-tapi-tanpa-data: ${dataIncomplete} - versi konfirmasi: ${[...versions].join(",")} - keputusan prospektif: ${h2Decisions.length} (hanya REALTIME)`,
+    // (S11.2) REALTIME vs historis/backfill — dilaporkan TERPISAH; window lengkap vs tak-lengkap terpisah.
+    const rt = h2Events.filter((e) => e.detectionClass === "REALTIME");
+    const hist = h2Events.filter((e) => e.detectionClass !== "REALTIME");
+    const confByCov: Record<string, number> = {};
+    for (const c of h2Confs.values()) confByCov[String((c.coverage as { state?: string })?.state ?? "?")] = (confByCov[String((c.coverage as { state?: string })?.state ?? "?")] ?? 0) + 1;
+    lines.push(`event REALTIME (memenuhi syarat prospektif): ${rt.length} - event historis/backfill (TIDAK actionable): ${hist.length} - kohor discovery ${JSON.stringify(byCohort)}`,
+      `window konfirmasi: DATA_COMPLETE ${confByCov["DATA_COMPLETE"] ?? 0} / DATA_INCOMPLETE ${confByCov["DATA_INCOMPLETE"] ?? 0} / COVERAGE_UNKNOWN ${confByCov["COVERAGE_UNKNOWN"] ?? 0} (state terakhir per event; versi ${[...versions].join(",")})`,
+      `konfirmasi (state): ${JSON.stringify(confStates)} - window-lewat-tanpa-data (v2 lama): ${dataIncomplete} - keputusan prospektif: ${h2Decisions.length} (hanya REALTIME + bukti cakupan)`,
       `latensi observasi: med=${lat.length ? (med(lat)! / 1000).toFixed(1) + "s" : "?"} max=${lat.length ? (Math.max(...lat) / 1000).toFixed(1) + "s" : "?"} (window registrasi v2 = 90s)`,
       `kualitas USD event: ${JSON.stringify(usdQ)} - kanonik ixIndex ${h2Events.filter((e) => e.canonicalIdQuality === "SIG_IX_TRADER").length}/${h2Events.length}`);
     // (S11.1) DUA kelompok paper — dilaporkan TERPISAH, tidak pernah dicampur:

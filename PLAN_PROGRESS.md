@@ -682,3 +682,26 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - Tes 225→226 ✓ · gate ✓. Selanjutnya: KEMBALI KE PENGUMPULAN — target = large-buy REALTIME
   dgn window konfirmasi cukup-lengkap → outcome matang → paper cost-adjusted. Ambang beku tak
   disentuh. PROFITABILITY NOT YET VALIDATED.
+
+## S11.2 CAKUPAN BERBASIS BUKTI + DRAIN PAGINATION (2026-10-25)
+- (1) DATA_COMPLETE kini DARI REKAMAN AKUISISI RPC — bukan inferensi "ada ≥1 swap di window".
+  Modul murni coverage.ts: tiap pass sukses merekam interval halaman [pageBottomTs, pageTopTs]
+  (kontigu di rantai sig) + reconciled/backlogPossible/holes/drain. Empat status: WINDOW_NOT_
+  MATURED / DATA_INCOMPLETE / DATA_COMPLETE / COVERAGE_UNKNOWN. HANYA DATA_COMPLETE menopang
+  penolakan definitif "pengikut < 2" atau konfirmasi. CONFIRMATION_VERSION → h2-conf-v3.
+- (2) DRAIN berbatas (maks 2 halaman/pass, prioritas riset): halaman penuh → chunk (prevHead,
+  pageBottom) terlewat → lanjut `before` hingga prevHead tercapai/budget habis; posisi drain
+  TERSISTEN (sig-cursors.json + drainPos) dan DILANJUTKAN pass berikutnya. Lubang decode
+  (tx gagal) di-retry berbatas 3/pass + baris recovery; interval berlubang tak pernah bukti
+  DATA_COMPLETE sebelum pulih. Head cursor + ts persisten. MIGRASI: bondingCurveClosed()
+  (getAccountInfo PDA; cache; bukti = akun tertutup) → pasca-migrasi TIDAK PERNAH DATA_COMPLETE
+  (tape bonding-curve saja bukan tape pasar lengkap).
+- (3) Reassessment v3 hanya saat bukti cakupan berubah; jurnal append-only — S11/S11.1 utuh;
+  event historis tetap tidak actionable (tanpa reklasifikasi retroaktif).
+- (4) TES REGRESI (228 ✓): skenario wajib — 1 swap teramati + gap akuisisi + 2 follower di
+  bagian hilang → DATA_INCOMPLETE/PENDING (BUKAN REJECTED 0/2); window rekonsiliasi-sungguhan
+  0 pengikut → REJECTED definitif; window tak-lengkap → LENGKAP setelah drain menutup gap →
+  CONFIRMED dgn bukti penuh; tanpa rekaman → COVERAGE_UNKNOWN → UNKNOWN.
+- (5) Kembali observasi: laporan memisahkan REALTIME vs historis/backfill + window lengkap vs
+  tak-lengkap; paper hanya utk bukti cukup. Ambang beku tak disentuh; tanpa order/signing.
+  PROFITABILITY NOT YET VALIDATED.

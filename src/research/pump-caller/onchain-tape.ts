@@ -206,35 +206,138 @@ export async function mintDecimals(mint: string): Promise<number | null> {
   return d;
 }
 
-export interface TapePassResult { trades: DecodedTrade[]; coverage: { encountered: number; fetched: number; validatedSwaps: number; unverifiedDeltas: number; failedTx: number; missingTx: number; error: string | null; cursorAdvanced: boolean } }
+export interface TapePassResult {
+  trades: DecodedTrade[];
+  coverage: { encountered: number; fetched: number; validatedSwaps: number; unverifiedDeltas: number; failedTx: number; missingTx: number; error: string | null; cursorAdvanced: boolean };
+  // (S11.2) FAKTA AKUISISI utk penilaian cakupan berbasis bukti — bukan inferensi:
+  pages: Array<{ signature: string; blockTime: number | null }>; // sig TERENUMERASI + blockTime (termasuk drain)
+  holes: string[];                                               // sig terenumerasi tapi tx gagal diambil (lubang decode)
+  topSig: string | null;                                         // sig terenumerasi TERATAS (kursor) — juga bila tx-nya gagal
+  backlog: boolean;                                              // halaman UTAMA penuh → chunk bawahnya bisa terlewat
+  pageTopSig: string | null; pageTopTs: number | null;           // batas ATAS interval halaman (hasil fetch)
+  pageBottomSig: string | null; pageBottomTs: number | null;     // batas BAWAH interval halaman
+  drain: { pagesUsed: number; closed: boolean; lastBottomSig: string | null } | null; // drain backlog
+}
 
-/** Satu pass tape utk mint (kursor inkremental `until` = signature terbaru sebelumnya; berbatas kuota). */
-export async function onchainTapePass(mint: string, bondingCurveKey: string, prevTopSig: string | null, limit = 12): Promise<TapePassResult | null> {
+/** Batas halaman drain per pass — riset: prioritas rendah, berbatas (jangan banjiri pool RPC). */
+const MAX_DRAIN_PAGES = 2;
+
+/** Satu pass tape utk mint (kursor inkremental `until` = signature terbaru sebelumnya; berbatas kuota).
+ *  (S11.2) Bila satu halaman penuh (encountered ≥ limit) → chunk di antara bottom-halaman dan
+ *  prevHead TERLEWAT → drain dengan `before` hingga prevHead tercapai / budget habis.
+ *  `resumeDrainFrom` = posisi drain TERSISTEN yang belum selesai (dilanjutkan dulu, budget
+ *  dibagi dgn drain backlog baru). */
+export async function onchainTapePass(mint: string, bondingCurveKey: string, prevTopSig: string | null, limit = 12, resumeDrainFrom?: string | null): Promise<TapePassResult | null> {
   const coverage = { encountered: 0, fetched: 0, validatedSwaps: 0, unverifiedDeltas: 0, failedTx: 0, missingTx: 0, error: null as string | null, cursorAdvanced: false };
+  const pages: Array<{ signature: string; blockTime: number | null }> = [];
+  const holes: string[] = [];
+  const seen = new Set<string>();
+  const trades: DecodedTrade[] = [];
+  const fetchOne = async (sig: string, decimals: number | null): Promise<void> => {
+    // Pump.fun memakai transaksi VERSION 1 — maxSupportedTransactionVersion:0 ditolak RPC (akar
+    // "failedTx 9/9" S9). Versi 1 menerima v0+v1; tx gagal tetap disaring lewat meta.err.
+    const tx = await pooledRpc<RawTxLike>("getTransaction", [sig, { maxSupportedTransactionVersion: 1, encoding: "jsonParsed" }]);
+    if (!tx) { coverage.missingTx++; holes.push(sig); return; }
+    coverage.fetched++;
+    const bt = tx.blockTime != null ? tx.blockTime * 1000 : null;
+    pages.push({ signature: sig, blockTime: bt });
+    if (tx.meta?.err != null) { coverage.failedTx++; return; }
+    const decoded = decodePumpTx({ ...tx, signature: sig }, mint, decimals, Date.now());
+    for (const d of decoded) {
+      if (d.state === "VERIFIED_SWAP") coverage.validatedSwaps++; else coverage.unverifiedDeltas++;
+      if (!seen.has(d.dedupeKey)) { seen.add(d.dedupeKey); trades.push(d); }
+    }
+  };
   try {
-    const sigs = await pooledRpc<{ signature: string }[]>("getSignaturesForAddress", [bondingCurveKey, { limit, ...(prevTopSig ? { until: prevTopSig } : {}) }]);
+    const sigs = await pooledRpc<{ signature: string; blockTime?: number | null }[]>("getSignaturesForAddress", [bondingCurveKey, { limit, ...(prevTopSig ? { until: prevTopSig } : {}) }]);
     if (!Array.isArray(sigs)) return null;
     coverage.encountered = sigs.length;
     const decimals = await mintDecimals(mint);
-    const seen = new Set<string>();
-    const trades: DecodedTrade[] = [];
     for (const s of sigs) {
       if (prevTopSig && s.signature === prevTopSig) continue;
-      // Pump.fun memakai transaksi VERSION 1 — maxSupportedTransactionVersion:0 ditolak RPC (akar
-      // "failedTx 9/9" S9). Versi 1 menerima v0+v1; tx gagal tetap disaring lewat meta.err.
-      const tx = await pooledRpc<RawTxLike>("getTransaction", [s.signature, { maxSupportedTransactionVersion: 1, encoding: "jsonParsed" }]);
-      if (!tx) { coverage.missingTx++; continue; }
-      coverage.fetched++;
-      if (tx.meta?.err != null) { coverage.failedTx++; continue; }
-      const decoded = decodePumpTx({ ...tx, signature: s.signature }, mint, decimals, Date.now());
-      for (const d of decoded) {
-        if (d.state === "VERIFIED_SWAP") coverage.validatedSwaps++; else coverage.unverifiedDeltas++;
-        if (!seen.has(d.dedupeKey)) { seen.add(d.dedupeKey); trades.push(d); }
-      }
+      await fetchOne(s.signature, decimals);
     }
     coverage.cursorAdvanced = sigs.length > 0 && sigs[0]!.signature !== prevTopSig;
+    // ── (S11.2) DRAIN: halaman penuh = chunk antara bottom & prevHead terlewat. Lanjutkan
+    // dengan `before` hingga prevHead muncul di halaman (gap tertutup) / budget habis. ──
+    let drain: TapePassResult["drain"] = null;
+    const backlog = sigs.length >= limit;
+    const mainTopSig = sigs.length > 0 ? sigs[0]!.signature : null;
+    // (S11.2) LANJUTKAN drain yang tersangkut dari posisi persisten (target: prevHead kini).
+    let budget = MAX_DRAIN_PAGES;
+    if (resumeDrainFrom && prevTopSig && resumeDrainFrom !== prevTopSig) {
+      let before = resumeDrainFrom, pagesUsed = 0, closed = false, lastBottom = resumeDrainFrom;
+      while (pagesUsed < budget) {
+        const more = await pooledRpc<{ signature: string; blockTime?: number | null }[]>("getSignaturesForAddress", [bondingCurveKey, { limit, before }]);
+        if (!Array.isArray(more) || more.length === 0) { closed = true; break; }
+        pagesUsed++;
+        let hitPrevHead = false;
+        for (const s of more) {
+          if (s.signature === prevTopSig) { hitPrevHead = true; break; }
+          coverage.encountered++;
+          await fetchOne(s.signature, decimals);
+        }
+        lastBottom = more[more.length - 1]!.signature;
+        before = lastBottom;
+        if (hitPrevHead || more.length < limit) { closed = true; break; }
+      }
+      budget -= pagesUsed;
+      drain = { pagesUsed, closed, lastBottomSig: closed ? null : lastBottom };
+      if (!closed) { /* sisanya dilanjutkan pass berikutnya */ }
+    }
+    if (backlog && sigs.length > 0 && budget > 0) {
+      const bottomSig = sigs[sigs.length - 1]!.signature;
+      let before = bottomSig, pagesUsed = 0, closed = false, lastBottom = bottomSig;
+      while (pagesUsed < budget) {
+        const more = await pooledRpc<{ signature: string; blockTime?: number | null }[]>("getSignaturesForAddress", [bondingCurveKey, { limit, before }]);
+        if (!Array.isArray(more) || more.length === 0) break;
+        pagesUsed++;
+        let hitPrevHead = false;
+        for (const s of more) {
+          if (prevTopSig && s.signature === prevTopSig) { hitPrevHead = true; break; } // gap tertutup — sisanya sudah tercakup
+          coverage.encountered++;
+          await fetchOne(s.signature, decimals);
+        }
+        lastBottom = more[more.length - 1]!.signature;
+        before = lastBottom;
+        if (hitPrevHead || more.length < limit) { closed = true; break; }
+      }
+      drain = { pagesUsed, closed, lastBottomSig: closed ? null : lastBottom };
+    }
+    const withTs = pages.filter((p) => p.blockTime != null) as Array<{ signature: string; blockTime: number }>;
+    const top = withTs.length ? withTs.reduce((a, b) => (b.blockTime > a.blockTime ? b : a)) : null;
+    const bottom = withTs.length ? withTs.reduce((a, b) => (b.blockTime < a.blockTime ? b : a)) : null;
     trades.sort((a, b) => a.ts - b.ts);
-    return { trades, coverage, ...(coverage.cursorAdvanced ? { topSig: sigs[0]!.signature } : {}) } as TapePassResult;
-  } catch (e) { coverage.error = (e as Error).message.slice(0, 80); return { trades: [], coverage }; }
+    return { trades, coverage, pages, holes, topSig: mainTopSig, backlog,
+      pageTopSig: top?.signature ?? null, pageTopTs: top?.blockTime ?? null,
+      pageBottomSig: bottom?.signature ?? null, pageBottomTs: bottom?.blockTime ?? null,
+      drain } as TapePassResult;
+  } catch (e) { coverage.error = (e as Error).message.slice(0, 80); return { trades: [], coverage, pages, holes, topSig: null, backlog: false, pageTopSig: null, pageTopTs: null, pageBottomSig: null, pageBottomTs: null, drain: null }; }
 }
-export interface TapePassResultWithCursor extends TapePassResult { topSig?: string }
+export interface TapePassResultWithCursor extends TapePassResult { } // topSig kini bagian TapePassResult (S11.2)
+
+/** (S11.2) PULIH satu lubang decode: ambil ulang satu tx terenumerasi (dipanggil berbatas
+ *  oleh observer — kuota rendah). null = tetap lubang. */
+export async function recoverSignature(mint: string, sig: string): Promise<{ trades: DecodedTrade[]; blockTime: number | null } | null> {
+  try {
+    const decimals = await mintDecimals(mint);
+    const tx = await pooledRpc<RawTxLike>("getTransaction", [sig, { maxSupportedTransactionVersion: 1, encoding: "jsonParsed" }]);
+    if (!tx) return null;
+    return { trades: decodePumpTx({ ...tx, signature: sig }, mint, decimals, Date.now()), blockTime: tx.blockTime != null ? tx.blockTime * 1000 : null };
+  } catch { return null; }
+}
+
+// ── (S11.2) MIGRASI bonding-curve → PumpSwap ─────────────────────────────────
+// Saat token lulus (graduate), kurva bonding ditutup & perdagangan pindah ke pool PumpSwap
+// (pAMMBay6oce…). Riwayat bonding-curve SAJA bukan tape pasar lengkap setelah migrasi —
+// penilaian cakupan HARUS menandai pasca-migrasi sebagai tidak pernah DATA_COMPLETE.
+const curveClosedCache = new Map<string, boolean>();
+export async function bondingCurveClosed(mint: string, bondingCurveKey: string): Promise<boolean> {
+  if (curveClosedCache.has(mint)) return curveClosedCache.get(mint)!;
+  try {
+    const info = await pooledRpc<{ value?: { lamports?: number } | null }>("getAccountInfo", [bondingCurveKey, { encoding: "base64" }]);
+    const closed = !(info?.value != null && Number(info.value.lamports ?? 0) > 0); // null/0 = akun tertutup
+    if (closed) curveClosedCache.set(mint, true); // migrasi = permanen → cache; RPC gagal → jangan klaim (bukan bukti)
+    return closed;
+  } catch { return false; }
+}

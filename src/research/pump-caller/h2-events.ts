@@ -22,6 +22,7 @@ import type { TradeEvent, Candle, EntryPolicy, PolicyEvaluation } from "./types.
 import { DEFAULT_ABSORPTION } from "./types.js";
 import { completedCandles } from "./results.js";
 import { evaluatePolicies } from "./wicks.js";
+import type { WindowCoverage } from "./coverage.js";
 
 export const H2_EVENT_VERSION = "h2-event-v2";
 /**
@@ -29,7 +30,9 @@ export const H2_EVENT_VERSION = "h2-event-v2";
  * berlalu TIDAK membuktikan tape window tercakup. Penilaian ulang event lama dicatat sbg
  * baris konfirmasi BERVERSI BARU (jurnal append-only — riwayat asli tak tertimpa).
  */
-export const CONFIRMATION_VERSION = "h2-conf-v2";
+export const CONFIRMATION_VERSION = "h2-conf-v3";
+// v3: DATA_COMPLETE = bukti akuisisi RPC (assessWindowCoverage), bukan inferensi "ada ≥1 swap";
+// hanya DATA_COMPLETE yang menopang penolakan definitif "pengikut < 2" / konfirmasi.
 /** Window deteksi real-time (registrasi v2): 90 dtk ≈ 2–3 tick observer (35s). */
 export const REALTIME_WINDOW_MS = 90_000;
 /** Window konfirmasi per-event: rapid-sell 60s (pengikut 30s berada di dalamnya). */
@@ -75,6 +78,8 @@ export interface H2Confirmation {
   dataComplete: boolean;
   verifiedTradesInWindow: number;
   poolSideInWindow: number;
+  // (S11.2) status cakupan EKSPLISIT dari rekaman akuisisi RPC — bukan inferensi:
+  coverage: { state: WindowCoverage; reason: string };
   confirmationVersion: string;
   reason: string;
 }
@@ -143,13 +148,15 @@ function windowTrades(trades: TradeEvent[], eventTs: number, endTs: number): Tra
  */
 export function evaluateConfirmation(
   event: H2Event, trades: TradeEvent[], asOf: number, poolTrades: TradeEvent[] = [],
+  coverage: { state: WindowCoverage; reason: string } = { state: "COVERAGE_UNKNOWN", reason: "penilaian cakupan tidak diberikan" },
 ): H2Confirmation {
   const t0 = event.eventTs, endTs = t0 + CONFIRM_WINDOW_MS;
   const flowComplete = asOf >= endTs;
   const w = windowTrades(trades, t0, endTs);
   const poolW = poolTrades.filter((t) => t.ts > t0 && t.ts <= endTs);
   const verifiedTradesInWindow = w.length, poolSideInWindow = poolW.length;
-  const dataComplete = flowComplete && (verifiedTradesInWindow > 0 || poolSideInWindow > 0);
+  // (S11.2) DATA_COMPLETE kini DARI BUKTI AKUISISI (param coverage) — bukan dari kehadiran swap.
+  const dataComplete = coverage.state === "DATA_COMPLETE";
   const buys = w.filter((t) => t.side === "buy"), sells = w.filter((t) => t.side === "sell");
   const netFlowSol = flowComplete
     ? Number((buys.reduce((s, x) => s + x.sol, 0) - sells.reduce((s, x) => s + x.sol, 0)).toFixed(6))
@@ -167,11 +174,12 @@ export function evaluateConfirmation(
   const smallSellsInWindow = sells.filter((s) => s.usd != null && s.usd >= DEFAULT_ABSORPTION.smallSellUsdMin && s.usd <= DEFAULT_ABSORPTION.smallSellUsdMax).length;
   const smallSellsUnknown = sells.filter((s) => s.usd == null).length;
   let state: H2Confirmation["state"], reason: string;
-  if (!flowComplete) { state = "PENDING"; reason = `WINDOW_ELAPSED=false (${Math.max(0, endTs - asOf)}ms tersisa)`; }
-  else if (!dataComplete) { state = "PENDING"; reason = `DATA_INCOMPLETE — window terlewat tapi tanpa swap terverifikasi (trader ${verifiedTradesInWindow}, pool ${poolSideInWindow}); "0 pengikut" tidak disimpulkan`; }
+  if (!flowComplete || coverage.state === "WINDOW_NOT_MATURED") { state = "PENDING"; reason = `WINDOW_NOT_MATURED (${Math.max(0, endTs - asOf)}ms tersisa)`; }
+  else if (coverage.state === "COVERAGE_UNKNOWN") { state = "UNKNOWN"; reason = `COVERAGE_UNKNOWN — ${coverage.reason}; tidak ada penilaian definitif`; }
+  else if (coverage.state === "DATA_INCOMPLETE") { state = "PENDING"; reason = `DATA_INCOMPLETE — ${coverage.reason}; "0 pengikut" tidak disimpulkan`; }
   else if (rapidState === "YES") { state = "REJECTED"; reason = `rapid-sell ≥70% (ratio ${rapids(rapidKnownUsd, event.usd)}) oleh wallet pembeli — bukan absorpsi`; }
   else if (distinctWallets == null) { state = "PENDING"; reason = "WINDOW_PENGIKUT_BELUM_LENGKAP"; }
-  else if (distinctWallets < 2) { state = "REJECTED"; reason = `pengikut ${distinctWallets}/2 wallet independen dlm 30s (tape window terverifikasi)`; }
+  else if (distinctWallets < 2) { state = "REJECTED"; reason = `pengikut ${distinctWallets}/2 wallet independen dlm 30s (window DATA_COMPLETE dari bukti akuisisi)`; }
   else if (netFlowSol == null || netFlowSol <= 0) { state = "REJECTED"; reason = `net-flow ${netFlowSol ?? "?"} SOL ≤ 0 dlm 60s (berbasis SOL — robust thd USD null)`; }
   else if (rapidState === "UNKNOWN") { state = "UNKNOWN"; reason = `rapid-sell tak terverifikasi (${unknownUsdSells} jual tanpa USD) — TIDAK BOLEH mengonfirmasi`; }
   else { state = "CONFIRMED"; reason = `pengikut ${distinctWallets} wallet, rapid-sell NO, net-flow +${netFlowSol} SOL, small-sell ${smallSellsInWindow}${smallSellsUnknown ? ` (+${smallSellsUnknown} tanpa USD)` : ""}`; }
@@ -180,7 +188,7 @@ export function evaluateConfirmation(
     followers: { windowMs: FOLLOW_WINDOW_MS, distinctWallets, complete: followersComplete },
     rapidSell: { ratio: flowComplete ? Number((rapidKnownUsd / (event.usd || 1)).toFixed(4)) : null, unknownUsdSells, state: rapidState },
     smallSellsInWindow, smallSellsUnknown, dataComplete, verifiedTradesInWindow, poolSideInWindow,
-    confirmationVersion: CONFIRMATION_VERSION, reason };
+    coverage, confirmationVersion: CONFIRMATION_VERSION, reason };
 }
 const rapids = (usd: number, ref: number): string => `${((usd / (ref || 1)) * 100).toFixed(0)}%`;
 

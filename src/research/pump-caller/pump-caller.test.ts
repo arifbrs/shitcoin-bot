@@ -19,6 +19,7 @@ import { decodePumpTx } from "./onchain-tape.js";
 import { readFileSync } from "node:fs";
 import { enrichOnchainUsd } from "./observer.js";
 import { buildH2Event, classifyDetection, evaluateConfirmation, eventPolicySet, priceAtTs, reduceH2Events, reduceH2Confirmations, reduceH2Decisions, H2_EVENT_VERSION, REALTIME_WINDOW_MS, type H2Event } from "./h2-events.js";
+import { assessWindowCoverage, type CoverageRow } from "./coverage.js";
 import type { CallerEvent, Candle, PolicyEvaluation, TradeEvent } from "./types.js";
 
 const MINT = "FixMint11111111111111111111111111111111111";
@@ -323,6 +324,13 @@ test("H2-P0 enrichOnchainUsd: usd = sol × solUsd; usd yang sudah ada tidak diti
 const h2Trade = (sig: string, side: "buy" | "sell", sol: number, ts: number, wallet: string, usd: number | null = sol * 100): TradeEvent =>
   ({ dedupeKey: `${sig}:${wallet}`, mint: MINT, wallet, side, sol, usd, ts });
 
+
+// (S11.2) helper: baris akuisisi yang menutup window [lo,hi] dgn satu halaman bersih
+const covRow = (pageTopTs: number, pageBottomTs: number, extra: Partial<CoverageRow> = {}): CoverageRow =>
+  ({ ts: pageTopTs + 1_000, encountered: 12, missingTx: 0, error: null, reconciled: true,
+    pageTopTs, pageBottomTs, ...extra });
+const covComplete = (t0: number, t1: number): CoverageRow[] => [covRow(t1 + 10_000, t0 - 10_000)];
+
 test("S11 klasifikasi deteksi v2: PRE_ADMISSION / BACKFILL / REALTIME (ambang beku tak disentuh)", () => {
   const admittedAt = 1_000_000;
   eq(classifyDetection(admittedAt - 1, admittedAt, admittedAt + 1_000).cls, "PRE_ADMISSION", "eventTs < admisi = pra-admisi (historis)");
@@ -353,67 +361,96 @@ test("S11 buildH2Event: non-large-buy → null; id kanonik stabil; firstObserved
 test("S11 konfirmasi: PENDING → CONFIRMED (pengikut ≥2, tanpa rapid-sell, net-flow > 0) → REJECTED paths", () => {
   const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
   const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigE", "buy", 6, t0, "BIG"), signature: "sigE" }, { admittedAt, now: t0 + 1_000 })!;
+  const COV = { state: "DATA_COMPLETE" as const, reason: "tes" };
   // window belum selesai (asOf < t0+60s) → PENDING, bukan kepastian palsu
-  eq(evaluateConfirmation(mkEvent(), [], t0 + 30_000).state, "PENDING", "window 60s belum selesai = PENDING");
+  eq(evaluateConfirmation(mkEvent(), [], t0 + 30_000, [], COV).state, "PENDING", "window 60s belum selesai = PENDING");
   // CONFIRMED: 2 pengikut dlm 30s, penjual kecil, net-flow positif
   const happy = [
     h2Trade("sF1", "buy", 0.5, t0 + 10_000, "f1"),
     h2Trade("sF2", "buy", 0.4, t0 + 20_000, "f2"),
     h2Trade("sS1", "sell", 0.3, t0 + 40_000, "f1"), // small-sell $30 di rentang beku
   ];
-  const c1 = evaluateConfirmation(mkEvent(), happy, t0 + 61_000);
+  const c1 = evaluateConfirmation(mkEvent(), happy, t0 + 61_000, [], COV);
   eq(c1.state, "CONFIRMED", `harap CONFIRMED, dapat ${c1.state}: ${c1.reason}`);
   eq(c1.flowWindow.startTs, t0, "window flow ber-timestamp eksplisit");
   eq(c1.smallSellsInWindow, 1, "small-sell $5–$100 terhitung dlm window");
   // REJECTED: wallet besar cepat jual ≥70% dlm 60s
   const rapid = [...happy, h2Trade("sR1", "sell", 5.5, t0 + 50_000, "BIG")];
-  eq(evaluateConfirmation(mkEvent(), rapid, t0 + 61_000).state, "REJECTED", "rapid-sell ≥70% menolak absorpsi");
+  eq(evaluateConfirmation(mkEvent(), rapid, t0 + 61_000, [], COV).state, "REJECTED", "rapid-sell ≥70% menolak absorpsi");
   // REJECTED: pengikut 1/2
-  eq(evaluateConfirmation(mkEvent(), [h2Trade("sF1", "buy", 0.5, t0 + 10_000, "f1")], t0 + 61_000).state, "REJECTED", "pengikut < 2 menolak");
+  eq(evaluateConfirmation(mkEvent(), [h2Trade("sF1", "buy", 0.5, t0 + 10_000, "f1")], t0 + 61_000, [], COV).state, "REJECTED", "pengikut < 2 menolak");
   // UNKNOWN: jual tanpa USD (SOL-nya kecil, net-flow tetap positif) → rapid-sell dilabel UNKNOWN
   const unknownSell = [...happy, h2Trade("sX", "sell", 0.1, t0 + 50_000, "BIG", null)];
-  const c2 = evaluateConfirmation(mkEvent(), unknownSell, t0 + 61_000);
+  const c2 = evaluateConfirmation(mkEvent(), unknownSell, t0 + 61_000, [], COV);
   eq(c2.rapidSell.state, "UNKNOWN", "jual tanpa USD = UNKNOWN (bukan kepastian palsu)");
   eq(c2.state, "UNKNOWN", "S11.1: rapid-sell UNKNOWN TIDAK mengonfirmasi (bukan CONFIRMED)");
   // jual besar (SOL besar) tetap MENOLAK walau USD-nya null — net-flow SOL adalah bukti kuat
   const bigUnknown = [...happy, h2Trade("sY", "sell", 5.5, t0 + 50_000, "BIG", null)];
-  eq(evaluateConfirmation(mkEvent(), bigUnknown, t0 + 61_000).state, "REJECTED", "net-flow SOL ≤ 0 menolak (USD null tak menyembunyikan aliran besar)");
+  eq(evaluateConfirmation(mkEvent(), bigUnknown, t0 + 61_000, [], COV).state, "REJECTED", "net-flow SOL ≤ 0 menolak (USD null tak menyembunyikan aliran besar)");
 });
 
-test("S11.1 DATA_COMPLETE ≠ WINDOW_ELAPSED: window lewat tanpa bukti swap → PENDING (bukan REJECTED 0/2); bukti pool-side = cakupan", () => {
+test("S11.1→S11.2: tanpa rekaman akuisisi → COVERAGE_UNKNOWN (bukan REJECTED); bukti pool-side ≠ bukti cakupan", () => {
   const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
   const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigG", "buy", 6, t0, "BIG"), signature: "sigG" }, { admittedAt, now: t0 + 1_000 })!;
-  // window 60s SUDAH terlewat, tape trader KOSONG dan tanpa bukti pool → PENDING DATA_INCOMPLETE
-  const c1 = evaluateConfirmation(mkEvent(), [], t0 + 61_000);
-  eq(c1.flowWindow.complete, true, "WINDOW_ELAPSED = true");
-  eq(c1.dataComplete, false, "DATA_COMPLETE = false (tanpa bukti swap)");
-  eq(c1.state, "PENDING", "DATA_INCOMPLETE → PENDING, bukan REJECTED '0 pengikut'");
-  eq(c1.followers.distinctWallets, null, "pengikut TIDAK dihitung 0 tanpa cakupan");
-  // bukti pool-side di window (tiap swap merekam sisi pool) → dataComplete → REJECTED sah
-  const c2 = evaluateConfirmation(mkEvent(), [], t0 + 61_000, [h2Trade("sP", "sell", 6, t0 + 5_000, "VAULT")]);
-  eq(c2.dataComplete, true, "bukti pool-side menetapkan cakupan window");
-  eq(c2.state, "REJECTED", "dengan cakupan: 0 pengikut = penolakan sah");
+  // window lewat, TANPA rekaman akuisisi → COVERAGE_UNKNOWN → UNKNOWN (bukan REJECTED 0/2)
+  const a = assessWindowCoverage([], t0, t0 + 60_000, t0 + 61_000, { hasLedger: false });
+  eq(a.state, "COVERAGE_UNKNOWN", "tanpa rekaman = COVERAGE_UNKNOWN");
+  eq(evaluateConfirmation(mkEvent(), [], t0 + 61_000, [], a).state, "UNKNOWN", "tanpa bukti cakupan → tidak ada penilaian definitif");
+  // kehadiran swap pool-side di tape TIDAK membuktikan window tercakup (koreksi S11.2):
+  const b = evaluateConfirmation(mkEvent(), [], t0 + 61_000, [h2Trade("sP", "sell", 6, t0 + 5_000, "VAULT")]);
+  eq(b.state, "UNKNOWN", "pool-side tanpa rekaman akuisisi → tetap UNKNOWN");
+  // dengan rekaman akuisisi yang MENUTUP window + 0 pengikut → REJECTED definitif sah
+  const c = assessWindowCoverage(covComplete(t0, t0 + 60_000), t0, t0 + 60_000, t0 + 61_000);
+  eq(c.state, "DATA_COMPLETE", "rekaman akuisisi menutup window");
+  eq(evaluateConfirmation(mkEvent(), [], t0 + 61_000, [], c).state, "REJECTED", "window DATA_COMPLETE + 0 pengikut = REJECTED definitif");
 });
 
-test("S11 paper per-event: 1s tak tersedia → UNAVAILABLE_1S (bukan gagal-trigger); 4×1m OK; harga keputusan no-look-ahead", () => {
-  const t0 = 10_000_000;
-  const c1m = (i: number, close = 2): Candle => ({ ts: t0 + i * 60_000, open: 2, high: 2.2, low: 1.9, close, volumeSol: 1 });
-  const c1s = (i: number, close = 2): Candle => ({ ts: t0 + i * 1_000, open: 2, high: 2.1, low: 1.95, close, volumeSol: 1 });
-  const asOf = t0 + 5 * 60_000;
-  // tanpa 1s sama sekali → 1s policies UNAVAILABLE_1S (sumber tak menyediakan), 1m OK
-  const p1 = eventPolicySet(t0, [], [c1m(0), c1m(1), c1m(2), c1m(3)], asOf);
-  eq(p1.CONFIRM_AFTER_4X_1S_CANDLES.availability, "UNAVAILABLE_1S", "1s tak tersedia = UNAVAILABLE, bukan POLICY_TIDAK_TRIGGER");
-  eq(p1.IMMEDIATE_OBSERVED_ENTRY.availability, "UNAVAILABLE_1S", "immediate juga butuh 1s");
-  eq(p1.CONFIRM_AFTER_4X_1M_CANDLES.availability, "OK", "1m cukup");
-  eq(p1.CONFIRM_AFTER_4X_1M_CANDLES.evaluation.triggered, true, "4×1m terpenuhi");
-  // 1s ada sebagian (<4) → PENDING_CANDLES
-  const p2 = eventPolicySet(t0, [c1s(0), c1s(1)], [c1m(0), c1m(1), c1m(2), c1m(3)], asOf);
-  eq(p2.CONFIRM_AFTER_4X_1S_CANDLES.availability, "PENDING_CANDLES", "candle 1s 2/4 = PENDING");
-  // priceAtTs: hanya candle SELESAI ≤ ts (no look-ahead)
-  const store1s = [c1s(0), c1s(1), c1s(2)];
-  eq(priceAtTs(t0 + 2_500, store1s, []), c1s(1)!.close, "candle in-progress (t+2s) TIDAK dipakai");
-  eq(priceAtTs(t0 + 999, store1s, [c1m(-1)]), c1m(-1)!.close, "tanpa 1s selesai → fallback 1m SELESAI sebelum ts");
-  eq(priceAtTs(t0 - 1, [], []), null, "tanpa candle selesai = null (bukan dikarang)");
+test("S11.2 SKENARIO WAJIB: 1 swap teramati + gap akuisisi + 2 follower di bagian hilang → DATA_INCOMPLETE, bukan REJECTED 0/2", () => {
+  const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
+  const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigH", "buy", 6, t0, "BIG"), signature: "sigH" }, { admittedAt, now: t0 + 1_000 })!;
+  // rekaman: pass 0 mengambil [t0-5s, t0+10s] (large-buy teramati); pass 1 backlog — halaman
+  // penuh [t0+45s, t0+55s], chunk (t0+10s, t0+45s) TERLEWAT (drain tak menutup).
+  const rows: CoverageRow[] = [
+    covRow(t0 + 10_000, t0 - 5_000, { ts: t0 + 11_000, prevHeadTs: null, backlogPossible: false }),
+    { ts: t0 + 56_000, encountered: 20, missingTx: 0, error: null, backlogPossible: true, drain: { pagesUsed: 2, closed: false },
+      pageTopTs: t0 + 61_000, pageBottomTs: t0 + 45_000, prevHeadTs: t0 + 10_000 },
+  ];
+  const cov = assessWindowCoverage(rows, t0, t0 + 60_000, t0 + 61_000);
+  eq(cov.state, "DATA_INCOMPLETE", "gap (t0+10s, t0+45s) memotong window");
+  // dua follower "sebenarnya" terjadi di bagian hilang — TIDAK ada di tape kita:
+  // → HARUS DATA_INCOMPLETE/PENDING, BUKAN REJECTED "0/2 pengikut"
+  const conf = evaluateConfirmation(mkEvent(), [h2Trade("sB", "buy", 6, t0, "BIG")], t0 + 61_000, [], cov);
+  eq(conf.state, "PENDING", "DATA_INCOMPLETE → PENDING (bukan REJECTED 0/2)");
+  eq(conf.followers.distinctWallets, null, "pengikut tidak dihitung 0 tanpa cakupan");
+});
+
+test("S11.2 window rekonsiliasi-sungguhan dgn 0 pengikut → REJECTED definitif", () => {
+  const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
+  const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigI", "buy", 6, t0, "BIG"), signature: "sigI" }, { admittedAt, now: t0 + 1_000 })!;
+  const cov = assessWindowCoverage(covComplete(t0, t0 + 60_000), t0, t0 + 60_000, t0 + 61_000);
+  eq(cov.state, "DATA_COMPLETE", "");
+  eq(evaluateConfirmation(mkEvent(), [h2Trade("sB", "buy", 6, t0, "BIG")], t0 + 61_000, [], cov).state, "REJECTED", "0 pengikut pada window LENGKAP = penolakan definitif sah");
+});
+
+test("S11.2 window tak-lengkap menjadi LENGKAP setelah pemulihan pagination (drain menutup gap)", () => {
+  const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
+  const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigJ", "buy", 6, t0, "BIG"), signature: "sigJ" }, { admittedAt, now: t0 + 1_000 })!;
+  const gapRows: CoverageRow[] = [
+    covRow(t0 + 10_000, t0 - 5_000, { ts: t0 + 11_000, prevHeadTs: null, backlogPossible: false }),
+    { ts: t0 + 56_000, encountered: 20, missingTx: 0, error: null, backlogPossible: true, drain: { pagesUsed: 2, closed: false },
+      pageTopTs: t0 + 61_000, pageBottomTs: t0 + 45_000, prevHeadTs: t0 + 10_000 },
+  ];
+  eq(assessWindowCoverage(gapRows, t0, t0 + 60_000, t0 + 61_000).state, "DATA_INCOMPLETE", "awal: gap terbuka");
+  // pass recovery: drain menutup chunk (t0+10s, t0+45s) — follower kini ADA di tape:
+  const recoveredRows: CoverageRow[] = [...gapRows,
+    { ts: t0 + 90_000, encountered: 10, missingTx: 0, error: null, backlogPossible: false, drain: { pagesUsed: 3, closed: true },
+      pageTopTs: t0 + 45_000, pageBottomTs: t0 + 10_000, prevHeadTs: t0 + 55_000 }];
+  const cov2 = assessWindowCoverage(recoveredRows, t0, t0 + 60_000, t0 + 91_000);
+  eq(cov2.state, "DATA_COMPLETE", "gap tertutup drain → window lengkap");
+  const trades = [h2Trade("sB", "buy", 6, t0, "BIG"),
+    h2Trade("sF1", "buy", 0.5, t0 + 20_000, "f1"), h2Trade("sF2", "buy", 0.4, t0 + 25_000, "f2")];
+  const conf = evaluateConfirmation(mkEvent(), trades, t0 + 91_000, [], cov2);
+  eq(conf.state, "CONFIRMED", "pascapemulihan: 2 pengikut teramati → CONFIRMED (bukti penuh)");
 });
 
 test("S11 jurnal: h2-event dedupe lintas restart via read(); h2-decision idempoten; reduksi konfirmasi last-wins", () => {

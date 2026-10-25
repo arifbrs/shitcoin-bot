@@ -10,7 +10,8 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } fr
 import { join } from "node:path";
 import { listenNewTokens } from "../../discovery/pumpportal.js";
 import { swapApiTrades, swapApiCandles, gmgnKlineCandles, gmgnPartialTape } from "./pumpfun-api.js";
-import { onchainTapePass, bondingCurvePda, type TapePassResultWithCursor } from "./onchain-tape.js";
+import { onchainTapePass, bondingCurvePda, bondingCurveClosed, recoverSignature, type TapePassResultWithCursor } from "./onchain-tape.js";
+import { assessWindowCoverage, type CoverageRow, type WindowCoverage } from "./coverage.js";
 import { normalizeTradeTs } from "./timestamps.js";
 import { admit, loadWatchlist, saveWatchlist, policyFromEnv, watchDir, type WatchEntry } from "./watchlist.js";
 import { absorptionView } from "./absorption.js";
@@ -21,7 +22,7 @@ import { trackCallerPosition } from "./position-tracker.js";
 import { TRIGGERS, type HypothesisId } from "./experiments.js";
 import { append, read, decisionIdFor, reduceOutcomes, markOutcome } from "./journal.js";
 import { resolveOutcome, paperForPolicy, completedCandles } from "./results.js";
-import { buildH2Event, evaluateConfirmation, eventPolicySet, priceAtTs, reduceH2Events, reduceH2Confirmations, reduceH2Decisions, H2_EVENT_VERSION, type H2Event } from "./h2-events.js";
+import { buildH2Event, evaluateConfirmation, eventPolicySet, priceAtTs, reduceH2Events, reduceH2Confirmations, reduceH2Decisions, H2_EVENT_VERSION, CONFIRM_WINDOW_MS, type H2Event } from "./h2-events.js";
 import { OUTCOME_HORIZONS_MIN, type Candle, type TradeEvent, type EntryPolicy, type PolicyEvaluation } from "./types.js";
 
 const TICK_MS = Math.max(15_000, Number(process.env.PUMP_OBSERVE_TICK_MS ?? 30_000));
@@ -40,23 +41,31 @@ const gmgnCooldown = new Map<string, number>();
 const sigCursors = new Map<string, string | null>(); // (S9-P1) kursor signature per mint
 const TAPE_PASS_LIMIT = 12;
 
-// ── (S11.1) Kursor signature TERSISTEN lintas restart — restart tanpa kursor = refetch ≤12
-// sig terakhir (duplikat terdedupe, tapi "0 missing" jadi tak bisa dibedakan dari refetch).
+// ── (S11.1/S11.2) Kursor signature TERSISTEN lintas restart + posisi drain tak selesai.
+// Format: { mint: { sig, ts } } (ts = blockTime head — bukti akuisisi utk penilaian window).
+interface HeadCursor { sig: string; ts: number | null }
 const cursorsFile = (): string => join(watchDir(), "sig-cursors.json");
+const drainPos = new Map<string, string>(); // (S11.2) posisi pagination belum selesai
+const pendingHoles = new Map<string, string[]>(); // (S11.2) lubang decode menunggu pemulihan
 let cursorsLoaded = false;
 function loadSigCursors(): void {
   if (cursorsLoaded) return;
   cursorsLoaded = true;
   try {
-    const raw = JSON.parse(readFileSync(cursorsFile(), "utf8")) as Record<string, string>;
-    for (const [mint, sig] of Object.entries(raw)) if (!sigCursors.has(mint)) sigCursors.set(mint, sig);
+    const raw = JSON.parse(readFileSync(cursorsFile(), "utf8")) as Record<string, string | HeadCursor>;
+    for (const [mint, v] of Object.entries(raw)) {
+      const cur: HeadCursor = typeof v === "string" ? { sig: v, ts: null } : { sig: v.sig, ts: v.ts ?? null };
+      if (!sigCursors.has(mint)) sigCursors.set(mint, cur.sig);
+      if (cur.ts != null && !cursorTs.has(mint)) cursorTs.set(mint, cur.ts);
+    }
   } catch { /* belum ada / rusak → mulai kosong */ }
 }
 function saveSigCursors(): void {
-  const out: Record<string, string> = {};
-  for (const [mint, sig] of sigCursors) if (sig) out[mint] = sig;
+  const out: Record<string, HeadCursor> = {};
+  for (const [mint, sig] of sigCursors) if (sig) out[mint] = { sig, ts: cursorTs.get(mint) ?? null };
   try { mkdirSync(watchDir(), { recursive: true }); writeFileSync(cursorsFile(), JSON.stringify(out)); } catch { /* best-effort */ }
 }
+const cursorTs = new Map<string, number | null>();
 function gmgnAllowed(mint: string, kind: string): boolean {
   const k = `${mint}:${kind}`; const last = gmgnCooldown.get(k) ?? 0;
   if (Date.now() - last < 60_000) return false;
@@ -164,13 +173,37 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
       // (S9-P0) UTAMA: tape on-chain TERVALIDASI (kursor inkremental + coverage + state per trade).
       if (entry.bondingCurveKey && gmgnAllowed(mint, "onchain")) {
         loadSigCursors();
-        const pass: TapePassResultWithCursor | null = await onchainTapePass(mint, entry.bondingCurveKey, sigCursors.get(mint) ?? null, TAPE_PASS_LIMIT);
+        const prevHeadSig = sigCursors.get(mint) ?? null;
+        const prevHeadTs = cursorTs.get(mint) ?? null;
+        const pass: TapePassResultWithCursor | null = await onchainTapePass(mint, entry.bondingCurveKey, prevHeadSig, TAPE_PASS_LIMIT, drainPos.get(mint) ?? null);
         if (pass) {
-          sigCursors.set(mint, pass.topSig ?? sigCursors.get(mint) ?? null);
-          saveSigCursors();
-          // (S11.1) backlogPossible: pass mengembalikan sebanyak limit → BISA JADI ada tx lagi
-          // yang belum terambil; "missing=0" bukan bukti cakupan penuh.
-          append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, limit: TAPE_PASS_LIMIT, backlogPossible: pass.coverage.encountered >= TAPE_PASS_LIMIT, source: "solana-rpc" });
+          if (pass.topSig) { sigCursors.set(mint, pass.topSig); cursorTs.set(mint, pass.pageTopTs); saveSigCursors(); }
+          // (S11.2) posisi drain belum selesai dipertahankan lintas pass/restart (before=lastBottom).
+          if (pass.drain && !pass.drain.closed && pass.drain.lastBottomSig) drainPos.set(mint, pass.drain.lastBottomSig);
+          else if (pass.drain?.closed) drainPos.delete(mint);
+          // (S11.2) REKAM FAKTA AKUISISI — dasar penilaian cakupan berbasis bukti.
+          append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, limit: TAPE_PASS_LIMIT,
+            backlogPossible: pass.backlog,
+            reconciled: !pass.backlog && pass.coverage.error == null,
+            prevHeadSig, prevHeadTs,
+            pageTopSig: pass.pageTopSig, pageTopTs: pass.pageTopTs, pageBottomSig: pass.pageBottomSig, pageBottomTs: pass.pageBottomTs,
+            holes: pass.holes, drain: pass.drain, source: "solana-rpc" });
+          // (S11.2) PULIH lubang decode — berbatas 3 tx/pass (kuota riset rendah); baris
+          // recovery mencatat bukti pemulihan utk penilai cakupan.
+          const queued = [...(pendingHoles.get(mint) ?? []), ...pass.holes].slice(-20);
+          if (queued.length) {
+            const recovered: string[] = [];
+            for (const sig of queued.slice(0, 3)) {
+              const rec = await recoverSignature(mint, sig);
+              if (rec) {
+                recovered.push(sig);
+                if (solUsd != null) for (const t of rec.trades) t.usd = t.sol * solUsd;
+                for (const t of rec.trades) append({ type: "trade", ...t, source: "solana-rpc-recovery", observedAt: Date.now() });
+              }
+            }
+            pendingHoles.set(mint, queued.filter((x) => !recovered.includes(x)));
+            if (recovered.length) append({ type: "tape-coverage", ts: Date.now(), mint, encountered: 0, missingTx: 0, error: null, recovered, source: "solana-rpc-recovery" });
+          }
           // (H2-P0) USD utk ambang beku $500/$5–$100: usd = sol × SOL/USD spot (Jupiter, cache 60s).
           // Derivasi TERLABELI via usdQuality di trade-batch; usd tetap null bila solUsd null →
           // absorptionView tak menilai (bukan menebak). Sisi pool ikut terisi (hanya bukti arah).
@@ -334,10 +367,31 @@ async function h2EvaluationPass(now: number, solUsd: number | null, wl: WatchEnt
     const arr = tradesByMint.get(t.mint);
     if (arr) arr.push(t); else tradesByMint.set(t.mint, [t]);
   }
+  // (S11.2) rekaman akuisisi per mint (baris tape-coverage) → penilaian cakupan window berbasis bukti.
+  const covRowsByMint = new Map<string, CoverageRow[]>();
+  for (const r of j.rows) {
+    if (r.type !== "tape-coverage") continue;
+    const row: CoverageRow = { ts: Number(r.ts), encountered: Number(r.encountered ?? 0), missingTx: Number(r.missingTx ?? 0), error: (r.error as string | null) ?? null,
+      reconciled: r.reconciled as boolean | undefined, backlogPossible: r.backlogPossible as boolean | undefined,
+      pageTopTs: (r.pageTopTs as number | null) ?? null, pageBottomTs: (r.pageBottomTs as number | null) ?? null,
+      prevHeadTs: (r.prevHeadTs as number | null) ?? null, holes: (r.holes as string[] | undefined) ?? undefined,
+      drain: (r.drain as CoverageRow["drain"]) ?? null, recovered: (r.recovered as string[] | undefined) ?? undefined };
+    const arr = covRowsByMint.get(String(r.mint));
+    if (arr) arr.push(row); else covRowsByMint.set(String(r.mint), [row]);
+  }
+  const migrationChecked = new Map<string, boolean>();
+  const migratedOf = async (mint: string): Promise<boolean> => {
+    if (migrationChecked.has(mint)) return migrationChecked.get(mint)!;
+    const closed = await bondingCurveClosed(mint, bondingCurvePda(mint)).catch(() => false);
+    migrationChecked.set(mint, closed);
+    return closed;
+  };
   for (const ev of events.values()) {
-    const conf = evaluateConfirmation(ev, tradesByMint.get(ev.mint) ?? [], now, poolTradesByMint.get(ev.mint) ?? []);
+    const cov = assessWindowCoverage(covRowsByMint.get(ev.mint) ?? [], ev.eventTs, ev.eventTs + CONFIRM_WINDOW_MS, now,
+      { migrated: await migratedOf(ev.mint), hasLedger: (covRowsByMint.get(ev.mint) ?? []).length > 0 });
+    const conf = evaluateConfirmation(ev, tradesByMint.get(ev.mint) ?? [], now, poolTradesByMint.get(ev.mint) ?? [], cov);
     const prev = confs.get(ev.h2EventId);
-    if (!prev || prev.state !== conf.state || prev.confirmationVersion !== conf.confirmationVersion) append({ type: "h2-confirmation", ts: now, ...conf });
+    if (!prev || prev.state !== conf.state || prev.confirmationVersion !== conf.confirmationVersion || prev.coverage?.state !== conf.coverage.state) append({ type: "h2-confirmation", ts: now, ...conf });
     if (conf.state === "PENDING") { summary.h2Pending++; continue; }
     if (conf.state === "UNKNOWN") { summary.h2Pending++; continue; } // (S11.1) UNKNOWN ≠ konfirmasi; bukan keputusan
     if (conf.state === "CONFIRMED") summary.h2Confirmed++; else summary.h2Rejected++;
