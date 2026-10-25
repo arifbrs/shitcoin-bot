@@ -561,3 +561,20 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
   dikecualikan; tier: harga-pasar vs paper-candle vs eksekusi-tervalidasi-quote dipisah.
 - RUN NYATA post-fix: 6 keputusan, 4 OBSERVED tervalidasi (contoh 1m −16,73%, attempts=2 via
   reduksi), 24 PENDING. 218 tes / 33 berkas ✓.
+
+## S9 SWAP TERVERIFIKASI + OUTCOME MATANG (2026-10-25) — commit c3e047e, Actions GREEN
+- P0 dekoder: SOL notional kini dari akun SOL owner (accountKeys→owner match) — BUKAN idx
+  token-account; meta.err diperiksa; evidence instruksi transfer via program Token + Token-2022
+  (2 varian: pump-native TokenzQdBNbLqP5… + standar) + parsed.info pubkey; CloseAccount=exit
+  penuh; decimals mint on-chain; Pump tx v1 (maxSupported=1); tanpa bukti → UNVERIFIED_BALANCE_DELTA.
+- P0 outcome: anti-premature (asOf≥target wajib; toleransi 1 interval; candle close-time≥target;
+  tes 24h/48h candle-jauh-sebelum-target DITOLAK); gate keputusan hanya candle-selesai;
+  backfill harga keputusan no-look-ahead; laporan agregasi reduceOutcomes.
+- P1 biaya $3/$5: persen 5pp + tetap 0,001 SOL (UNKNOWN bila SOL/USD null) — gross vs net terpisah.
+- P1 coverage nyata: 90 sig ditemui/90 fetched; 62 swap TERVERIFIKASI (124 sisi wallet);
+  36 tx gagal (disaring); 8 UNVERIFIED; 0 missing. Kursor inkremental + tape-coverage per pass.
+- DELIVERABLE: outcome 1m MATANG nyata non-fixture: harga keputusan 3,7511e-6 → target
+  2,8358e-6 = −24,40% (attempts 2 via reduksi). Contoh swap tervalidasi: sig 42faZyKk…
+  slot 461215465 BUY+SELL 21.714.631.489.466 raw / 0,70 SOL; asQSi3t… SELL 0,995 SOL.
+- H2 kini punya tape tervalidasi — evaluasi menunggu sampel prospektif lebih besar.
+- 219 tes / 33 berkas ✓ · gate ✓ · Actions success c3e047e. PROFITABILITY NOT YET VALIDATED.
