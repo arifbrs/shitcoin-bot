@@ -1,0 +1,133 @@
+/** LANE PUMP-CALLER — tes: tracker, absorpsi, wick/policy, deteksi dini, analis, eksperimen, jurnal. */
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { test, eq, approx, assert } from "../../testing/harness.js";
+import { trackCallerPosition } from "./position-tracker.js";
+import { absorptionView } from "./absorption.js";
+import { wickContext, evaluatePolicies, representative } from "./wicks.js";
+import { latencyView, moveAlreadyOver } from "./early-detection.js";
+import { analyze, PUMP_PAPER_COST_V1 } from "./analyst.js";
+import { TRIGGERS, compare } from "./experiments.js";
+import { append, read, markOutcome, decisionIdFor } from "./journal.js";
+import { FIX_TRADES, FIX_CANDLES_1S, FIX_USER_POSITIONS, FIX_USER_TRADES } from "./fixtures.js";
+import type { CallerEvent } from "./types.js";
+
+const MINT = "FixMint11111111111111111111111111111111111";
+const ev = (dedupeKey: string, kind: "buy" | "sell", sol: number, ts: number, balanceAfter?: number): CallerEvent =>
+  ({ dedupeKey, mint: MINT, callerId: "alpha", kind, sol, tokenAmount: null, ts, balanceAfter });
+
+test("PC tracker: HOLDING → PARTIAL_SELL → EXITED berdasar BUKTI; dedupe; UNKNOWN tanpa bukti", () => {
+  const holding = trackCallerPosition("alpha", MINT, [ev("s1", "buy", 0.5, 1000)]);
+  eq(holding.state, "HOLDING", "beli teramati, tanpa jual");
+  const partial = trackCallerPosition("alpha", MINT, [ev("s1", "buy", 0.5, 1000), ev("s2", "sell", 0.2, 2000, 12_000_000)]);
+  eq(partial.state, "PARTIAL_SELL", "jual sebagian + sisa saldo teramati");
+  eq(partial.observedTokenBalance, 12_000_000, "saldo teramati (bukan estimasi eksposur)");
+  const exited = trackCallerPosition("alpha", MINT, [ev("s1", "buy", 0.5, 1000), ev("s2", "sell", 0.2, 2000, 0)]);
+  eq(exited.state, "EXITED", "saldo 0 teramati");
+  const dup = trackCallerPosition("alpha", MINT, [ev("s1", "buy", 0.5, 1000), ev("s1", "buy", 0.5, 1000)]);
+  eq(dup.eventCount, 1, "dedupeKey ganda dihitung sekali");
+  eq(dup.observedBuysSol, 0.5, "beli tidak terhitung dua");
+  const unknown = trackCallerPosition("alpha", MINT, []);
+  eq(unknown.state, "UNKNOWN", "tanpa event = UNKNOWN, bukan dikarang");
+  // provider-position menang utk PnL est (teramati vs rekonstruksi dibedakan):
+  const withProvider = trackCallerPosition("alpha", MINT, [ev("s1", "buy", 0.5, 1000)], FIX_USER_POSITIONS[0]);
+  eq(withProvider.evidence, "provider-position", "posisi provider diprioritaskan");
+  eq(withProvider.unrealizedPnlEstimateSol, -55, "unrealized dari provider");
+  eq(withProvider.state, "HOLDING", "saldo provider > 0");
+  void FIX_USER_TRADES;
+});
+
+test("PC absorpsi: large-buy $500/$1000 + small-sell $5-100, netflow, followers, wash, rapid-sell", () => {
+  const v = absorptionView(FIX_TRADES);
+  eq(v.largeBuys.length, 2, "$600 dan $1000 lolos ambang");
+  eq(v.smallSells, 1, "satu small-sell ($10; $4 di bawah $5)");
+  approx(v.netFlowSol, 3 + 5 + 0.5 - 0.5 - 0.02 - 0.05, 1e-9, "net flow SOL");
+  eq(v.uniqueBuyers, 3, "w1,w3,w4");
+  eq(v.followersFollow, true, "w3+w4 menyusul w1 dalam 30s... w4 beli di 5000 > 1000+30s? — cek");
+  eq(v.initialBuyerRapidSold, false, "pembeli awal tidak cepat jual");
+  assert(v.washSuspicion.bothSidesPct > 0, "w4 dua sisi terdeteksi");
+});
+
+test("PC wick/policy: konteks wick; 4 kebijakan pada event identik; candle tak-representatif ditolak", () => {
+  const c = { ts: 1, open: 10, high: 12, low: 9.5, close: 11.5, volumeSol: 3 };
+  const w = wickContext(c, 9.4);
+  eq(w.higherLow, true, "low > low sebelumnya");
+  approx(w.upperWickPct, (12 - 11.5) / 2.5 * 100, 0.01, "upper wick 20%");
+  eq(w.buyerFollowThrough, true, "close>open + volume>0");
+  assert(!representative({ ...c, volumeSol: 0 }, "1s"), "volume 0 = tidak representatif");
+  assert(!representative(c, "1s", c.ts + 10_000), "gap >2× interval = ditolak");
+  const stimTs = FIX_CANDLES_1S[3]!.ts;
+  const evals = evaluatePolicies(stimTs, FIX_CANDLES_1S, "1s");
+  eq(evals.IMMEDIATE_OBSERVED_ENTRY.triggered, true, "langsung: candle pertama representatif");
+  const confirm = evals.CONFIRM_AFTER_4X_1S_CANDLES!;
+  eq(confirm.triggered, true, "4 candle tersedia");
+  eq(confirm.requiredCandles, 4, "tepat 4");
+  const sparse = evaluatePolicies(stimTs, FIX_CANDLES_1S.slice(3, 5), "1s"); // tepat 2 candle pasca-stimulus
+  eq(sparse.CONFIRM_AFTER_4X_1S_CANDLES!.triggered, false, "candle kurang → tidak trigger");
+  eq(sparse.CONFIRM_AFTER_4X_1S_CANDLES!.rejectReason, "CANDLE_KURANG (2/4)", "alasan eksplisit (2 candle pasca-stimulus)")
+});
+
+test("PC deteksi dini: latensi deteksi vs callout vs eksekusi terpisah; anomali & sudah-berlalu", () => {
+  const v = latencyView({ mint: MINT, createdAt: 1000, callerBuyTs: 2000, calloutPublishedTs: 5000, firstObservedByBot: 3000, firstExecutableQuoteTs: 3500, callerFollowersAtBuy: 1200 });
+  eq(v.detectionLagMs, 1000, "deteksi 1s pasca beli caller");
+  eq(v.calloutLagMs, 3000, "callout 3s pasca beli");
+  eq(v.executableLagMs, 500, "quote 0,5s pasca observasi");
+  const anomali = latencyView({ mint: MINT, createdAt: 5000, callerBuyTs: 2000, calloutPublishedTs: null, firstObservedByBot: 3000, firstExecutableQuoteTs: null, callerFollowersAtBuy: null });
+  assert(anomali.note.includes("ANOMALI"), "beli sebelum create terdeteksi");
+  const over = moveAlreadyOver({ mint: MINT, createdAt: 1000, callerBuyTs: 2000, calloutPublishedTs: null, firstObservedByBot: 60_000, firstExecutableQuoteTs: null, callerFollowersAtBuy: null }, 100, 160);
+  eq(over.over, true, "harga +60% sebelum teramati = peluang sudah berlalu");
+});
+
+test("PC analis: SKIP/WATCH/PAPER_ENTRY terstruktur; biaya notional-kecil dieksplisitkan; tanpa aturan absolut", () => {
+  const skip = analyze({ mint: MINT, ts: 1 });
+  eq(skip.decision, "SKIP", "tanpa bukti = SKIP");
+  assert(skip.missingData.length >= 3, "data hilang dicatat");
+  const rich = analyze({
+    mint: MINT, ts: 2,
+    caller: { callerId: "a", mint: MINT, state: "HOLDING", observedBuysSol: 1, observedSellsSol: 0, observedTokenBalance: 1000, lastEventTs: 1, eventCount: 2, realizedPnlEstimateSol: null, unrealizedPnlEstimateSol: -0.4, evidence: "wallet-activity", note: "" },
+    absorption: { largeBuys: [{ usd: 800, sol: 4, ts: 1, wallet: "w1" }], smallSells: 3, smallSellUsdTotal: 30, totalBuySol: 9, totalSellSol: 1, netFlowSol: 8, uniqueBuyers: 5, repeatBuyers: 2, largeSellerExits: 0, washSuspicion: { bothSidesPct: 5, note: "" }, priceResponseAfterLargeBuy: { candleWindow: "1s", movePct: 3 }, followersFollow: true, initialBuyerRapidSold: false },
+    wick: { candle: { ts: 1, open: 1, high: 1.2, low: 0.99, close: 1.15, volumeSol: 4 }, upperWickPct: 10, lowerWickPct: 5, closeLocation: 0.8, retracementFromHighPct: 4, higherLow: true, buyerFollowThrough: true, volumeSol: 4 },
+    early: { detectionLagMs: 2_000, calloutLagMs: 1_000, executableLagMs: 100, note: "lengkap" },
+  });
+  eq(rich.decision, "PAPER_ENTRY", "bukti kuat → PAPER_ENTRY");
+  eq(rich.paperNotionalUsd, 3, "notional riset $3");
+  assert(rich.executionCostWarning && rich.executionCostWarning.includes("5pp"), `peringatan biaya 5pp (${rich.executionCostWarning})`);
+  assert(!JSON.stringify(rich).toLowerCase().includes("must never"), "tanpa aturan absolut");
+});
+
+test("PC eksperimen: trigger pre-registrasi + perbandingan bootstrap vs baseline", () => {
+  const h1 = TRIGGERS.find((t) => t.id === "UNDERWATER_CALLER_REBOUND")!;
+  const fires = h1.trigger({ caller: { callerId: "a", mint: MINT, state: "HOLDING", observedBuysSol: 1, observedSellsSol: 0, observedTokenBalance: 1, lastEventTs: 1, eventCount: 1, realizedPnlEstimateSol: null, unrealizedPnlEstimateSol: -0.5, evidence: "provider-position", note: "" } });
+  eq(fires.fires, true, "underwater + holding = trigger");
+  const noFire = h1.trigger({ caller: null });
+  eq(noFire.fires, false, "tanpa caller = tidak trigger");
+  const trig = Array.from({ length: 8 }, (_, i) => ({ mint: `m${i}`, changePct: 2 + (i % 3) }));
+  const base = Array.from({ length: 8 }, (_, i) => ({ mint: `b${i}`, changePct: -1 - (i % 2) }));
+  const cmp = compare(h1.id, trig, base);
+  eq(cmp.status, "DESCRIPTIVE", "n≥5 per sisi");
+  assert(cmp.diffPp > 0 && cmp.ci95Diff && cmp.ci95Diff[0] > 0, "trigger > baseline dgn CI di luar 0 (data sintetis)");
+  const ins = compare(h1.id, trig.slice(0, 2), base);
+  eq(ins.status, "INSUFFICIENT", "n<5 = INSUFFICIENT");
+});
+
+test("PC jurnal: append/read dedupe; outcome-mark idempoten lintas restart", () => {
+  const prev = process.env.PUMP_CALLER_DIR;
+  process.env.PUMP_CALLER_DIR = mkdtempSync(join(tmpdir(), "pc-journal-"));
+  try {
+    append({ type: "token-observed", ts: 1, mint: MINT, source: "fixture" });
+    append({ type: "token-observed", ts: 2, mint: MINT, source: "fixture" }); // duplikat kunci sama
+    const j1 = read();
+    eq(j1.rows.filter((r) => r.type === "token-observed").length, 1, "token-observed idempoten per mint");
+    const did = decisionIdFor(MINT, 123, "v1");
+    eq(markOutcome({ decisionId: did, horizonMin: 1, targetAt: 124_000, checkedAt: 125_000, status: "OBSERVED", priceAtDecision: 1, priceAtTarget: 1.1, changePct: 10 }), true, "mark pertama ditulis");
+    eq(markOutcome({ decisionId: did, horizonMin: 1, targetAt: 124_000, checkedAt: 130_000, status: "OBSERVED", priceAtDecision: 1, priceAtTarget: 1.2, changePct: 20 }), false, "mark ulang TIDAK menimpa (idempoten)");
+    const marks = read().rows.filter((r) => r.type === "outcome-mark");
+    eq(marks.length, 1, "tetap satu baris");
+    eq(marks[0]!.changePct, 10, "nilai pertama yang bertahan");
+  } finally { if (prev === undefined) delete process.env.PUMP_CALLER_DIR; else process.env.PUMP_CALLER_DIR = prev; }
+});
+
+test("PC cost-model: overhead putaran v1 = 5,0pp (parameter riset, berlabel)", () => {
+  eq(PUMP_PAPER_COST_V1.roundTripOverheadPct, 5.0, "2×(fee 1% + slip 1,5%)");
+});
