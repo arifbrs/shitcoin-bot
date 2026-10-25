@@ -17,7 +17,8 @@ import { resolveOutcome, paperForPolicy } from "./results.js";
 import { reduceOutcomes, markOutcome } from "./journal.js";
 import { decodePumpTx } from "./onchain-tape.js";
 import { readFileSync } from "node:fs";
-import type { CallerEvent, Candle, PolicyEvaluation } from "./types.js";
+import { enrichOnchainUsd } from "./observer.js";
+import type { CallerEvent, Candle, PolicyEvaluation, TradeEvent } from "./types.js";
 
 const MINT = "FixMint11111111111111111111111111111111111";
 const ev = (dedupeKey: string, kind: "buy" | "sell", sol: number, ts: number, balanceAfter?: number): CallerEvent =>
@@ -296,4 +297,22 @@ test("S9-P0 24h/48h: candle tersedia SEBELUM target yang belum-matang → PENDIN
   const ok = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 10 * H24, horizonMin: 1440, candles: [c(9 * H24, 9.9), c(10 * H24 - 60_000, 4.5)], intervalMs: 60_000, asOf: 10 * H24 + 2 * 60_000 });
   eq(ok.status, "OBSERVED", "");
   eq(ok.priceAtTarget, 4.5, "harga = close candle yg menutupi target");
+});
+
+test("H2-P0 enrichOnchainUsd: usd = sol × solUsd; usd yang sudah ada tidak ditimpa; solUsd null → tetap null (absorption tak menilai)", () => {
+  const mk = (sol: number, usd: number | null = null): TradeEvent => ({ dedupeKey: `k${sol}`, mint: "M", wallet: "W", side: "buy", sol, usd, ts: 1 });
+  const a: TradeEvent[] = [mk(2), mk(3, 999)]; // kedua = usd dari swap-api, TIDAK boleh ditimpa
+  enrichOnchainUsd(a, 100);
+  approx(a[0]!.usd!, 200, 1e-9, "usd = sol × solUsd");
+  eq(a[1]!.usd, 999, "usd non-null tidak ditimpa");
+  const b: TradeEvent[] = [mk(5)];
+  enrichOnchainUsd(b, null);
+  eq(b[0]!.usd, null, "solUsd null → usd tetap null");
+  // jejak ujung-ke-ujung: trade on-chain yang sudah dienrich memicu ambang beku di absorptionView
+  const c: TradeEvent[] = [mk(6), { ...mk(0.4), side: "sell" }];
+  enrichOnchainUsd(c, 100); // buy $600 ≥ $500 (frozen); sell $40 di rentang $5–$100
+  const view = absorptionView(c);
+  eq(view.largeBuys.length, 1, "large-buy ≥$500 terpicu dari tape on-chain");
+  eq(view.smallSells, 1, "small-sell $5–$100 terpicu dari tape on-chain (jumlah)");
+  approx(view.netFlowSol, 5.6, 1e-9, "net flow SOL tetap dari jumlah mentah");
 });

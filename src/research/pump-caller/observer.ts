@@ -101,6 +101,16 @@ async function gmgnProxyCooldownUntil(): Promise<number> {
   } catch { return 0; }
 }
 
+/**
+ * (H2-P0) Isi `usd` trade on-chain (dekoder menulis null): usd = sol × SOL/USD spot.
+ * Tanpa solUsd → dibiarkan null (absorptionView tak menilai; bukan menebak). Mutasi in-place
+ * karena trade baru didekode pass ini — belum dipakai siapa pun.
+ */
+export function enrichOnchainUsd(trades: TradeEvent[], solUsd: number | null): void {
+  if (solUsd == null || !(solUsd > 0)) return;
+  for (const t of trades) if (t.usd == null && t.sol != null) t.usd = t.sol * solUsd;
+}
+
 /** Satu pass observasi atas watchlist (dipakai loop & manual). Tumpang-tindih = ditolak (no-op). */
 export async function observePass(fixture = false): Promise<ObserveSummary> {
   if (passRunning) { const s: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture }; return s; }
@@ -130,6 +140,10 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
         if (pass) {
           sigCursors.set(mint, pass.topSig ?? sigCursors.get(mint) ?? null);
           append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, source: "solana-rpc" });
+          // (H2-P0) USD utk ambang beku $500/$5–$100: usd = sol × SOL/USD spot (Jupiter, cache 60s).
+          // Derivasi TERLABELI via usdQuality di trade-batch; usd tetap null bila solUsd null →
+          // absorptionView tak menilai (bukan menebak). Sisi pool ikut terisi (hanya bukti arah).
+          enrichOnchainUsd(pass.trades, solUsd);
           // (S10-P0) hanya sisi TRADER (bukan vault pool) jadi trade riset; sisi pool tercatat
           // dgn poolSide=true sebagai bukti arah — TIDAK dihitung dua kali.
           const valid = pass.trades.filter((t) => t.state === "VERIFIED_SWAP" && !(t as { poolSide?: boolean }).poolSide);
