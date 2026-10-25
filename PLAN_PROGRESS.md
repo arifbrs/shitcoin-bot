@@ -592,3 +592,20 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - HASIL RUN NYATA (trending dead-coins GMGN): keputusan 2 SKIP; outcome 1m run sebelumnya
   (B9Jc/6ekF/2yrb): −61,1% / −34,3% / −84,6% — konsisten rundown; H2 menunggu token hidup.
 - 219 tes ✓ · gate ✓ · Actions success. H1/H3 tetap BLOCKED_DATA. PROFITABILITY NOT YET VALIDATED.
+
+## PENGUMPULAN PROSPEKTIF H2 DIMULAI + RHPAPER BLOCKED_EXTERNAL (2026-10-25)
+- Lane rhpaper MATI sejak ±19:46: BUKAN bug — `rpc.mainnet.chain.robinhood.com` dibajak DNS ISP
+  (resolusi lokal → 103.147.157.103, sertifikat CN=xblock-content.nexa.net.id [server blokir
+  nexa.net.id]; IP sejati via DoH = Cloudflare/offchainlabs 172.66.147.70 / 104.20.46.209).
+  Status: BLOCKED_EXTERNAL. TIDAK dibypass (DoH/hosts-pinning = evasi pemblokiran regulator atas
+  produk trading — di luar mandat tanpa persetujuan operator). Supervisor tetap retry tiap 5 menit;
+  pulih otomatis bila ISP berhenti membajak. Opsi operator: VPN level-sistem (keputusan sendiri).
+- Feed PumpPortal WS masih gagal (handshake error ~1s) → admission via fallback terbukti: mint
+  hidup dari GMGN trending (proxy /call getTrendingSwaps, bentuk data.data.rank) → pump:collect
+  --mint (PDA auto) → 6 token segar (1–12m) di-admit.
+- Lane baru run-pumpwatch-supervised.sh (observer kontinu, tick 35s) diluncurkan TERDETACH via
+  start-lanes-detached.mjs (idempoten, PGID baru) + dipantau lane-status (journal <10m).
+- 12 menit pertama: 126 trade (84 trader-side VERIFIED, 42 pool-side terpisah, 0 UNVERIFIED,
+  16 tape-coverage), 111 candle, 6 keputusan bayangan, 104 outcome-mark; solUsd OK (Jupiter,
+  ~$100,7; usdQuality OK). Buy awal 0,3–1,1 SOL (ritel) — menunggu large-buy ≥$500 (≈5 SOL)
+  utk evaluasi H2 ambang beku.

@@ -48,9 +48,15 @@ const day = (d) => new Date(d).toISOString().slice(0, 10);
 for (const off of [0, 1]) {
   const p = join(LOG, "rhpaper", `ledger-${day(now - off * 864e5)}.jsonl`);
   const a = ageMin(p);
-  if (a != null) { line(a <= 15, "rhpaper engine", `ledger ${p.split("/").pop()} tulis ${a.toFixed(1)}m lalu (batas 15m)`); break; }
+  if (a != null) { line(a <= 15, "rhpaper engine", `ledger ${p.split("/").pop()} tulis ${a.toFixed(1)}m lalu (batas 15m)` + (a > 15 ? " — sejak 2026-10-25: RPC Robinhood diblokir DNS ISP (BLOCKED_EXTERNAL), pulih sendiri saat ISP berhenti" : "")); break; }
   if (off === 1) line(false, "rhpaper engine", "tidak ada ledger 2 hari terakhir");
 }
+
+// 3b) Pump-caller observer (riset prospektif H2): journal harus segar < 10 menit.
+// BLOCKED_EXTERNAL rhpaper tidak menyentuh lane ini (Solana RPC, bukan Robinhood).
+const pj = join(LOG, "pump-caller", "journal.jsonl");
+const pja = ageMin(pj);
+line(pja != null && pja <= 10, "pump:watch observer", pja == null ? "journal tidak ada — tidak jalan" : `journal tulis ${pja.toFixed(1)}m lalu (batas 10m)`);
 
 // 4) Dashboard: proses server.ts hidup (pola baris perintah, bukan nama samar).
 let dash = false;

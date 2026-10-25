@@ -19,6 +19,7 @@ const LANES = [
   ["rhpaper", "run-rhpaper-supervised.sh"],
   ["hunter", "run-hunter-supervised.sh"],
   ["dash", "run-dashboard-supervised.sh"],
+  ["pumpwatch", "run-pumpwatch-supervised.sh"],
 ];
 
 const running = (pattern) => {
