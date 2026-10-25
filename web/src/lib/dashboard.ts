@@ -4,6 +4,8 @@ export const dashboardLanes = [
   { id: "robinhood", name: "Robinhood", mark: "RH", description: "Forward test strategi · Ethereum L2", mode: "Paper" },
   { id: "gmgn", name: "GMGN", mark: "GM", description: "Sinyal smart money & kualitas wallet", mode: "Observasi" },
   { id: "dex", name: "DexScreener", mark: "DX", description: "Pergerakan pasar & watchlist token", mode: "Observasi" },
+  { id: "pumpfun", name: "Pump.fun", mark: "PF", description: "Riset H2 event-driven · observer kontinu", mode: "Riset" },
+  { id: "wallets", name: "Wallet & Posisi", mark: "WP", description: "Dana nyata Solana & Robinhood · read-only", mode: "Live" },
 ] as const;
 
 export type DashboardSection = "overview" | typeof dashboardLanes[number]["id"] | "solana";

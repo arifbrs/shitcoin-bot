@@ -705,3 +705,36 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - (5) Kembali observasi: laporan memisahkan REALTIME vs historis/backfill + window lengkap vs
   tak-lengkap; paper hanya utk bukti cukup. Ambang beku tak disentuh; tanpa order/signing.
   PROFITABILITY NOT YET VALIDATED.
+
+## S12 DASHBOARD + PUMPWATCH + WALLET + GILLET (2026-10-26)
+- AUDIT: dashboard eksisting = SSE buildStats (auth cookie, /api/stream push fs.watch); paper
+  browser (lokal) vs paper server (rhpaper/S2) vs live (LivePanel) memang sudah terpisah —
+  ditambah kartu LaneStatusGrid 5 kategori (paper-browser/RH-server/S2/pumpfun-RISET/live)
+  dgn heartbeat mtime per lane (pumpfun = journal pump-caller).
+- GILLET (rekonsiliasi on-chain penuh, read-only): kontrak 0x7d96ddcf…ae7d, wallet
+  0x629Ec4…F4E8, chainId 0x1237, decimals 18, saldo 2.623.563,8366 gilet (bukti: receipt beli
+  0xd0422f… terkonfirmasi status 0x1 + transfer 2.624.563,84 masuk; satu-satunya keluar =
+  1.000 gilet 10-18 = uji kontrak helper, BUKAN jual). Jual "ok=true" 10-19 route manual-pool
+  TANPA hash = FALSE-POSITIVE (selisih 1.000 ≠ 2,6jt). LIKUIDITAS MATI: pool V3
+  0xcc1a638e…bddc4 WETH=2,7e-7, liquidity()=0, 0 liquidityNet ±0,5% harga (scan 4.000 tick),
+  gilet tak terdaftar di aggregator OKX (quote 51006). → EXIT TIDAK DIEKSEKUSI:
+  UNEXITABLE_LIQUIDITY; tanpa tx dikirim; operator melihat bloker eksak (utk likuiditas
+  kembali / rute baru, keputusan operator).
+- live-status (§F): RPC gagal → UNKNOWN/null (bukan 0); qty pakai decimals() terverifikasi;
+  partial = OPEN dgn sisa; CLOSED_CONFIRMED menuntut txHash + saldo 0 terverifikasi; dedupe
+  beli per token; posisi lintas hari tampil; notionalUsd dilabel harga-beli (stale, bukan
+  quote); UNEXITABLE via pengecekan rute berbatas+cache. Hasil nyata: gilet=UNEXITABLE+
+  unverifiedSell, HOOT=GHOST.
+- VIEW BARU (navigasi eksisting, gaya dark terminal dipertahankan): lane "Pump.fun"
+  (kesehatan observer: feed/gap/latensi-deteksi-vs-sumber/pass; watchlist token dgn
+  trade/trader/large-buy/small-sell/coverage; event H2 REALTIME vs historis terpisah dgn
+  state+coverage+pengikut+rapid-sell+netflow+alasan; outcome admisi vs H2 terpisah; paper
+  counterfactual vs actionable terpisah; fixture dikecualikan; jeda-tampilan tanpa henti
+  kolektor) dan lane "Wallet & Posisi" (Solana vs Robinhood TERPISAH, alamat+salin, chainId,
+  saldo + galat RPC eksplisit, posisi dgn qty/status/bukti; /api/wallet kini READ-ONLY —
+  tak membuat wallet baru bila kunci tak ada).
+- BACKEND: /api/pumpwatch (auth, cache mtime — tanpa reread JSONL per refresh) + model murni
+  pumpwatch-model.ts; SSE buildStats + laneHealth.pumpfun. 232 tes (228→232: model pemisahan,
+  klasifikasi posisi, no-secrets payload, kohor realtime kosong). Build web ✓, gate ✓.
+- Robinhood RPC: blokir DNS ISP BERAKHIR — lane rhpaper pulih otomatis (retry supervisor);
+  SEMUA LANE OK. Tidak ada order/signing/withdrawal. PROFITABILITY NOT YET VALIDATED.

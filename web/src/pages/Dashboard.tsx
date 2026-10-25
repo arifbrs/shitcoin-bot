@@ -29,6 +29,8 @@ import { LivePanel } from "@/components/panels/LivePanel";
 import { PaperPanel } from "@/components/panels/PaperPanel";
 import { LaneGmgn } from "@/components/panels/LaneGmgn";
 import { LaneDex } from "@/components/panels/LaneDex";
+import { LanePumpfun } from "@/components/panels/LanePumpfun";
+import { SolanaWalletPanel, RobinhoodWalletPanel, LaneStatusGrid } from "@/components/panels/WalletsPanels";
 import { SolanaPanels } from "@/components/panels/SolanaPanels";
 import { QualityCard } from "@/components/panels/QualityCard";
 
@@ -219,6 +221,8 @@ export default function Dashboard() {
         {section === "robinhood" && <><LaneRobinhood key={laneQuery} data={data.laneRobinhood} initialQuery={laneQuery} /><LivePanel /><PaperPanel /><RobinhoodChainPanel /></>}
         {section === "gmgn" && <LaneGmgn overview={gmgn} />}
         {section === "dex" && <LaneDex data={data.laneDex} />}
+        {section === "pumpfun" && <LanePumpfun />}
+        {section === "wallets" && <><LaneStatusGrid data={data} localEquityUsd={portfolio.equityUsd} localStale={portfolio.stale} /><div className="grid gap-3 lg:grid-cols-2"><SolanaWalletPanel /><RobinhoodWalletPanel /></div></>}
         {section === "solana" && <><p className="terminal-note">Lane kompatibilitas · Strategy 2 dari server. Ledger lokal tetap terpisah.</p><SolanaPanels data={data} /></>}
       </>}
     </div></TerminalDrawer>

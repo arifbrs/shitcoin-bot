@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync, readdirSync, existsSync, mkdirSync, watch, statSync, openSync, readSync, closeSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPumpwatchModel } from "./research/pump-caller/pumpwatch-model.js";
 import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
 import { config, configHash } from "./config.js";
@@ -2472,6 +2473,8 @@ function buildLaneHealth(): Record<string, { ageSec: number | null; fresh: boole
     gmgn: probe("gmgn-full-watch-state.json", 45 * 60),
     dex: probe("dex-full-state.json", 15 * 60),
     okxPaper: probe("okx-strict-paper-v2-state.json", 5 * 60),
+    // (S12-§H) pump-caller: jurnal = heartbeat observer (tick menulis tape-coverage/trade-batch).
+    pumpfun: probe("pump-caller/journal.jsonl", 10 * 60),
   };
 }
 
@@ -3367,6 +3370,15 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   // whenever that one key was throttled, even while six siblings sat healthy.
   if (path === "/api/wallet") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
+    // (S12-§C) READ-ONLY: pembacaan TIDAK boleh membuat wallet baru — tanpa kunci yang sudah
+    // ada (keychain / berkas), alamat = null dan saldo tak dibaca (bukan digenerate diam-diam).
+    const { keychainRead } = await import("./execution/keystore.js");
+    const hasKey = keychainRead() != null || existsSync(config.exec.keyFile);
+    if (!hasKey) {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ address: null, mainnet: null, devnet: null, note: "kunci wallet Solana belum ada — tidak dibuat otomatis oleh tampilan" }));
+      return;
+    }
     const [mainnet, devnet] = await Promise.all([
       poolBalanceSol(botPubkey()).then((v) => v ?? -1).catch(() => -1),
       balanceSol(config.exec.devnetRpc).catch(() => -1),
@@ -3385,6 +3397,14 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path === "/api/wallet/withdraw" && req.method === "POST") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     withdrawChain = withdrawChain.then(() => handleWithdraw(req, res)).catch(() => { /* sudah direspons */ });
+    return;
+  }
+
+  // (S12) Pumpwatch status & events — read-only, auth, cache mtime (tanpa reread JSONL per refresh).
+  if (path === "/api/pumpwatch") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    try { res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(pumpwatchSnapshot())); }
+    catch (error) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); }
     return;
   }
 
@@ -3407,6 +3427,25 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handler);
+
+// ── (S12) PUMPWATCH VIEW MODEL — cache inkremental via mtime (JANGAN reread JSONL tiap refresh)
+const PUMPWATCH_DIR = process.env.PUMP_CALLER_DIR?.trim() || join(config.logDir, "pump-caller");
+const PUMPWATCH_JOURNAL = join(PUMPWATCH_DIR, "journal.jsonl");
+const PUMPWATCH_WATCHLIST = join(PUMPWATCH_DIR, "watchlist.json");
+let pumpwatchCache: { key: string; at: number; model: unknown } | null = null;
+function pumpwatchSnapshot(): { generatedAt: number } & Record<string, unknown> {
+  const jm = existsSync(PUMPWATCH_JOURNAL) ? statSync(PUMPWATCH_JOURNAL).mtimeMs : null;
+  const wm = existsSync(PUMPWATCH_WATCHLIST) ? statSync(PUMPWATCH_WATCHLIST).mtimeMs : null;
+  const key = `${jm ?? 0}:${wm ?? 0}`;
+  if (pumpwatchCache && pumpwatchCache.key === key && Date.now() - pumpwatchCache.at < 30_000) return pumpwatchCache.model as unknown as { generatedAt: number } & Record<string, unknown>;
+  const rows: Array<Record<string, unknown>> = [];
+  if (jm != null) for (const line of readFileSync(PUMPWATCH_JOURNAL, "utf8").split("\n")) { if (!line.trim()) continue; try { rows.push(JSON.parse(line) as Record<string, unknown>); } catch { /* lewati */ } }
+  let wl: Array<{ mint: string; symbol?: string; admittedAt: number; source: string; lastObservedAt?: number | null }> = [];
+  if (wm != null) { try { const j = JSON.parse(readFileSync(PUMPWATCH_WATCHLIST, "utf8")) as { entries?: typeof wl } | Array<typeof wl[number]>; wl = Array.isArray(j) ? j : j.entries ?? []; } catch { wl = []; } }
+  const model = buildPumpwatchModel(rows, wl, { journalMtime: jm, now: Date.now() });
+  pumpwatchCache = { key, at: Date.now(), model };
+  return model as unknown as { generatedAt: number } & Record<string, unknown>;
+}
 
 // ── SSE broadcast: watch the log dir, push a fresh snapshot on any change ─────
 const sseClients = new Set<ServerResponse>();
