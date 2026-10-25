@@ -31,12 +31,15 @@ export function read(): Journal {
       out.rows.push(row);
     } catch { out.malformed++; }
   }
+  // outcome-mark TIDAK didedupe (event stream); state final = reduceOutcomes(rows).
   return out;
 }
 
-/** Kunci idempoten: trade/caller event → dedupeKey; outcome → decisionId:horizonMin; keputusan → decisionId. */
+/** Kunci idempoten: trade/caller event → dedupeKey; keputusan → decisionId.
+ *  outcome-mark TIDAK lagi didedupe di read() — state dihitung lewat reduceOutcomes()
+ *  (S8-P1: baris PENDING lama tidak boleh MENUTUPI OBSERVED yang datang belakangan). */
 export function dedupeKeyOf(row: Record<string, unknown>): string | null {
-  if (row.type === "outcome-mark") return `outcome:${row.decisionId}:${row.horizonMin}`;
+  if (row.type === "outcome-mark") return null;
   if (row.type === "shadow-decision") return `decision:${row.decisionId}`;
   if (row.type === "trade" || row.type === "caller-event") return String(row.dedupeKey);
   if (row.type === "candle-snapshot") return `candles:${row.mint}:${row.interval}:${row.fromTs}:${row.count}`;
@@ -44,13 +47,35 @@ export function dedupeKeyOf(row: Record<string, unknown>): string | null {
   return null; // tipe lain boleh berulang (ringkasan dsb.)
 }
 
-/** Tulis outcome mark bila belum ada (idempoten); return true bila baru ditulis. */
-export function markOutcome(m: OutcomeMark): boolean {
-  const j = read();
-  const key = `outcome:${m.decisionId}:${m.horizonMin}`;
-  const exists = j.rows.some((r) => dedupeKeyOf(r) === key);
-  if (exists) return false;
-  append({ type: "outcome-mark", ts: m.checkedAt, ...m });
+export interface OutcomeState { key: string; status: "PENDING" | "OBSERVED" | "MISSING_FINAL"; priceAtTarget: number | null; changePct: number | null; attempts: number; checkedAt: number }
+
+/**
+ * (S8-P1) Reduksi event→state append-only untuk outcome-mark:
+ *   PENDING → PENDING(attempts++) | OBSERVED | MISSING_FINAL ; OBSERVED/MISSING_FINAL = TERMINAL
+ *   (baris setelah terminal untuk kunci sama DIABAIKAN — terminal tak tertimpa diam-diam).
+ */
+export function reduceOutcomes(rows: Array<Record<string, unknown>>): Map<string, OutcomeState> {
+  const map = new Map<string, OutcomeState>();
+  for (const r of rows) {
+    if (r.type !== "outcome-mark") continue;
+    const key = `outcome:${r.decisionId}:${r.horizonMin}`;
+    const status = String(r.status) as OutcomeState["status"];
+    const cur = map.get(key);
+    if (cur && (cur.status === "OBSERVED" || cur.status === "MISSING_FINAL")) continue; // terminal
+    if (!cur && status !== "PENDING" && status !== "OBSERVED" && status !== "MISSING_FINAL") continue;
+    map.set(key, { key, status, priceAtTarget: r.priceAtTarget != null ? Number(r.priceAtTarget) : null,
+      changePct: r.changePct != null ? Number(r.changePct) : null, attempts: Number(r.attempts ?? 0), checkedAt: Number(r.ts ?? 0) });
+  }
+  return map;
+}
+
+/** Tulis mark hanya bila TRANSISI berubah (atau attempts naik saat PENDING) — no-op lain. */
+export function markOutcome(m: OutcomeMark & { attempts?: number }): boolean {
+  const cur = reduceOutcomes(read().rows).get(`outcome:${m.decisionId}:${m.horizonMin}`);
+  if (cur && cur.status !== "PENDING") return false; // terminal (OBSERVED/MISSING_FINAL)
+  const nextAttempts = Number(m.attempts ?? ((cur?.attempts ?? 0) + 1));
+  if (cur && m.status === "PENDING" && nextAttempts <= cur.attempts) return false;
+  append({ type: "outcome-mark", ts: m.checkedAt, ...m, attempts: nextAttempts });
   return true;
 }
 

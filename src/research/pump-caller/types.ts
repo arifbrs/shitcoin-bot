@@ -92,4 +92,4 @@ export interface AnalystOutput {
 
 // ── Eksperimen prospektif ────────────────────────────────────────────────────
 export const OUTCOME_HORIZONS_MIN = [1, 5, 15, 60, 360, 1440, 2880] as const;
-export interface OutcomeMark { decisionId: string; horizonMin: number; targetAt: number; checkedAt: number; status: "OBSERVED" | "MISSING"; reason?: string; priceAtDecision: number; priceAtTarget: number | null; changePct: number | null }
+export interface OutcomeMark { decisionId: string; horizonMin: number; targetAt: number; checkedAt: number; status: "PENDING" | "OBSERVED" | "MISSING_FINAL"; reason?: string; priceAtDecision: number; priceAtTarget: number | null; changePct: number | null }

@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { listenNewTokens } from "../../discovery/pumpportal.js";
 import { swapApiTrades, swapApiCandles, gmgnKlineCandles, gmgnPartialTape } from "./pumpfun-api.js";
+import { onchainTape } from "./onchain-tape.js";
 import { normalizeTradeTs } from "./timestamps.js";
 import { admit, loadWatchlist, saveWatchlist, policyFromEnv, watchDir, type WatchEntry } from "./watchlist.js";
 import { absorptionView } from "./absorption.js";
@@ -18,7 +19,7 @@ import { latencyView } from "./early-detection.js";
 import { analyze, ANALYST_VERSION } from "./analyst.js";
 import { trackCallerPosition } from "./position-tracker.js";
 import { TRIGGERS, type HypothesisId } from "./experiments.js";
-import { append, read, decisionIdFor, type Journal } from "./journal.js";
+import { append, read, decisionIdFor, reduceOutcomes, markOutcome } from "./journal.js";
 import { resolveOutcome, paperForPolicy, completedCandles } from "./results.js";
 import { OUTCOME_HORIZONS_MIN, type Candle, type TradeEvent, type EntryPolicy, type PolicyEvaluation } from "./types.js";
 
@@ -88,8 +89,27 @@ function knownWallets(): KnownWallet[] {
 
 export interface ObserveSummary { mints: number; newCandles: number; decisions: number; tradesSeen: number; pending: number; observed: number; missingFinal: number; fixtureExcluded: boolean }
 
-/** Satu pass observasi atas watchlist (dipakai loop & manual). */
+let passRunning = false; // (S8-P3) anti-overlap: satu pass pada satu waktu
+const PASS_MAX_MS = Math.max(60_000, Number(process.env.PUMP_OBSERVE_PASS_MAX_MS ?? 120_000));
+
+async function gmgnProxyCooldownUntil(): Promise<number> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${process.env.GMGN_PROXY_PORT ?? 4319}/health`, { signal: AbortSignal.timeout(2_000) });
+    const j = (await r.json()) as { cooldownUntil?: number };
+    return Number(j.cooldownUntil ?? 0);
+  } catch { return 0; }
+}
+
+/** Satu pass observasi atas watchlist (dipakai loop & manual). Tumpang-tindih = ditolak (no-op). */
 export async function observePass(fixture = false): Promise<ObserveSummary> {
+  if (passRunning) { const s: ObserveSummary = { mints: 0, newCandles: 0, decisions: 0, tradesSeen: 0, pending: 0, observed: 0, missingFinal: 0, fixtureExcluded: fixture }; return s; }
+  passRunning = true;
+  try { return await observePassInner(fixture); } finally { passRunning = false; }
+}
+
+async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
+  const passStart = Date.now();
+  const gmgnBlockedUntil = await gmgnProxyCooldownUntil(); // koordinasi lintas-lane: hormati cooldown bersama
   const now = Date.now();
   const solUsd = await solUsdOf();
   const wl = (fixture ? [] : loadWatchlist()).slice(0, 64);
@@ -98,17 +118,28 @@ export async function observePass(fixture = false): Promise<ObserveSummary> {
     const batch = wl.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(async (entry) => {
       const mint = entry.mint;
+      if (Date.now() - passStart > PASS_MAX_MS) return; // (S8-P3) durasi pass berbatas
       summary.mints++;
       // ── Tape trades: swap-api UTAMA; fallback GMGN top-traders PARSIAL (berlabel); keduanya
       // gagal → UNAVAILABLE (dicatat, TIDAK diarang). Timestamp invalid ditolak eksplisit. ──
-      let trades: TradeEvent[] = []; let tapeSource = "swap-api"; let tapePartial = false;
-      const raw = await swapApiTrades(mint, solUsd);
-      if (raw) for (const t of raw) {
-        const ts = normalizeTradeTs((t as unknown as { tsRaw?: unknown }).tsRaw ?? t.ts);
-        if (ts == null) { append({ type: "trade-rejected", ts: now, mint, dedupeKey: t.dedupeKey, reason: "TIMESTAMP_INVALID", source: "swap-api" }); continue; }
-        trades.push({ ...t, ts });
+      let trades: TradeEvent[] = []; let tapeSource = "swap-api"; let tapePartial = false; let tapeFull = false;
+      // (S8-P4) UTAMA: tape on-chain TERDEKODE (signature+slot+wallet+delta saldo; blockTime nyata).
+      if (entry.bondingCurveKey && gmgnAllowed(mint, "onchain")) {
+        const decoded = await onchainTape(mint, entry.bondingCurveKey, 10);
+        if (decoded && decoded.length) { trades = decoded; tapeSource = "solana-rpc-decoded (signature:owner)"; tapeFull = true; }
       }
       if (!trades.length) {
+        const raw = await swapApiTrades(mint, solUsd);
+        if (raw) for (const t of raw) {
+          const ts = normalizeTradeTs((t as unknown as { tsRaw?: unknown }).tsRaw ?? t.ts);
+          if (ts == null) { append({ type: "trade-rejected", ts: now, mint, dedupeKey: t.dedupeKey, reason: "TIMESTAMP_INVALID", source: "swap-api" }); continue; }
+          trades.push({ ...t, ts });
+        }
+        if (trades.length) tapeFull = true;
+      }
+      if (!trades.length && Date.now() < gmgnBlockedUntil) {
+        append({ type: "trade-batch", ts: now, mint, count: 0, source: "UNAVAILABLE (swap-api 403; GMGN proxy cooldown lintas-lane)", usdQuality: "UNAVAILABLE" });
+      } else if (!trades.length) {
         const partial = gmgnAllowed(mint, "tape") ? await serializedGmgn(() => gmgnPartialTape(mint)) : null;
         if (partial) { trades = partial.trades; tapeSource = partial.source; tapePartial = true; }
       }
@@ -141,7 +172,7 @@ export async function observePass(fixture = false): Promise<ObserveSummary> {
         const prev = done1s.length > 1 ? done1s[done1s.length - 2]! : undefined;
         const wick = last ? wickContext(last, prev?.low) : null;
         // Wallet dikenal → posisi dari tape (bukti wallet-activity); bukan caller terverifikasi.
-        const known = knownWallets();
+        const known = tapeFull ? knownWallets() : []; // (S8-P4) posisi wallet hanya dari tape PENUH — bukan agregat GMGN
         let callerPos: ReturnType<typeof trackCallerPosition> | null = null; let knownWalletHit: KnownWallet | null = null;
         if (known.length && trades.length) {
           const hit = known.find((w) => trades.some((t) => t.wallet === w.address));
@@ -164,7 +195,7 @@ export async function observePass(fixture = false): Promise<ObserveSummary> {
         triggerIds.push({ id: "KNOWN_WALLET_EARLY_BUY", fires: knownWalletHit != null && (early.detectionLagMs ?? Infinity) <= 5 * 60_000, evidence: knownWalletHit ? `wallet dikenal ${knownWalletHit.label} (${knownWalletHit.evidence}) — PROXY, bukan caller terverifikasi` : "tidak ada wallet dikenal di tape" });
         const decisionId = decisionIdFor(mint, entry.admittedAt, ANALYST_VERSION);
         append({ type: "shadow-decision", ts: decidedAt, mint, decisionId, admittedAt: entry.admittedAt, decision: out.decision, strategyVersion: out.strategyVersion,
-          marketSource: `tape=${tapePartial ? "gmgn-parsial" : trades.length ? "swap-api" : "UNAVAILABLE"}; candle=${candleSource}`, socialFields: "UNAVAILABLE (tanpa Developer API)", callerIdentityConfidence: knownWalletHit ? "KNOWN_WALLET_PROXY" : null,
+          marketSource: `tape=${tapeFull ? (tapeSource.includes("rpc") ? "onchain-decoded" : "swap-api") : tapePartial ? "gmgn-parsial" : "UNAVAILABLE"}; candle=${candleSource}`, socialFields: "UNAVAILABLE (tanpa Developer API)", callerIdentityConfidence: knownWalletHit ? "KNOWN_WALLET_PROXY" : null,
           reasons: out.reasons, contraryEvidence: out.contraryEvidence, missingData: out.missingData,
           paperNotionalUsd: out.paperNotionalUsd, executionCostWarning: out.executionCostWarning,
           priceAtDecision: last?.close ?? null, triggerIds,
@@ -172,28 +203,31 @@ export async function observePass(fixture = false): Promise<ObserveSummary> {
           skipReason: out.decision === "SKIP" ? (out.missingData[0] ?? "bukti pasar kurang") : null });
         summary.decisions++;
       }
+      entry.lastObservedAt = Date.now(); // (S8-P3) kesegaran watchlist diperbarui saat sukses
     }));
   }
-  // ── Outcome pass global (semua PENDING) ──
-  const j: Journal = read();
-  const decisions = j.rows.filter((r) => r.type === "shadow-decision" && r.marketSource && typeof r.priceAtDecision === "number");
-  for (const d of decisions) {
+  saveWatchlist(wl.map((e) => ({ ...e, lastObservedAt: loadWatchlist().find((x) => x.mint === e.mint)?.lastObservedAt ?? e.lastObservedAt })));
+  // ── Outcome pass global (S8-P1: state = reduceOutcomes; tulis hanya saat transisi) ──
+  const states = reduceOutcomes(read().rows);
+  const decisions2 = read().rows.filter((r) => r.type === "shadow-decision" && r.marketSource && typeof r.priceAtDecision === "number");
+  for (const d of decisions2) {
     const store = loadCandles(String(d.mint));
     for (const h of OUTCOME_HORIZONS_MIN) {
       const key = `outcome:${d.decisionId}:${h}`;
-      const existing = j.rows.find((r) => `outcome:${r.decisionId}:${r.horizonMin}` === key);
-      const status = existing?.status as string | undefined;
-      if (status === "OBSERVED" || status === "MISSING_FINAL") { if (status === "OBSERVED") summary.observed++; else summary.missingFinal++; continue; }
+      const cur = states.get(key);
+      if (cur && cur.status !== "PENDING") { if (cur.status === "OBSERVED") summary.observed++; else summary.missingFinal++; continue; }
       const targetAt = Number(d.ts) + h * 60_000;
-      const res = resolveOutcome({ status: "PENDING", attempts: Number(existing?.attempts ?? 0), targetAt, horizonMin: h,
-        candles: store["1m"], intervalMs: CANDLE_1M_MS, asOf: now });
-      append({ type: "outcome-mark", ts: now, decisionId: d.decisionId, horizonMin: h, targetAt,
-        status: res.status, reason: res.reason ?? null, attempts: res.attempts,
-        priceAtDecision: d.priceAtDecision, priceAtTarget: res.priceAtTarget,
-        changePct: res.priceAtTarget != null && typeof d.priceAtDecision === "number" ? Number((((res.priceAtTarget - d.priceAtDecision) / d.priceAtDecision) * 100).toFixed(4)) : null });
-      if (res.status === "OBSERVED") summary.observed++;
-      else if (res.status === "MISSING_FINAL") summary.missingFinal++;
-      else summary.pending++;
+      const res = resolveOutcome({ status: "PENDING", attempts: cur?.attempts ?? 0, targetAt, horizonMin: h,
+        candles: store["1m"], intervalMs: CANDLE_1M_MS, asOf: Date.now() });
+      const wrote = markOutcome({ decisionId: String(d.decisionId), horizonMin: h, targetAt, checkedAt: Date.now(),
+        status: res.status, reason: res.reason ?? undefined,
+        priceAtDecision: Number(d.priceAtDecision), priceAtTarget: res.priceAtTarget ?? null,
+        changePct: res.priceAtTarget != null ? Number((((res.priceAtTarget - Number(d.priceAtDecision)) / Number(d.priceAtDecision)) * 100).toFixed(4)) : null });
+      if (wrote) {
+        if (res.status === "OBSERVED") summary.observed++;
+        else if (res.status === "MISSING_FINAL") summary.missingFinal++;
+        else summary.pending++;
+      } else if (cur) summary.pending++;
     }
   }
   return summary;
@@ -207,7 +241,7 @@ export function startObserver(onEvent?: (kind: string, info?: string) => void): 
   const stopFeed = listenNewTokens((c) => {
     seq++;
     const wl = loadWatchlist();
-    const res = admit(wl, { mint: c.mint, symbol: c.symbol, source: "pumpportal", priority: Math.round((c.devInitialBuySol ?? 0) * 1000) + Math.round((c.marketCapSol ?? 0) / 10) }, policy, seq, Date.now());
+    const res = admit(wl, { mint: c.mint, symbol: c.symbol, source: "pumpportal", priority: Math.round((c.devInitialBuySol ?? 0) * 1000) + Math.round((c.marketCapSol ?? 0) / 10), bondingCurveKey: c.bondingCurveKey }, policy, seq, Date.now());
     saveWatchlist(res.entries);
     if (res.admitted) { append({ type: "token-observed", ts: Date.now(), mint: c.mint, symbol: c.symbol, source: "pumpportal", detectedAt: c.detectedAt, feedLagMs: Date.now() - c.detectedAt }); onEvent?.("admit", `${c.symbol ?? c.mint.slice(0, 6)} (lag ${((Date.now() - c.detectedAt) / 1000).toFixed(1)}s)`); }
   });

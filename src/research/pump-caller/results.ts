@@ -39,7 +39,16 @@ export function resolveOutcome(p: {
   return { status: "MISSING_FINAL", priceAtTarget: null, attempts: p.attempts + 1, reason: "CANDLE_TAK_TERSEDIA_SETELAH_GRACE" };
 }
 
-export interface PaperResult {
+/** Biaya tetap per putaran (S8-P5): fee prioritas SOL — dikurangkan dlm USD bila harga SOL ada. */
+export function netUsdAfterCosts(grossPct: number, costPp: number, fixedSolPerTrip: number, solUsd: number | null): Record<string, number | null> {
+  const fixedUsd = solUsd != null ? fixedSolPerTrip * solUsd : null;
+  return {
+    "3": Number((((3 * grossPct) / 100) - (3 * costPp) / 100 - (fixedUsd ?? 0)).toFixed(4)),
+    "5": Number((((5 * grossPct) / 100) - (5 * costPp) / 100 - (fixedUsd ?? 0)).toFixed(4)),
+  };
+}
+
+export interface PaperResult { solUsd?: number | null;
   policy: EntryPolicy; triggered: boolean;
   entryTs: number | null; entryPrice: number | null; decisionToEntryMs: number | null;
   exitTs: number | null; exitPrice: number | null;
@@ -55,11 +64,11 @@ export function paperForPolicy(
   decision: { decisionTs: number; priceAtDecision: number },
   policy: PolicyEvaluation, horizonMin: number,
   candles: Candle[], intervalMs: number, asOf: number,
-  costs = PUMP_PAPER_COST_V1,
+  costs = PUMP_PAPER_COST_V1, solUsd: number | null = null,
 ): PaperResult {
   const costPp = costs.roundTripOverheadPct;
   const base: PaperResult = { policy: policy.policy, triggered: false, entryTs: null, entryPrice: null, decisionToEntryMs: null, exitTs: null, exitPrice: null,
-    grossPct: null, costPp, netPct: null, netUsd: { "3": null, "5": null }, mfePct: null, maePct: null, exitLiquidityObserved: null,
+    grossPct: null, costPp, netPct: null, netUsd: { "3": null, "5": null }, mfePct: null, maePct: null, exitLiquidityObserved: null, solUsd,
     skipReason: policy.rejectReason ?? (policy.triggered ? null : "POLICY_TIDAK_TRIGGER") };
   if (!policy.triggered || policy.triggerTs == null || policy.entryPrice == null) return base;
   // Entry REALISTIS: close candle SELESAI pertama setelah triggerTs (bukan open yang basi).
@@ -67,8 +76,10 @@ export function paperForPolicy(
   const entryCandle = done.find((c) => c.ts >= policy.triggerTs!);
   if (!entryCandle) return { ...base, skipReason: "CANDLE_ENTRY_SELESAI_BELUM_ADA" };
   const entry = entryCandle.close, entryTs = entryCandle.ts + intervalMs;
+  // (S8-P2) exit = candle SELESAI pertama yang close-time >= horizon (menutupi horizon),
+  // dalam toleransi sempit satu interval — bukan candle dari jauh sebelum horizon.
   const exitAt = decision.decisionTs + horizonMin * 60_000;
-  const exitCandle = [...done].reverse().find((c) => c.ts + intervalMs <= exitAt + Math.max(30_000, horizonMin * 60_000 * 0.5));
+  const exitCandle = done.find((c) => c.ts + intervalMs >= exitAt && c.ts + intervalMs <= exitAt + Math.max(30_000, intervalMs));
   if (!exitCandle) return { ...base, entryTs, entryPrice: entry, decisionToEntryMs: entryTs - decision.decisionTs, triggered: true, skipReason: "HORIZON_BELUM_MATANG" };
   const grossPct = ((exitCandle.close - entry) / entry) * 100;
   const netPct = grossPct - costPp;
@@ -78,7 +89,7 @@ export function paperForPolicy(
   return { policy: policy.policy, triggered: true, entryTs, entryPrice: entry, decisionToEntryMs: entryTs - decision.decisionTs,
     exitTs: exitCandle.ts + intervalMs, exitPrice: exitCandle.close,
     grossPct: Number(grossPct.toFixed(4)), costPp, netPct: Number(netPct.toFixed(4)),
-    netUsd: { "3": Number((((3 * grossPct) / 100) - (3 * costPp) / 100).toFixed(4)), "5": Number((((5 * grossPct) / 100) - (5 * costPp) / 100).toFixed(4)) },
+    netUsd: netUsdAfterCosts(grossPct, costPp, costs.fixedSolPerTrip, solUsd),
     mfePct: mfe != null ? Number(mfe.toFixed(4)) : null, maePct: mae != null ? Number(mae.toFixed(4)) : null,
     exitLiquidityObserved: exitCandle.volumeSol > 0, skipReason: null };
 }

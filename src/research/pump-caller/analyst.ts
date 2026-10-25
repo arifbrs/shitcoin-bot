@@ -10,7 +10,7 @@ import type { AnalystInput, AnalystOutput, ShadowDecision } from "./types.js";
 export const ANALYST_VERSION = "pump-caller-analyst-v1";
 export const RESEARCH_NOTIONALS_USD = [3, 5] as const;
 /** Model biaya riil-kertas (PARAMETER RISET v1 — belum terkalibrasi ke eksekusi nyata). */
-export const PUMP_PAPER_COST_V1 = { takerFeePct: 1.0, slippagePct: 1.5, priorityFeeSol: 0.0005, roundTripOverheadPct: 2 * (1.0 + 1.5) }; // 5,0pp putaran
+export const PUMP_PAPER_COST_V1 = { takerFeePct: 1.0, slippagePct: 1.5, priorityFeeSol: 0.0005, fixedSolPerTrip: 0.001, roundTripOverheadPct: 2 * (1.0 + 1.5) }; // 5,0pp + 0,001 SOL tetap/putaran
 
 export function analyze(input: AnalystInput): AnalystOutput {
   const reasons: string[] = [], contrary: string[] = [], missing: string[] = [];

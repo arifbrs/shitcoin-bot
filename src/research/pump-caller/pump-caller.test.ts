@@ -9,11 +9,13 @@ import { wickContext, evaluatePolicies, representative } from "./wicks.js";
 import { latencyView, moveAlreadyOver } from "./early-detection.js";
 import { analyze, PUMP_PAPER_COST_V1 } from "./analyst.js";
 import { TRIGGERS, compare } from "./experiments.js";
-import { append, read, markOutcome, decisionIdFor } from "./journal.js";
+import { append, read, decisionIdFor } from "./journal.js";
 import { FIX_TRADES, FIX_CANDLES_1S, FIX_USER_POSITIONS, FIX_USER_TRADES } from "./fixtures.js";
 import { normalizeTradeTs } from "./timestamps.js";
 import { admit } from "./watchlist.js";
 import { resolveOutcome, paperForPolicy } from "./results.js";
+import { reduceOutcomes, markOutcome } from "./journal.js";
+import { decodePumpTx } from "./onchain-tape.js";
 import { readFileSync } from "node:fs";
 import type { CallerEvent, Candle, PolicyEvaluation } from "./types.js";
 
@@ -201,4 +203,63 @@ test("SPRINT paper no-look-ahead: entry = close candle SELESAI pasca-trigger; MF
   // look-ahead: evaluasi SEBELUM candle entry selesai → skip eksplisit, bukan harga karangan.
   const early = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles.slice(0, 1), 60_000, 60_000);
   eq(early.skipReason, "CANDLE_ENTRY_SELESAI_BELUM_ADA", "tanpa candle selesai = skip berlabel");
+});
+
+test("S8-P1 masking: PENDING lama TIDAK menutupi OBSERVED belakangan; terminal tak tertimpa", () => {
+  const prev = process.env.PUMP_CALLER_DIR;
+  process.env.PUMP_CALLER_DIR = mkdtempSync(join(tmpdir(), "pc-mask-"));
+  try {
+    append({ type: "outcome-mark", ts: 1000, decisionId: "d1", horizonMin: 1, targetAt: 60_000, status: "PENDING", attempts: 1, priceAtDecision: 1, priceAtTarget: null, changePct: null });
+    append({ type: "outcome-mark", ts: 90_000, decisionId: "d1", horizonMin: 1, targetAt: 60_000, status: "OBSERVED", attempts: 2, priceAtDecision: 1, priceAtTarget: 1.2, changePct: 20 });
+    const s = reduceOutcomes(read().rows).get("outcome:d1:1")!;
+    eq(s.status, "OBSERVED", "transisi terakhir-lah state (bukan baris pertama)");
+    eq(s.priceAtTarget, 1.2, "harga hasil transisi");
+    // terminal: baris PENDING setelah OBSERVED diabaikan
+    append({ type: "outcome-mark", ts: 95_000, decisionId: "d1", horizonMin: 1, targetAt: 60_000, status: "PENDING", attempts: 9, priceAtDecision: 1, priceAtTarget: null, changePct: null });
+    eq(reduceOutcomes(read().rows).get("outcome:d1:1")!.status, "OBSERVED", "terminal tak tertimpa");
+    // markOutcome no-op saat terminal; attempts-naik saat PENDING ditulis
+    eq(markOutcome({ decisionId: "d1", horizonMin: 1, targetAt: 60_000, checkedAt: 99_000, status: "OBSERVED", priceAtDecision: 1, priceAtTarget: 1.3, changePct: 30 }), false, "no-op setelah terminal");
+    append({ type: "outcome-mark", ts: 10_000, decisionId: "d2", horizonMin: 1, targetAt: 60_000, status: "PENDING", attempts: 1, priceAtDecision: 1, priceAtTarget: null, changePct: null });
+    eq(markOutcome({ decisionId: "d2", horizonMin: 1, targetAt: 60_000, checkedAt: 20_000, status: "PENDING", priceAtDecision: 1, priceAtTarget: null, changePct: null }), true, "attempts naik saat PENDING = ditulis");
+    eq(markOutcome({ decisionId: "d2", horizonMin: 1, targetAt: 60_000, checkedAt: 21_000, status: "PENDING", priceAtDecision: 1, priceAtTarget: null, changePct: null }), true, "lagi (attempts 3)");
+  } finally { if (prev === undefined) delete process.env.PUMP_CALLER_DIR; else process.env.PUMP_CALLER_DIR = prev; }
+});
+
+test("S8-P2 premature: asOf < target → PENDING selalu; candle jauh-sebelum-target tak dipakai; hanya candle menutupi target", () => {
+  const c = (ts: number, close = 2): Candle => ({ ts, open: 1, high: 3, low: .5, close, volumeSol: 1 });
+  const early = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 3_600_000, horizonMin: 60, candles: [c(3_540_000, 9.9)], intervalMs: 60_000, asOf: 3_500_000 });
+  eq(early.status, "PENDING", "belum jatuh tempo = PENDING meski candle ada");
+  const stale = resolveOutcome({ status: "PENDING", attempts: 9, targetAt: 3_600_000, horizonMin: 60, candles: [c(0, 9.9)], intervalMs: 60_000, asOf: 3_600_000 + 8 * 60_000 * 60_000 }); // lewat grace 7,5 juta ms
+  eq(stale.status, "MISSING_FINAL", "candle 1 jam sebelum target BUKAN hasil → FINAL, bukan OBSERVED palsu");
+  const good = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 3_600_000, horizonMin: 60, candles: [c(3_540_000, 5), c(3_600_000, 6)], intervalMs: 60_000, asOf: 3_700_000 });
+  eq(good.status, "OBSERVED", "candle yg close-time ≥ target dipakai");
+  eq(good.priceAtTarget, 5, "candle dgn close-time TEPAT di target (=3,6jt) adalah yg pertama memenuhi >=target");
+});
+
+test("S8-P4 onchain decode: delta saldo token pemilik → BUY/SELL + SOL delta; identitas signature:owner", () => {
+  const mint = "Mint1111111111111111111111111111111111111111";
+  const tx = {
+    slot: 100, blockTime: 1_790_000_000, signature: "sigAAA",
+    transaction: { message: { accountKeys: ["OwnerW111111111111111111111111111111111111111", "Curve111111111111111111111111111111111111111"] } },
+    meta: {
+      preBalances: [1_000_000_000, 5_000_000_000], postBalances: [900_000_000, 5_100_000_000],
+      preTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 100 } }],
+      postTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 250 } }],
+    },
+  };
+  const trades = decodePumpTx(tx as never, mint, 1_790_000_500_000);
+  eq(trades.length, 1, "satu wallet berubah");
+  const t = trades[0]!;
+  eq(t.side, "buy", "token bertambah = BUY");
+  eq(t.signature, "sigAAA", "signature asli");
+  eq(t.slot, 100, "slot asli");
+  eq(t.sourceTs, 1_790_000_000_000, "timestamp sumber = blockTime");
+  assert(t.sol > 0 && Math.abs(t.sol - 0.1) < 1e-9, "SOL delta 0.1 (beli: SOL berkurang, diambil absolut)");
+  eq(t.dedupeKey, "sigAAA:OwnerW111111111111111111111111111111111111111", "identitas signature:owner");
+  // jual: token berkurang
+  const txSell = { ...tx, signature: "sigBBB", meta: { ...tx.meta, preBalances: [900_000_000, 5_100_000_000], postBalances: [950_000_000, 5_050_000_000],
+    preTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 250 } }], postTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 100 } }] } };
+  eq(decodePumpTx(txSell as never, mint, 0)[0]!.side, "sell", "token berkurang = SELL");
+  // mint lain / tanpa perubahan → kosong
+  eq(decodePumpTx({ ...tx, meta: null } as never, mint, 0).length, 0, "tanpa meta = kosong");
 });
