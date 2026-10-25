@@ -543,3 +543,21 @@ candle persist inkremental; paper per policy no-look-ahead (close candle SELESAI
 trigger TERSTRUKTUR; report exclude-fixture. Perintah: pump:watch / pump:collect --mint / pump:observe
 / pump:report / pump:health. 215 tes / 33 berkas LULUS. H2 prioritas; H1 BLOCKED_DATA; H3 proxy
 KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED.
+
+## S8 KOREKSI RISET (2026-10-25) — commit 69290aa
+- P1 masking FIXED: outcome-mark kini event-stream; state = reduceOutcomes (PENDING→OBSERVED/
+  MISSING_FINAL; terminal tak tertimpa; tulis hanya saat transisi/attempts naik). Tes reproduksi.
+- P2 premature FIXED: asOf>=target wajib; kandidat = candle close-time>=target dlm toleransi 1
+  interval; candle jauh-sebelum-target DILARANG jadi hasil (tes: stale-candle → MISSING_FINAL,
+  bukan OBSERVED palsu). Paper exit sama-semantik.
+- P3: observer non-overlap + durasi berbatas (120s default) + lastObservedAt diperbarui +
+  koordinasi GMGN via /health proxy cooldown; health: uptime, freshness sumber, backlog, state.
+- P4 UNBLOCKED: TAPE ON-CHAIN TERDEKODE nyata (RPC umum): getSignaturesForAddress(bondingCurve)
+  → getTransaction → delta saldo token pemilik → BUY/SELL + SOL delta + signature+slot+blockTime;
+  dedupe signature:owner. RUN NYATA: 21 trade terdekode (contoh signature 5ZJL…, slot 461162958,
+  blockTime 1792911272). GMGN top-traders tetap kontekstual (bukan trade individu). H2 kini
+  punya sumber data penuh (dibatasi 10 sig/pass — kuota RPC dijaga).
+- P5: biaya model + fee tetap 0,001 SOL/trip dgn solUsd saat tersedia; $3/$5; fixture tetap
+  dikecualikan; tier: harga-pasar vs paper-candle vs eksekusi-tervalidasi-quote dipisah.
+- RUN NYATA post-fix: 6 keputusan, 4 OBSERVED tervalidasi (contoh 1m −16,73%, attempts=2 via
+  reduksi), 24 PENDING. 218 tes / 33 berkas ✓.
