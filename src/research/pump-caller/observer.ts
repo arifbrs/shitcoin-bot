@@ -130,9 +130,11 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
         if (pass) {
           sigCursors.set(mint, pass.topSig ?? sigCursors.get(mint) ?? null);
           append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, source: "solana-rpc" });
-          const valid = pass.trades.filter((t) => t.state === "VERIFIED_SWAP");
-          for (const t of pass.trades) append({ type: "trade", ...t, source: "solana-rpc", observedAt: Date.now() }); // UNVERIFIED ikut tersimpan dgn state-nya
-          if (valid.length) { trades = valid; tapeSource = `solana-rpc-validated (${valid.length} swap; coverage tercatat)`; tapeFull = true; }
+          // (S10-P0) hanya sisi TRADER (bukan vault pool) jadi trade riset; sisi pool tercatat
+          // dgn poolSide=true sebagai bukti arah — TIDAK dihitung dua kali.
+          const valid = pass.trades.filter((t) => t.state === "VERIFIED_SWAP" && !(t as { poolSide?: boolean }).poolSide);
+          for (const t of pass.trades) append({ type: "trade", ...t, source: "solana-rpc", observedAt: Date.now() }); // UNVERIFIED + poolSide ikut tersimpan dgn label
+          if (valid.length) { trades = valid; tapeSource = `solana-rpc-validated trader-side (${valid.length}; pool-side terpisah)`; tapeFull = true; }
         }
       }
       if (!trades.length) {

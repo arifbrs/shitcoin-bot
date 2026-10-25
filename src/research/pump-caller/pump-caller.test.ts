@@ -248,7 +248,7 @@ test("S8-P4 onchain decode: delta saldo token pemilik → BUY/SELL + SOL delta; 
   const tx = {
     slot: 100, blockTime: 1_790_000_000, signature: "sigAAA",
     transaction: { message: { accountKeys: [W, TA, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], instructions: [
-      { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", parsed: { type: "transfer", info: { source: TA, destination: W } } }, // jsonParsed: transfer SPL menyentuh akun token mint
+      { programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" }, // (S10) instruksi PROGRAM PUMP resmi (docs.pump.fun) — bukti swap; transfer token saja tak cukup
     ] } },
     meta: {
       preBalances: [1_000_000_000, 0, 0], postBalances: [900_000_000, 0, 0],
@@ -260,7 +260,7 @@ test("S8-P4 onchain decode: delta saldo token pemilik → BUY/SELL + SOL delta; 
   eq(trades.length, 1, "satu wallet berubah");
   const t = trades[0]!;
   eq(t.side, "buy", "token bertambah = BUY");
-  eq(t.state, "VERIFIED_SWAP", "instruksi transfer mint ada = swap terverifikasi");
+  eq(t.state, "VERIFIED_SWAP", "instruksi program pump resmi + delta mint = swap terverifikasi");
   eq(t.tokenAmountRaw, "150000000", "jumlah RAW dari amount SPL (bukan tebakan desimal)");
   eq(t.signature, "sigAAA", "signature asli");
   eq(t.slot, 100, "slot asli");
@@ -271,9 +271,11 @@ test("S8-P4 onchain decode: delta saldo token pemilik → BUY/SELL + SOL delta; 
   const txSell = { ...tx, signature: "sigBBB", meta: { ...tx.meta, preBalances: [900_000_000, 0, 0], postBalances: [950_000_000, 0, 0],
     preTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 250, amount: "250000000" } }], postTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 100, amount: "100000000" } }] } };
   eq(decodePumpTx(txSell as never, mint, 6, 0)[0]!.side, "sell", "token berkurang = SELL");
-  // tanpa instruksi transfer → UNVERIFIED_BALANCE_DELTA (bukan trade riset)
-  const noInstr = decodePumpTx({ ...tx, signature: "sigCCC", transaction: { message: { accountKeys: [W, TA, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] } } } as never, mint, 6, 0);
-  eq(noInstr[0]!.state, "UNVERIFIED_BALANCE_DELTA", "delta tanpa bukti instruksi = dilabel, bukan swap");
+  // tanpa instruksi program pump (hanya transfer token) → UNVERIFIED (transfer ≠ swap)
+  const noInstr = decodePumpTx({ ...tx, signature: "sigCCC", transaction: { message: { accountKeys: [{ pubkey: W, signer: true }, { pubkey: TA }, { pubkey: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }] } } } as never, mint, 6, 0);
+  eq(noInstr[0]!.state, "UNVERIFIED_BALANCE_DELTA", "delta tanpa program pump = transfer biasa, bukan swap");
+  // PDA vault non-signer = sisi pool, bukan trader ritel
+  eq(t.poolSide, false, "wallet trader (signer) = sisi trader");
   // tx gagal = ditolak
   const failed = decodePumpTx({ ...tx, meta: { ...tx.meta!, err: { InstructionError: [0, { Custom: 1 }] } } } as never, mint, 6, 0);
   eq(failed.length, 0, "meta.err != null → tidak ada trade");

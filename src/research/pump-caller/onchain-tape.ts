@@ -12,6 +12,7 @@
  * Hanya swap TERVALIDASI yang layak masuk riset; ambiguitas dilabel, tidak diarang.
  */
 import { pooledRpc } from "../../safety/onchain.js";
+import { PublicKey } from "@solana/web3.js";
 import type { TradeEvent } from "./types.js";
 
 // Program token ditemukan LIVE (2026-10-25): token pump memakai Token-2022 bawaan Pump
@@ -21,7 +22,25 @@ const TOKEN_PROGRAMS = new Set([
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
   "TokenzQdBNbLkgHcc8TwG4m3ak7otR59gsCXsP3hHhHxn",
 ]);
-const PUMP_PROGRAMS = new Set(["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "pAMMBay6oceH9fJKBRHGP5D4dDv9awq3qnX651rkFiw6"]);
+// Program-ID RESMI dari pump-fun/pump-public-docs (S10-P0 — bukan tebakan):
+//   docs/PUMP_PROGRAM_README.md: bonding curve = 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+//     buy(user, associated_user, mint, amount, max_sol_cost) / sell(..., min_sol_output)
+//   docs/PUMP_SWAP_README.md: AMM = pAMMBay6oceH9fJKBRHGP5D4dD4sWpmSwMn52FMfXEA
+//     buy(pool, user, baseOut, maxQuoteIn) / sell(pool, user, baseIn, minQuoteOut)
+const PUMP_BONDING_CURVE = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+const PUMP_SWAP_AMM = "pAMMBay6oceH9fJKBRHGP5D4dD4sWpmSwMn52FMfXEA";
+const PUMP_PROGRAMS = new Set([PUMP_BONDING_CURVE, PUMP_SWAP_AMM]);
+/** PDA bonding-curve utk mint (seeds resmi ["bonding-curve", mint], program pump) — mint manual
+ *  tanpa event launch tetap dapat tape on-chain. */
+export function bondingCurvePda(mint: string): string {
+  try {
+    return PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), new PublicKey(mint).toBuffer()], new PublicKey(PUMP_BONDING_CURVE))[0].toBase58();
+  } catch { return ""; }
+}
+
+const QUOTE_MINTS = new Set([
+  "So11111111111111111111111111111111111111112", // WSOL
+]);
 
 export interface RawTxLike {
   slot?: number; blockTime?: number | null; signature?: string;
@@ -36,8 +55,9 @@ export interface RawTxLike {
 }
 
 export type TradeState = "VERIFIED_SWAP" | "UNVERIFIED_BALANCE_DELTA" | "FAILED_TX" | "NO_TOKEN_CHANGE" | "NO_META";
+// poolSide=true → sisi vault pool (konfirmasi arah); hanya poolSide=false yang jadi trade ritel.
 export interface DecodedTrade extends TradeEvent {
-  signature: string; slot: number | null; sourceTs: number | null;
+  signature: string; slot: number | null; sourceTs: number | null; poolSide?: boolean;
   state: TradeState; tokenAmountRaw: string | null; decimals: number | null;
   solInclFeesRent: boolean; closedTokenAccount: boolean; openedTokenAccount: boolean;
   reason?: string;
@@ -51,9 +71,11 @@ const TRANSFER_DISCRIMINATOR = "3"; // transfer(u64) — discriminator pertama b
  *  (accountKeys {pubkey}, ix.programId + parsed.type). Evidence hanya butuh: program, parsed type,
  *  dan accounts-indices yang menyentuh akun token mint. */
 export interface NormIx { program: string | null; type: string | null; accounts: number[]; pubkeysTouched: string[] }
-export function normalizeTx(tx: RawTxLike): { keys: string[]; ixTop: NormIx[]; ixInner: NormIx[] } {
+export function normalizeTx(tx: RawTxLike): { keys: string[]; ixTop: NormIx[]; ixInner: NormIx[]; signers: Set<string> } {
   const rawKeys = tx.transaction?.message?.accountKeys ?? [];
   const keys = rawKeys.map((k) => (typeof k === "string" ? k : String((k as unknown as { pubkey?: string })?.pubkey ?? "")));
+  const signers = new Set<string>(rawKeys.map((k) => (typeof k === "string" ? k : String((k as unknown as { pubkey?: string; signer?: boolean })?.pubkey ?? "")))
+    .filter((pk, i) => typeof rawKeys[i] === "string" || (rawKeys[i] as unknown as { signer?: boolean })?.signer === true));
   const norm = (ix: Record<string, unknown> | undefined): NormIx => {
     const parsed = ix?.parsed && typeof ix.parsed === "object" ? (ix.parsed as { type?: string; info?: Record<string, unknown> }) : undefined;
     // kumpulkan semua nilai pubkey-string dari parsed.info (source/destination/account/...)
@@ -69,27 +91,24 @@ export function normalizeTx(tx: RawTxLike): { keys: string[]; ixTop: NormIx[]; i
   };
   const ixTop = (tx.transaction?.message?.instructions ?? []).map((i) => norm(i as unknown as Record<string, unknown>));
   const ixInner = (tx.meta?.innerInstructions ?? []).flatMap((x) => (x.instructions ?? []).map((i) => norm(i as unknown as Record<string, unknown>)));
-  return { keys, ixTop, ixInner };
+  return { keys, ixTop, ixInner, signers };
 }
 
-export function txSwapEvidence(tx: RawTxLike, mint: string): { hasTokenTransfer: boolean; pumpProgramPresent: boolean; closedAccounts: number } {
+export interface SwapEvidence { pumpSwapPresent: boolean; closedAccounts: number; tokenAccountPubkeys: string[] }
+export function txSwapEvidence(tx: RawTxLike, mint: string): SwapEvidence {
   const { keys, ixTop, ixInner } = normalizeTx(tx);
   // Akun token mint (indeks) → PUBKEY-nya; instruksi jsonParsed tak membawa accounts-idx,
   // melainkan parsed.info.{source,destination,...} berupa pubkey — cocokkan lewat pubkey.
   const tokenAccountPubkeys = new Set<string>();
   for (const b of [...(tx.meta?.preTokenBalances ?? []), ...(tx.meta?.postTokenBalances ?? [])]) if (b.mint === mint) tokenAccountPubkeys.add(keys[b.accountIndex] ?? "");
-  let hasTokenTransfer = false, pumpProgramPresent = false, closedAccounts = 0;
+  // (S10-P0) SWAP dibuktikan oleh instruksi buy/sell PROGRAM PUMP RESMI (docs.pump.fun),
+  // bukan oleh transfer token (transfer biasa ≠ trade; vault pool ikut berpindah tiap swap).
+  let pumpSwapPresent = false, closedAccounts = 0;
   for (const ix of [...ixTop, ...ixInner]) {
-    if (ix.program != null && TOKEN_PROGRAMS.has(ix.program)) {
-      if (ix.type === "closeAccount") closedAccounts++;
-      if (ix.type === "transfer" || ix.type === "transferChecked") {
-        const touched = ix.pubkeysTouched.some((pk) => tokenAccountPubkeys.has(pk)) || ix.accounts.some((a) => tokenAccountPubkeys.has(keys[a] ?? "\u0000"));
-        if (touched) hasTokenTransfer = true;
-      }
-    }
-    if (ix.program != null && PUMP_PROGRAMS.has(ix.program)) pumpProgramPresent = true;
+    if (ix.program != null && TOKEN_PROGRAMS.has(ix.program) && ix.type === "closeAccount") closedAccounts++;
+    if (ix.program != null && PUMP_PROGRAMS.has(ix.program)) pumpSwapPresent = true;
   }
-  return { hasTokenTransfer, pumpProgramPresent, closedAccounts };
+  return { pumpSwapPresent, closedAccounts, tokenAccountPubkeys: [...tokenAccountPubkeys] };
 }
 
 /** Murni: satu transaksi → trade per wallet pemilik (multi-wallet didukung). */
@@ -117,6 +136,12 @@ export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | nul
   const pre = new Map<number, { owner?: string; raw: bigint | null }>();
   for (const b of meta.preTokenBalances ?? []) if (b.mint === mint) pre.set(b.accountIndex, { owner: b.owner ?? keys[b.accountIndex], raw: rawAmount(b) });
   const out: DecodedTrade[] = [];
+  // (S10-P0) poolSide: pemilik akun token ADALAH program pool (PDA) — vault bonding-curve/pool
+  // AMM. Sisi pool BUKAN trade ritel; hanya dipakai konfirmasi arah, tak dihitung independen.
+  const signers = normalizeTx(tx).signers;
+  // poolSide: pemilik akun token = PDA vault (tak menandatangani tx) atau program pool itu
+  // sendiri — sisi AMM, bukan trader ritel. Trader = signer (pembayar fee).
+  const isPoolOwned = (owner: string): boolean => owner === PUMP_BONDING_CURVE || owner === PUMP_SWAP_AMM || !signers.has(owner);
   for (const [idx, p] of post) {
     const owner = p.owner;
     if (!owner || p.raw == null) continue;
@@ -128,13 +153,14 @@ export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | nul
     const solIdx = ownerSolIdx.get(owner);
     const solDeltaLamports = solIdx != null ? (meta.postBalances?.[solIdx] ?? 0) - (meta.preBalances?.[solIdx] ?? 0) : null;
     const sol = solDeltaLamports != null ? Math.abs(solDeltaLamports) / 1e9 : null;
-    const state: TradeState = evidence.hasTokenTransfer ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA";
+    const state: TradeState = evidence.pumpSwapPresent ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA";
     out.push(mk({
       wallet: owner, side, sol: sol ?? 0, tokenAmountRaw: (dRaw < 0n ? -dRaw : dRaw).toString(), decimals: decimals ?? null,
       state, sourceTs: tx.blockTime != null ? tx.blockTime * 1000 : null,
+      poolSide: isPoolOwned(owner),
       closedTokenAccount: side === "sell" && evidence.closedAccounts > 0 && p.raw === 0n,
       openedTokenAccount: side === "buy" && !pre.has(idx),
-      reason: state === "UNVERIFIED_BALANCE_DELTA" ? "tanpa instruksi transfer mint (transfer biasa/rent?) — bukan bukti swap" : undefined,
+      reason: state === "UNVERIFIED_BALANCE_DELTA" ? "tanpa instruksi buy/sell program pump — transfer biasa ≠ swap" : isPoolOwned(owner) ? "sisi POOL (vault) — bukan trade ritel" : undefined,
     }));
   }
   // akun token hanya-PRE (ditutup di tx ini; saldo post 0 / hilang) → penjualan penuh/keluar:
@@ -145,7 +171,7 @@ export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | nul
     const solIdx = ownerSolIdx.get(owner);
     const sol = solIdx != null ? Math.abs((meta.postBalances?.[solIdx] ?? 0) - (meta.preBalances?.[solIdx] ?? 0)) / 1e9 : 0;
     out.push(mk({ wallet: owner, side: "sell", sol, tokenAmountRaw: b.raw.toString(), decimals: decimals ?? null,
-      state: evidence.hasTokenTransfer ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA",
+      state: evidence.pumpSwapPresent ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA",
       sourceTs: tx.blockTime != null ? tx.blockTime * 1000 : null, closedTokenAccount: true }));
   }
   return out;

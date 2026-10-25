@@ -11,6 +11,7 @@ import { FIX_TRADES } from "./fixtures.js";
 import { absorptionView } from "./absorption.js";
 import { analyze, ANALYST_VERSION } from "./analyst.js";
 import { decisionIdFor } from "./journal.js";
+import { bondingCurvePda } from "./onchain-tape.js";
 
 async function main(): Promise<void> {
   const mints = process.argv.filter((a, i, arr) => arr[i - 1] === "--mint");
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
   const now = Date.now();
   let entries = loadWatchlist();
   for (const m of mints) {
-    const res = admit(entries, { mint: m, source: "manual", priority: 1_000_000 }, policy, 0, now);
+    const res = admit(entries, { mint: m, source: "manual", priority: 1_000_000, bondingCurveKey: bondingCurvePda(m) }, policy, 0, now);
     entries = res.entries;
     append({ type: "token-observed", ts: now, mint: m, source: "manual", detectedAt: now });
     console.log(`  ${m.slice(0, 8)}... ${res.admitted ? "di-admit" : `DITOLAK: ${res.reason}`}`);
