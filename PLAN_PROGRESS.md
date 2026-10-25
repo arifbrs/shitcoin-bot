@@ -532,3 +532,14 @@ Komponen: adapter Developer API typed (BLOCKED_EXTERNAL tanpa PUMPFUN_API_KEY �
 karangan), position tracker berbasis bukti, absorpsi, wick/4-kebijakan, deteksi dini, analis
 deterministik, 3 hipotesis pre-registrasi, jurnal idempoten. 211 tes / 33 berkas LULUS.
 Status riset: INSUFFICIENT (belum ada observasi prospektif non-fixture; caller timeline butuh kunci).
+
+## SPRINT PUMP-CALLER TANPA DEVELOPER API (2026-10-25) — commit e5481cf, Actions GREEN
+RUN NYATA (bukan fixture): 24 launch PumpPortal live (feed lag median 1ms) → watchlist berbatas
+(sampling 1/3, kapasitas 40, penolakan tercatat) → candle OHLCV GMGN-kline fallback (swap-api
+diblokir Cloudflare dari host ini — TIDAK di-bypass; dilabel) → 11 keputusan bayangan live
+(sosial UNAVAILABLE; tape parsial berlabel) → 5 outcome OBSERVED nyata (contoh 1m −6,55%) +
+PENDING berbatas-retry, 0 fabrikasi. Timestamps s/ms/ISO ternormalisasi (invalid ditolak);
+candle persist inkremental; paper per policy no-look-ahead (close candle SELESAI; MFE/MAE; 5pp; $3/$5);
+trigger TERSTRUKTUR; report exclude-fixture. Perintah: pump:watch / pump:collect --mint / pump:observe
+/ pump:report / pump:health. 215 tes / 33 berkas LULUS. H2 prioritas; H1 BLOCKED_DATA; H3 proxy
+KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED.
