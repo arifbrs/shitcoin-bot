@@ -8,8 +8,9 @@ import { liveBuy, liveSell } from "./executor.js";
 import type { LiveResult } from "./executor.js";
 import { liveAllowed, halt, isHalted, spentLast24h as guardSpent24h } from "./guardian.js";
 import { tokenBalanceOfOwner } from "../safety/onchain.js";
+import { withExecLock } from "../util/exec-lock.js";
 import { readControl, livePermitted as envLivePermitted } from "../control.js";
-import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus, poolLatestBlockhash, poolAccountOwner, poolTokenAccountAmount } from "./rpc.js";
+import { poolBalanceSol, poolSendRawTransaction, poolSignatureStatus, poolLatestBlockhash, poolAccountOwner, poolTokenAccountAmount, poolTxWalletDelta } from "./rpc.js";
 
 /**
  * LIVE BRIDGE — the hands. The paper trader stays the brain.
@@ -73,6 +74,8 @@ export interface LiveLot {
   tokensBought: number;   // real tokens observed after the buy
   proceedsSol: number;    // measured SOL returned by sells
   rentReclaimedSol: number;
+  /** true = spentSol came from the transaction itself; false = fallback estimate. */
+  spentMeasured?: boolean;
   state: LotState;
   buySignature?: string;
   buyTimedOut?: boolean;
@@ -85,10 +88,35 @@ export interface LiveLot {
 interface BridgeState {
   lots: LiveLot[];
   expectedBalanceSol: number | null; // balance snapshot taken after our last own transaction
+  dryWallet: DryWallet | null;
+}
+
+/**
+ * DOMPET KERING — a latch, not a counter (audit, 2026-08-25).
+ *
+ * Found in production: the wallet fell to 0.0190◎ against a 0.0200◎ requirement and the bridge
+ * spent the next FIFTEEN HOURS attempting a buy every few minutes. 177 identical refusals, all
+ * logged at the same severity as a one-off routing error, while the console still read "LIVE".
+ * Nobody was lied to — but nobody was told either, and a state you can only discover by
+ * counting duplicate log lines is a state the system does not actually have.
+ *
+ * So: after a few consecutive refusals for the same reason, stop asking, say so ONCE, and
+ * persist it where the dashboard process can see it (state lives on disk — the web server does
+ * not share this module's memory). Exits are deliberately untouched: a dry wallet must never
+ * become a reason to strand a bag.
+ */
+interface DryWallet {
+  since: number;
+  strikes: number;
+  needSol: number;
+  haveSol: number;
+  lastCheck: number;
 }
 
 let lots = new Map<string, LiveLot>();
 let expectedBalanceSol: number | null = null;
+let dryWallet: DryWallet | null = null;
+let dryStrikes = 0;
 let inFlight = 0;
 let started = false;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
@@ -110,7 +138,7 @@ let onLiveFill: (fill: { tradeId: string; spentSol: number; tokens: number }) =>
 // ── persistence ───────────────────────────────────────────────────────────────
 
 function save(): void {
-  const s: BridgeState = { lots: [...lots.values()], expectedBalanceSol };
+  const s: BridgeState = { lots: [...lots.values()], expectedBalanceSol, dryWallet };
   try {
     writeFileSync(STATE_PATH, JSON.stringify(s, null, 2));
   } catch (e) {
@@ -124,6 +152,7 @@ function load(): void {
     const s = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<BridgeState>;
     lots = new Map((s.lots ?? []).filter((l) => l && typeof l.tradeId === "string").map((l) => [l.tradeId, l]));
     expectedBalanceSol = typeof s.expectedBalanceSol === "number" ? s.expectedBalanceSol : null;
+    dryWallet = s.dryWallet ?? null;
   } catch {
     // A corrupt ledger means we do not know what we hold — the definition of unsafe.
     halt("live-lots.json unreadable — cannot know what bags we hold");
@@ -156,6 +185,8 @@ export interface ChainOps {
   buy(mint: string, sizeSol: number, deployedSol: number, pool: string): Promise<LiveResult>;
   sell(mint: string, amount: number | string, pool: string): Promise<LiveResult>;
   closeAta(mint: string): Promise<number>;
+  /** Real SOL this ONE transaction moved for our wallet: negative = out, positive = in. */
+  txWalletDelta(signature: string): Promise<number | null>;
   now(): number;
   sleep(ms: number): Promise<void>;
 }
@@ -168,6 +199,7 @@ const realChain: ChainOps = {
   buy: (mint, sizeSol, deployedSol, pool) => liveBuy(mint, sizeSol, deployedSol, pool),
   sell: (mint, amount, pool) => liveSell(mint, amount, pool),
   closeAta: (mint) => closeAtaOnChain(mint),
+  txWalletDelta: (sig) => poolTxWalletDelta(sig, botPubkey()),
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
 };
@@ -179,9 +211,143 @@ async function readBalanceSol(): Promise<number | null> {
 }
 
 /** Snapshot the balance as "explained". Everything after this must be our own doing. */
-async function snapshotBalance(): Promise<void> {
+async function snapshotBalance(reason: string): Promise<void> {
   const b = await readBalanceSol();
-  if (b != null) { expectedBalanceSol = b; save(); }
+  if (b == null) return;
+  const prev = expectedBalanceSol;
+  expectedBalanceSol = b;
+  save();
+  // BALANCE HISTORY (audit, 2026-08-25). This used to snapshot silently, so the only anchors
+  // for a wallet-level reconciliation were the two `deposit-acknowledged` records — two points
+  // across three days of trading. Without a series there is no way to answer "did the ledger's
+  // claimed P&L actually happen to the wallet?", which is the one question that outranks every
+  // per-trade number. One line per snapshot; it is a few hundred bytes a day.
+  logRecord("live-exec", {
+    type: "balance", reason, sol: Number(b.toFixed(9)),
+    deltaSol: prev != null ? Number((b - prev).toFixed(9)) : null,
+    deployedSol: Number(deployedLiveSol().toFixed(6)),
+  });
+}
+
+/**
+ * The money a transaction ACTUALLY moved, read from the transaction itself.
+ *
+ * `attempts = 1` is the CRITICAL-PATH form and the default for a buy. A confirmed signature is
+ * usually queryable at once — the token-balance poll above already proved it landed — but "usually"
+ * is not "always", and this sits between the fill and the strategy engine adopting it. Entry decay
+ * peaks at 4 seconds; spending up to 3.6 of them re-asking the chain how much a buy cost, before
+ * the engine even knows it holds a bag, would trade a real edge for a bookkeeping nicety. So the
+ * buy asks once and, if the chain is not ready, books its fallback and corrects itself in the
+ * background (see `correctSpendLater`).
+ *
+ * It never invents a number: if the chain will not tell us, the caller falls back to its estimate
+ * and the record says so, because a booked figure that is silently an estimate is exactly the
+ * failure this whole change exists to remove.
+ */
+async function realMove(signature: string | undefined, attempts = 3): Promise<number | null> {
+  if (!signature) return null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const d = await chain.txWalletDelta(signature);
+    if (d != null) return d;
+    if (attempt + 1 < attempts) await chain.sleep(1_200);
+  }
+  return null;
+}
+
+/**
+ * OFF the critical path: keep asking what the buy really cost, and correct the lot when the
+ * answer arrives. Runs while the position is already live, so the fix lands long before the
+ * `settled` record that consumes `spentSol` is written.
+ */
+function correctSpendLater(lot: LiveLot, signature: string | undefined): void {
+  if (!signature) return;
+  void (async () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await chain.sleep(2_000 * (attempt + 1));
+      if (lot.state === "closed") return;         // settled on an estimate; a late fix would corrupt it
+      const d = await chain.txWalletDelta(signature);
+      if (d == null) continue;
+      const was = lot.spentSol;
+      lot.spentSol = Math.abs(d);
+      lot.spentMeasured = true;
+      save();
+      logRecord("live-exec", {
+        type: "spend-corrected", tradeId: lot.tradeId, mint: lot.mint,
+        estimatedSol: Number(was.toFixed(6)), measuredSol: Number(lot.spentSol.toFixed(6)),
+        driftSol: Number((lot.spentSol - was).toFixed(6)), afterMs: Date.now() - lot.openedAt,
+      });
+      return;
+    }
+  })().catch(() => { /* an uncorrected estimate is already logged as an estimate */ });
+}
+
+/**
+ * ACKNOWLEDGE A DEPOSIT — the ops primitive that was missing (found live, 2026-08-23).
+ *
+ * An owner top-up is BY DEFINITION a balance move the bridge did not make, so reconcileTick
+ * fail-closed HALTs on it — correct behavior for a drainer, wrong outcome for a deposit. Worse,
+ * resuming WITHOUT re-seeding the snapshot re-halts on the very next tick: the old expected
+ * balance is still on file. This reads the chain once and declares the current balance
+ * "explained", so a deliberate deposit stops being indistinguishable from theft.
+ *
+ * Callers must pair it with resume() — acknowledging only fixes the snapshot; it does not lift
+ * an existing halt (see /api/control's walletAck handling).
+ */
+export async function acknowledgeDeposit(): Promise<{ ok: boolean; sol: number | null }> {
+  const b = await readBalanceSol();
+  if (b == null) return { ok: false, sol: null }; // unreadable chain → refuse to assert anything
+  expectedBalanceSol = b;
+  save();
+  logRecord("live-exec", { type: "deposit-acknowledged", sol: b });
+  ui.info(`[live] setoran diakui — snapshot saldo ${b.toFixed(4)} SOL`);
+  return { ok: true, sol: b };
+}
+
+const DRY_STRIKES = 5;          // a few refusals can be transient (a sell still settling)
+const DRY_RECHECK_MS = 300_000; // once latched, look at the chain every 5 min, not every signal
+
+/** Parse the guard's own refusal text. Anything else is a routing problem, not an empty wallet. */
+function dryWalletFrom(err: string | null | undefined): { need: number; have: number } | null {
+  const m = /insufficient balance: need ([\d.]+), have ([\d.]+)/.exec(err ?? "");
+  return m ? { need: Number(m[1]), have: Number(m[2]) } : null;
+}
+
+/** A refusal that means "no money", counted. Latches after DRY_STRIKES in a row. */
+function noteDryRefusal(d: { need: number; have: number }): void {
+  dryStrikes++;
+  if (dryWallet || dryStrikes < DRY_STRIKES) return;
+  dryWallet = { since: Date.now(), strikes: dryStrikes, needSol: d.need, haveSol: d.have, lastCheck: Date.now() };
+  save();
+  logRecord("live-exec", { type: "wallet-dry", needSol: d.need, haveSol: d.have, strikes: dryStrikes });
+  ui.reject(`[live] DOMPET KERING — butuh ${d.need.toFixed(4)} SOL, ada ${d.have.toFixed(4)} SOL. Beli DIHENTIKAN sampai diisi; keluar tetap jalan.`);
+}
+
+/** Any successful buy proves the wallet is not dry. */
+function clearDryWallet(reason: string): void {
+  dryStrikes = 0;
+  if (!dryWallet) return;
+  const since = dryWallet.since;
+  dryWallet = null;
+  save();
+  logRecord("live-exec", { type: "wallet-refilled", reason, dryForSec: Math.round((Date.now() - since) / 1000) });
+  ui.pass("[live] dompet terisi lagi — beli dilanjutkan");
+}
+
+/**
+ * While latched, new buys are skipped in SILENCE (the whole point), except that every
+ * DRY_RECHECK_MS we ask the chain whether the money came back. Returns true = still dry.
+ */
+async function stillDry(): Promise<boolean> {
+  if (!dryWallet) return false;
+  if (Date.now() - dryWallet.lastCheck < DRY_RECHECK_MS) return true;
+  dryWallet.lastCheck = Date.now();
+  save();
+  const bal = await readBalanceSol();
+  if (bal == null) return true;                     // unreadable is not evidence of money
+  if (bal >= dryWallet.needSol) { clearDryWallet("balance recovered"); return false; }
+  dryWallet.haveSol = bal;
+  save();
+  return true;
 }
 
 let armedOverride: boolean | null = null;
@@ -272,6 +438,15 @@ export function bridgeOpen(a: { tradeId: string; mint: string; symbol?: string |
 async function doOpen(a: { tradeId: string; mint: string; symbol?: string | null; sizeSol: number; pool?: string }): Promise<void> {
   const lot = lots.get(a.tradeId);
   if (!lot || lot.state === "closed") return;
+  // An empty wallet is a standing condition, not a per-trade event. Drop the attempt without
+  // adding another identical line to the log — see DryWallet.
+  if (await stillDry()) {
+    lot.state = "closed";
+    lot.closedAt = Date.now();
+    lot.lastErr = "wallet dry — buys paused";
+    save();
+    return;
+  }
   const gate = liveAllowed();
   if (!gate.ok) {
     lot.state = "closed";
@@ -285,9 +460,19 @@ async function doOpen(a: { tradeId: string; mint: string; symbol?: string | null
 
   inFlight++;
   try {
-    const before = await readBalanceSol();
+    // The spend bracket's "before" comes back FROM the buy (executor reads the balance anyway
+    // for its guard) — this used to be a separate pre-read here, i.e. two serial RPC round
+    // trips where one suffices. Fallback to a local read only when the result lacks it
+    // (test doubles).
+    // CROSS-PROCESS LOCK (2026-08-24): S1 dan S2 berdagang dari dompet yang sama di proses
+    // berbeda — bracket delta saldo yang tumpang-tindih saling mencuri pergerakan SOL
+    // (COTUS: spent 0.0004 vs proceeds 0.012 = "+2709%" fantasi). Satu bracket per waktu.
+    // SPEND EKSAK: buy terkonfirmasi menukar TEPAT sizeSol (PumpPortal denominated-in-sol),
+    // jadi spent = input tx — bukan delta yang bisa terkontaminasi.
+    const { withExecLock } = await import("../util/exec-lock.js");
     const t0 = Date.now();
-    const r = await chain.buy(a.mint, sizeSol, deployedLiveSol(), lot.pool);
+    const r = await withExecLock(async () => chain.buy(a.mint, sizeSol, deployedLiveSol(), lot.pool));
+    const before = r.balanceBefore !== undefined ? r.balanceBefore : await readBalanceSol();
     lot.buySignature = r.signature;
     lot.buyTimedOut = r.timedOut === true;
     lot.lastErr = r.err ?? null;
@@ -297,23 +482,41 @@ async function doOpen(a: { tradeId: string; mint: string; symbol?: string | null
       lot.state = "closed";
       lot.closedAt = Date.now();
       save();
+      const dry = dryWalletFrom(r.err);
       logRecord("live-exec", { type: "buy-failed", tradeId: a.tradeId, mint: a.mint, symbol: a.symbol ?? null, sizeSol, err: r.err, ms: Date.now() - t0 });
       ui.warn(`[live] BUY ${a.symbol ?? a.mint} refused — ${r.err}`);
+      if (dry) noteDryRefusal(dry);
       return;
     }
 
     // INVARIANT 2: confirmed OR timed out, we now go look for the tokens. A timeout is
     // not evidence of anything; only the chain is.
+    // Cadence: three tight 500ms reads, then 2s. A CONFIRMED tx has already landed — the
+    // tokens are visible to a `confirmed` read immediately, so almost every success exits on
+    // the first iteration and the tight band just skips the old flat-2s wait entirely. The
+    // relaxation exists because this loop also serves the timed-out case, where the tx may
+    // land minutes late and polling at full rate would burn quota for nothing. Tightening here
+    // also shrinks the window where an EARLY_CUT can arrive before the lot even holds its fill.
     const deadline = Date.now() + (r.ok ? 25_000 : config.exec.live.buySettleMs);
     let tokens = 0;
+    let balPolls = 0;
     while (Date.now() < deadline) {
       const bal = await chain.tokenBalance(a.mint);
       if (bal != null && bal > 0) { tokens = bal; break; }
-      await chain.sleep(2_000);
+      await chain.sleep(++balPolls <= 3 ? 500 : 2_000);
     }
 
+    // WHAT THIS BUY REALLY COST. The transaction's own pre/post balances — fees, priority fee
+    // and the ATA rent it had to pay are all inside that number, and nothing another process
+    // did at the same moment can leak into it. Order size (0.01◎) is NOT the cost: on-chain,
+    // 135/135 buys in the post-fix epoch debited a median 0.0123◎ against a booked 0.0100◎.
+    // Booking the order size made a real −15.65% print as +1.71%.
+    const moved = await realMove(r.signature, 1); // satu percobaan: jalur kritis, lihat realMove()
     const after = await readBalanceSol();
-    lot.spentSol = before != null && after != null ? Math.max(0, before - after) : sizeSol;
+    lot.spentSol = moved != null ? Math.abs(moved)
+      : (before != null && after != null ? Math.max(0, before - after) : sizeSol);
+    lot.spentMeasured = moved != null;   // never let an estimate masquerade as a measurement
+    if (moved == null) correctSpendLater(lot, r.signature);
     lot.tokensBought = tokens;
 
     if (tokens > 0) {
@@ -322,12 +525,18 @@ async function doOpen(a: { tradeId: string; mint: string; symbol?: string | null
       // Do NOT clobber a close requested while the buy was still in flight — the queued
       // sell runs next and needs to still see an exit in progress.
       if (lot.state !== "closing") lot.state = "open";
+      clearDryWallet("buy filled");
       save();
-      await snapshotBalance();
+      await snapshotBalance("buy");
       logRecord("live-exec", {
         type: "buy", tradeId: a.tradeId, mint: a.mint, symbol: a.symbol ?? null,
         requestedSol: a.sizeSol, liveSizeSol: sizeSol, spentSol: Number(lot.spentSol.toFixed(6)),
+        spentMeasured: lot.spentMeasured === true,
+        // Cost ON TOP of the order size: gas + priority + ATA rent + venue fee + impact. The
+        // figure the old ledger dropped on the floor.
+        overheadSol: Number((lot.spentSol - sizeSol).toFixed(6)),
         tokens, sig: r.signature, timedOut: lot.buyTimedOut, ms: Date.now() - t0,
+        confirmVia: r.confirmVia ?? null, confirmMs: r.confirmMs ?? null,
       });
       ui.pass(`[live] BUY ${a.symbol ?? a.mint} ${sizeSol} SOL → ${tokens.toFixed(0)} tok (${((Date.now() - t0) / 1000).toFixed(1)}s${lot.buyTimedOut ? ", late-confirm" : ""})`);
     } else {
@@ -402,6 +611,8 @@ async function doSell(tradeId: string, fracOfOriginal: number, reason: string): 
     const amount: number | "100%" = full ? "100%" : Math.min(real, lot.tokensBought * fracOfOriginal);
     if (!full && (!(amount as number > 0))) return;
 
+    // LOCK juga untuk jual: proceeds = delta saldo, rentan kontaminasi silang yang sama.
+    const { withExecLock } = await import("../util/exec-lock.js");
     const before = await readBalanceSol();
     const t0 = Date.now();
     // VENUE LADDER. `lot.pool` is frozen at ENTRY, and a token that pumps hard graduates off
@@ -410,12 +621,21 @@ async function doSell(tradeId: string, fracOfOriginal: number, reason: string): 
     // and its 25,649-token tail then failed 22 sell attempts in a row against a dead venue.
     // "auto" first so PumpPortal resolves whatever exists NOW; the stored pool is only a
     // fallback for the case where auto cannot decide.
-    let r = await chain.sell(lot.mint, amount, "auto");
-    if (!r.ok && !r.timedOut && lot.pool && lot.pool !== "auto") {
-      r = await chain.sell(lot.mint, amount, lot.pool);
-    }
+    let r = await withExecLock(async () => {
+      const first = await chain.sell(lot.mint, amount, "auto");
+      if (!first.ok && !first.timedOut && lot.pool && lot.pool !== "auto") {
+        return chain.sell(lot.mint, amount, lot.pool);
+      }
+      return first;
+    });
+    // Symmetry with the buy leg, and for the same reason: the bracket's `after` read happens
+    // outside the exec lock, so a concurrent transaction lands inside it. Measured in
+    // production: a sell whose proceeds captured another lot's buy debit booked 0.0004◎ spent
+    // against 0.012◎ proceeds — a +2709% position that never existed.
+    const movedIn = await realMove(r.signature);
     const after = await readBalanceSol();
-    const got = before != null && after != null ? after - before : null;
+    const got = movedIn != null ? movedIn : (before != null && after != null ? after - before : null);
+    const gotMeasured = movedIn != null;
 
     const rec: LiveSell = {
       at: Date.now(), reason, tokens: full ? "all" : (amount as number),
@@ -435,11 +655,12 @@ async function doSell(tradeId: string, fracOfOriginal: number, reason: string): 
         lot.sellFailures = r.ok ? 0 : lot.sellFailures + 1;
         save();
       }
-      await snapshotBalance();
+      await snapshotBalance("sell");
       logRecord("live-exec", {
         type: "sell", tradeId, mint: lot.mint, symbol: lot.symbol, reason,
-        full, tokens: full ? null : amount, solReceived: rec.solReceived,
+        full, tokens: full ? null : amount, solReceived: rec.solReceived, proceedsMeasured: gotMeasured,
         remaining: left, sig: r.signature, timedOut: r.timedOut, ms: Date.now() - t0,
+        confirmVia: r.confirmVia ?? null, confirmMs: r.confirmMs ?? null,
       });
       ui.pass(`[live] SELL ${lot.symbol ?? lot.mint} ${full ? "ALL" : `${(fracOfOriginal * 100).toFixed(0)}%`} ${reason} → ${rec.solReceived ?? "?"} SOL`);
     } else {
@@ -489,7 +710,7 @@ async function settleEmpty(lot: LiveLot, reason: string): Promise<void> {
   save();
   if (config.exec.live.closeAta) {
     const reclaimed = await chain.closeAta(lot.mint);
-    if (reclaimed > 0) { lot.rentReclaimedSol += reclaimed; lot.ataClosed = true; save(); await snapshotBalance(); }
+    if (reclaimed > 0) { lot.rentReclaimedSol += reclaimed; lot.ataClosed = true; save(); await snapshotBalance("ata-close"); }
   }
   const net = lot.proceedsSol + lot.rentReclaimedSol - lot.spentSol;
   logRecord("live-exec", {
@@ -675,7 +896,7 @@ export function bridgeStart(
     minSol: L.minSol,
     fallbackSizeSol: L.sizeSol,
   });
-  void snapshotBalance();
+  void snapshotBalance("start");
   reconcileTimer = setInterval(() => void reconcileTick().catch(() => {}), config.exec.live.reconcileMs);
   sweepTimer = setInterval(() => void sweepTick().catch(() => {}), config.exec.live.sweepMs);
 }
@@ -819,6 +1040,13 @@ export interface BridgeStatus {
   realizedSol: number;
   wallet: string;
   expectedBalanceSol: number | null;
+  /**
+   * Set = buys are paused because the wallet cannot fund one. Read from DISK, like every other
+   * field here: the dashboard runs in a different process and has never shared this module's
+   * memory. Without it the console shows "LIVE" while nothing can possibly trade — the exact
+   * fifteen-hour blind spot the 2026-08-25 audit found.
+   */
+  dryWallet: { since: number; needSol: number; haveSol: number } | null;
   spentLast24h: number;
   caps: typeof config.exec.guard;
   clipSol: number;
@@ -853,6 +1081,15 @@ function lotsOnDisk(): LiveLot[] {
   }
 }
 
+function dryWalletOnDisk(): DryWallet | null {
+  try {
+    const s = JSON.parse(readFileSync(STATE_PATH, "utf8")) as { dryWallet?: DryWallet | null };
+    return s.dryWallet ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Snapshot for the dashboard. */
 export function bridgeStatus(): BridgeStatus {
   let openLots = 0;
@@ -881,6 +1118,10 @@ export function bridgeStatus(): BridgeStatus {
     realizedSol: Number(realized.toFixed(5)),
     wallet: bridgePermitted() ? botPubkey() : "",
     expectedBalanceSol,
+    dryWallet: (() => {
+      const d = dryWalletOnDisk();
+      return d ? { since: d.since, needSol: d.needSol, haveSol: d.haveSol } : null;
+    })(),
     spentLast24h: guardSpent24h(),
     caps: config.exec.guard,
     clipSol: config.exec.live.sizeSol,
@@ -912,7 +1153,10 @@ export function __setPermittedForTest(v: boolean | null): void { permittedOverri
 export function __setPaperProbeForTest(fn: (tradeId: string) => boolean): void { isPaperOpen = fn; }
 export function __setFillHookForTest(fn: (f: { tradeId: string; spentSol: number; tokens: number }) => void): void { onLiveFill = fn; }
 export function __lotsForTest(): Map<string, LiveLot> { return lots; }
-export function __resetForTest(): void { lots = new Map(); expectedBalanceSol = null; inFlight = 0; chains.clear(); }
+export function __resetForTest(): void { lots = new Map(); expectedBalanceSol = null; dryWallet = null; dryStrikes = 0; inFlight = 0; chains.clear(); }
+export function __dryWalletForTest(): { strikes: number; needSol: number } | null {
+  return dryWallet ? { strikes: dryWallet.strikes, needSol: dryWallet.needSol } : null;
+}
 export async function __drainForTest(): Promise<void> {
   // Two rounds: a sweep can enqueue new work onto a chain that was already draining.
   for (let i = 0; i < 4; i++) await Promise.all([...chains.values()]);

@@ -1,4 +1,4 @@
-import type { AnalyticsResponse, CohortsResponse, ControlArmRow, ControlState, WalletInfo, WithdrawResult } from "@/types/stats";
+import type { AnalyticsResponse, CohortsResponse, ControlArmRow, ControlState, GmgnOverviewResponse, OkxOverviewResponse, RobinhoodPaperResponse, WalletInfo, WithdrawResult } from "@/types/stats";
 
 /** POST to /api/control — patches paused/execMode/guardHalt/command/strategy2Command/risk. Returns the resulting ControlState. */
 export async function postControl(patch: Record<string, unknown>): Promise<ControlState> {
@@ -33,6 +33,29 @@ export async function fetchControlArm(): Promise<ControlArmRow[]> {
 export async function fetchWallet(): Promise<WalletInfo> {
   const res = await fetch("/api/wallet", { cache: "no-store" });
   if (!res.ok) throw new Error(`wallet fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Local OKX projection: this endpoint reads logs/cache only and costs zero provider requests. */
+export async function fetchOkxOverview(signal?: AbortSignal): Promise<OkxOverviewResponse> {
+  const res = await fetch("/api/okx/overview", { cache: "no-store", signal });
+  if (res.status === 401) throw new Error("session-expired");
+  if (!res.ok) throw new Error(`OKX overview fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Lane views (multi-lane dashboard) — local state only, zero provider quota. */
+export async function fetchRobinhoodPaper(signal?: AbortSignal): Promise<RobinhoodPaperResponse> {
+  const res = await fetch("/api/robinhood/paper", { cache: "no-store", signal });
+  if (res.status === 401) throw new Error("session-expired");
+  if (!res.ok) throw new Error(`Robinhood paper fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchGmgnOverview(signal?: AbortSignal): Promise<GmgnOverviewResponse> {
+  const res = await fetch("/api/gmgn/overview", { cache: "no-store", signal });
+  if (res.status === 401) throw new Error("session-expired");
+  if (!res.ok) throw new Error(`GMGN overview fetch failed: HTTP ${res.status}`);
   return res.json();
 }
 

@@ -10,6 +10,8 @@ import { pumpCandles } from "./safety/pump-candles.js";
 import { jupiterSellSol, solPriceUsd } from "./execution/jupiter.js";
 import { simulateBuyMainnet, devnetMirror } from "./execution/executor.js";
 import { bridgeOpen, bridgeSellFraction, bridgeClose, bridgeStart, bridgeStop } from "./execution/live-bridge.js";
+import { applyExecutionRealism, realismBanner } from "./execution/exec-realism.js";
+import { mcBandFor, mcBandAbBanner, type McArm } from "./experiments/mc-band-ab.js";
 import { assessBuySimulation, lateEnrichmentAction } from "./execution/semantics.js";
 import {
   clampedScaleSellQty,
@@ -20,6 +22,7 @@ import {
   curveSellSolGross,
   gasPerSideSol,
   launchpadFeePct,
+  rebaseOverlayForAdoptedFill,
   replayObservedCurveDelta,
   syntheticAmmExitProceedsSol,
   syntheticAmmReservesFromQuote,
@@ -30,6 +33,7 @@ import { recordOutcome, assessActors } from "./memory/actor-memory.js";
 import { classifySetup } from "./discovery/setup-filter.js";
 import { gmgnEnabled, gmgnTokenInfo, gmgnTokenSecurity, gmgnCreatedTokens } from "./discovery/gmgn.js";
 import { dexTokenPairs } from "./discovery/dexscreener.js";
+import { okxEnabled, okxTokenShadowSnapshot } from "./discovery/okx.js";
 import { logRecord, ui, logIntegrity } from "./util/log.js";
 import { notify } from "./util/notify.js";
 import { ExposureReservationBook } from "./util/exposure-reservations.js";
@@ -96,7 +100,18 @@ interface Position {
   // as "take-profit progress", so the console showed 0 partials even on positions that had sold
   // three tiers. Kept ONLY so old persisted snapshots still parse; scaleTier is the truth.
   partialsTaken: number;
+  /** Which entry-MC floor admitted this trade. null = outside the experiment; never pool it. */
+  mcArm?: McArm | null;
+  /** The band actually applied, carried so a reader never has to guess it from its own env. */
+  mcFloor?: number;
+  mcCeiling?: number;
   partialPnlSol: number; // realized SOL from partial sells so far (added to final close)
+  // The same figure BEFORE execution realism. Exists so the CLOSE record can report a raw
+  // whole-trade number next to the booked one. Without it `rawPnlPct` was the remaining LEG
+  // while `pnlPct` was the whole trade — two different denominators in adjacent columns, which
+  // read as the correction moving a winner the wrong way (Anastasia, 2026-08-25: leg +29.25%
+  // raw booked as +30.74% trade, and both were right).
+  rawPartialPnlSol: number;
   partialPnlIncludedInPrimary?: number; // audit P0-2 + manual-close-always-counts: how much of partialPnlSol already made it into the PRIMARY ledger (vs still pending, e.g. banked while execStage was would-fail)
   priceFailCount: number; // consecutive failed price reads (guards false LIQUIDITY_GONE)
   peakVSol: number; // highest curve SOL reserve seen (activity high-water mark)
@@ -180,6 +195,38 @@ function bondingCurveCostPct(vSol: number | undefined, sizeSol: number, pool?: s
  * band loosens as gains grow (bank small winners tight, let mega-runners ride). Returns
  * null below the first threshold (not armed yet — a coin that never pumped isn't trailed).
  */
+/**
+ * Compose a trade's P&L from its remaining leg and its banked partials — BOTH ways at once.
+ *
+ * The point of this function is that the raw and the booked figure come out of the same
+ * arithmetic, over the same denominator, or not at all. They used to be assembled separately:
+ * the booked number covered the whole trade while the "raw" one covered only the remaining leg.
+ * On a scaled-out winner (Anastasia, 2026-08-25) that printed leg +29.25% raw beside trade
+ * +30.74% booked, which reads as the correction inflating a winner. Both numbers were correct
+ * and the comparison was meaningless — the worst kind of reporting bug, because it survives
+ * every check except someone doing the arithmetic by hand.
+ */
+export function composeTradePnl(p: {
+  sizeSol: number;          // stake still riding on the final leg (shrinks with each partial)
+  originalSizeSol: number;  // stake at entry — the denominator for anything called "the trade"
+  legPct: number;           // final leg, AFTER execution realism
+  rawLegPct: number;        // final leg, before it
+  partialSol: number;       // banked partials, AFTER execution realism
+  rawPartialSol: number;    // banked partials, before it
+}): { pnlSol: number; pnlPct: number; rawPnlSol: number; rawPnlPct: number } {
+  const legSol = p.sizeSol * (p.legPct / 100);
+  const rawLegSol = p.sizeSol * (p.rawLegPct / 100);
+  const pnlSol = legSol + p.partialSol;
+  const rawPnlSol = rawLegSol + p.rawPartialSol;
+  const denom = p.originalSizeSol > 0 ? p.originalSizeSol : 0;
+  return {
+    pnlSol,
+    rawPnlSol,
+    pnlPct: denom > 0 ? (pnlSol / denom) * 100 : 0,
+    rawPnlPct: denom > 0 ? (rawPnlSol / denom) * 100 : 0,
+  };
+}
+
 function dynamicTrailPct(peakGainPct: number): number | null {
   let trail: number | null = null;
   for (const t of config.risk.dynamicTrail) if (peakGainPct >= t.gain) trail = t.trail;
@@ -298,6 +345,8 @@ export class PaperTrader {
   /** tradeIds already summarised — survives entry deletion, so a late pass cannot re-emit. */
   private postExitDone = new Set<string>();
   private postExitTimer?: ReturnType<typeof setInterval>;
+  /** Bounded concurrency for the post-exit lag probe — see startLagProbe(). */
+  private lagProbesInFlight = 0;
   // Learned winner profile (pattern memory): avg entry conditions of coins that peaked
   // ≥100%. Refreshed lazily from the patterns log; fed to the agent as an analysis prior.
   private tradeSeq = 0; // monotonic within a process — combined with time+random for a stable unique tradeId
@@ -384,6 +433,12 @@ export class PaperTrader {
     this.commandTimer = setInterval(() => this.pollCommand(), 2_000); // console command bus
     // Continuous ledger audit: the recorded numbers must reconcile with the booked P&L, always.
     this.integrityTimer = setInterval(() => this.verifyLedger(), 60_000);
+    // Say it out loud, once. A ledger corrected to real execution and a raw one look identical
+    // on screen, and the whole failure this fixes was a number nobody knew to distrust.
+    const banner = realismBanner();
+    if (banner) ui.info(banner);
+    const abBanner = mcBandAbBanner();
+    if (abBanner) ui.info(abBanner);
     // LIVE BRIDGE. Disarmed unless BOTH locks are open. The probe is what lets its orphan
     // sweep tell "the brain still holds this" from "there is a real bag nobody owns" — the
     // difference between a tracked position and an abandoned one.
@@ -403,17 +458,40 @@ export class PaperTrader {
           if (pos.tradeId !== fill.tradeId) continue;
           if (!(fill.tokens > 0) || !(fill.spentSol > 0)) return;
           const before = { sizeSol: pos.sizeSol, tokenQty: pos.tokenQty ?? 0 };
+          // RE-BASE THE COUNTERFACTUAL OVERLAY (P0, measured 2026-08-22). Swapping in the real
+          // basis while the overlay still carried the PAPER entry's curve impact produced
+          // fantasy executable marks: NEVER's exec peak jumped to +1668% (trail band loosened
+          // to its top rung, winner gave everything back) purely because the cost basis shrank
+          // ~12x under an unchanged proceeds number. The overlay must describe the position we
+          // ACTUALLY hold: subtract the hypothetical paper buy's impact, add the real fill's.
+          let overlayRebased = false;
+          if (pos.lastVSol != null && pos.lastVTokens != null && pos.lastRealSol != null) {
+            const next = rebaseOverlayForAdoptedFill(
+              { vSol: pos.lastVSol, vTokens: pos.lastVTokens, realSol: pos.lastRealSol },
+              { sizeSol: before.sizeSol, tokenQty: before.tokenQty },
+              { spentSol: fill.spentSol, tokens: fill.tokens, pool: pos.candidate.pool },
+            );
+            pos.lastVSol = next.vSol;
+            pos.lastVTokens = next.vTokens;
+            pos.lastRealSol = next.realSol;
+            overlayRebased = true;
+          }
           // Scale-outs are fractions of the ORIGINAL, so both must move together or a partial
           // would sell a fraction of a quantity that no longer exists.
           pos.sizeSol = fill.spentSol;
           pos.originalSizeSol = fill.spentSol;
           pos.tokenQty = fill.tokens;
           pos.originalTokenQty = fill.tokens;
+          // The high-water mark was tracked under the old (paper-scale) basis; keep it and the
+          // trail re-seeds from the first honest post-adoption mark instead of inheriting fantasy.
+          pos.peakExecProceeds = undefined;
           logRecord("events", {
             type: "live-fill-adopted", tradeId: pos.tradeId, mint: pos.candidate.mint, symbol: pos.candidate.symbol,
             modelledSizeSol: Number(before.sizeSol.toFixed(6)), realSizeSol: Number(fill.spentSol.toFixed(6)),
             modelledTokens: Number(before.tokenQty.toFixed(2)), realTokens: Number(fill.tokens.toFixed(2)),
             qtyDriftPct: before.tokenQty > 0 ? Number((((fill.tokens - before.tokenQty) / before.tokenQty) * 100).toFixed(2)) : null,
+            overlayRebased,
+            hwmReset: true,
             cfg: configHash,
           });
           this.save();
@@ -501,10 +579,33 @@ export class PaperTrader {
       return { opened: false, code: "CAPACITY_OR_DUPLICATE" };
     }
 
+    /**
+     * ── DI MANA WAKTU MASUK ITU HABIS ──────────────────────────────────────
+     *
+     * Terukur 2026-08-26: seluruh latensi masuk ada di sini. deteksi→keputusan p50 2,92s /
+     * p90 5,97s, sementara keputusan→OPEN nol. Kurva peluruhan nilai memuncak di detik ke-4,
+     * jadi separuh entry mendarat di atau sesudah puncaknya — ini lever terbesar yang belum
+     * disentuh, dan sebelum ini tidak ada satu pun angka yang memberi tahu bagian MANA dari
+     * 2,92 detik itu yang bisa diperbaiki.
+     *
+     * Komentar pada pembacaan kurva di bawah menduga RPC free-tier ~2,9s per panggilan, yang
+     * berarti SATU round trip menghabiskan seluruh anggaran. Dugaan itu masuk akal dan tetap
+     * dugaan — inilah yang mengukurnya. Biayanya satu Date.now() per tahap.
+     */
+    const stage0 = Date.now();
+    let stageAt = stage0;
+    const stageMs: Record<string, number> = {};
+    const mark = (name: string): void => {
+      const now = Date.now();
+      stageMs[name] = now - stageAt;
+      stageAt = now;
+    };
+
     // ── SETUP CLASSIFIER (deterministic, the entry decision — owner spec) ──
     // Classify TOXIC/CLEAN/UNKNOWN from launch data. TOXIC → hard skip. UNKNOWN → skip unless
     // we allow sniping the unknown (small bounded size, many shots). Momentum is NOT consulted.
     const setup = classifySetup(c);
+    mark("setup");
     c.setup = setup;
     this.onSetupVerdict?.(c.mint, setup.verdict, setup.confidence); // stamp observatory → shadow setup ≠ blind (audit fix)
     if (setup.verdict === "TOXIC") {
@@ -611,6 +712,11 @@ export class PaperTrader {
     if (c.bondingCurveKey) {
       const first = await bondingCurvePriceSol(c.bondingCurveKey);
       const bc = first && first.priceSol > 0 ? first : await bondingCurvePriceSol(c.bondingCurveKey);
+      // Dicatat terpisah: pembacaan kedua hanya jalan kalau yang pertama gagal, jadi kalau
+      // tahap ini kira-kira dua kali tahap lain, jawabannya bukan "RPC lambat" melainkan
+      // "RPC menjawab kosong lalu kita membayarnya dua kali".
+      stageMs.curveReads = first && first.priceSol > 0 ? 1 : 2;
+      mark("curve");
       if (bc) {
         // The live account is authoritative over a possibly incomplete launch event. Fail before
         // committing capital when the quote unit is not SOL or Mayhem can alter supply/liquidity.
@@ -655,15 +761,25 @@ export class PaperTrader {
      *
      * KEPUTUSAN TRADING TIDAK BERUBAH — gerbang sama, ambang sama, hanya lebih awal.
      */
+    // Arm A/B lantai entry-MC untuk kandidat ini (null = di luar eksperimen).
+    let mcArm: McArm | null = null;
+    let mcFloor: number | undefined;
+    let mcCeiling: number | undefined;
     {
       const mcNow = (priceMode === "sol" && entryVSol && entryVTokens)
         ? (entryVSol / entryVTokens) * 1_000_000_000 : undefined;
+      // A/B: the band this candidate must clear is decided by its arm, from decisionId alone.
+      // With the experiment off this is the production band, byte for byte.
+      const band = mcBandFor(c.decisionId);
+      mcArm = band.arm;
+      mcFloor = band.floor;
+      mcCeiling = band.ceiling;
       if (mcNow != null) {
-        const band = config.gate.entryMcBandSol;
         if (mcNow < band.floor || mcNow > band.ceiling) {
           const why = mcNow < band.floor ? `below floor ${band.floor}` : `above ceiling ${band.ceiling}`;
-          ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${mcNow.toFixed(1)} SOL ${why} SOL (MC band)`);
-          return { opened: false, code: "ENTRY_MC_BAND", detail: `${mcNow.toFixed(1)} SOL ${why}` };
+          const tag = band.arm ? ` [${band.arm}]` : "";
+          ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — entry MC ${mcNow.toFixed(1)} SOL ${why} SOL (MC band)${tag}`);
+          return { opened: false, code: "ENTRY_MC_BAND", detail: `${mcNow.toFixed(1)} SOL ${why}${tag}` };
         }
       }
       const devMax = config.gate.entryDevBuyMaxSol;
@@ -679,6 +795,7 @@ export class PaperTrader {
     // burns a fee. This is the owner's "MC kecil tapi holder banyak" signal.
     if (priceMode === "sol") {
       const { count: holders, source: holderSource } = await holderCountP; // started in parallel with the curve read above
+      mark("holdersAwait"); // ~0 kalau paralelnya benar-benar bekerja; besar = ia tidak paralel
       // SETUP-SNIPER enters EARLY (holders naturally low), so we DON'T require the momentum-era
       // 10-holder demand bar (audit: that was the hybrid "demand confirmation"). We only reject
       // the truly dead-on-arrival case: holders ≤1 = just the dev, buying it only burns fee.
@@ -750,6 +867,7 @@ export class PaperTrader {
     // default). Otherwise it's pure telemetry and runs in the background.
     if (readControl().execMode === "simulate" && config.exec.skipWouldFail) {
       const sim = await simulateBuyMainnet(c.mint, sizeSol, c.pool ?? "auto");
+      mark("buySim");
       execStage = assessBuySimulation(sim).stage;
       if (execStage === "would-fail") {
         ui.reject(`[paper] SKIP ${c.symbol ?? c.mint} — BUY simulation would fail; entry not executable`);
@@ -860,7 +978,9 @@ export class PaperTrader {
       costPct,
       originalSizeSol: sizeSol,
       partialsTaken: 0,
+      mcArm, mcFloor, mcCeiling,
       partialPnlSol: 0,
+      rawPartialPnlSol: 0,
       priceFailCount: 0,
       peakVSol: entryVSol, // fresh live reserve at entry (not stale discovery vSol)
       entryVSol,
@@ -890,7 +1010,13 @@ export class PaperTrader {
     if (c.creator) this.watcher.watch(c.creator); // start real-time dev watch
     this.tradeStream.watch(c.mint); // start live crowd streaming for this token
     this.save();
-    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, measurementEpoch: config.measurementEpoch,
+    mark("rest");
+    logRecord("paper-trades", { action: "OPEN", tradeId, decisionId: c.decisionId ?? null, mcArm, mcFloor, mcCeiling,
+      // Rincian latensi masuk. `openMs` adalah keseluruhan open(); `detectMs` menambahkan
+      // waktu yang sudah hilang SEBELUM kandidat sampai ke sini.
+      stageMs, openMs: Date.now() - stage0,
+      detectMs: c.detectedAt != null ? Date.now() - c.detectedAt : null,
+      measurementEpoch: config.measurementEpoch,
       policyId: config.strategyVersion, armId: process.env.ARM_ID ?? "live",
       mint: c.mint, symbol: c.symbol, mode: c.mode, price, liquidityUsd: liq, devOnlyBuys, execStage,
       decisionLatencyMs: c.detectedAt ? Date.now() - c.detectedAt : undefined, // #8: detect→entry latency (honest "how late do we enter")
@@ -991,6 +1117,36 @@ export class PaperTrader {
                 gmgnTotalTokens: gmgnHist.tokens?.length ?? null, gmgnAthMc: gmgnHist.creator_ath_info?.ath_mc ?? null,
                 ourRiskProbability: Number(ours.riskProbability.toFixed(3)), ourConfidence: Number(ours.confidence.toFixed(3)),
                 ourSampleSize: ours.sampleSize, ourEvidence: ours.evidence, cfg: configHash,
+              });
+            }
+          }
+          // OKX ONCHAINOS CROSS-CHECK — explicit shadow mode only. This records a third-party
+          // view of market data, holder concentration, dev lineage and bundlers. It is POST-OPEN,
+          // never enters classifySetup(), and therefore cannot change a live decision until its
+          // incremental value has been measured against outcomes.
+          if (okxEnabled) {
+            const snap = await okxTokenShadowSnapshot(c.mint);
+            if (snap) {
+              logRecord("events", {
+                type: "okx-enrichment", sourceMode: "shadow", acted: false,
+                tradeId: this.positions.get(c.mint)?.tradeId, mint: c.mint, symbol: c.symbol,
+                priceUsd: snap.market?.price ?? null, marketCapUsd: snap.market?.marketCap ?? null,
+                liquidityUsd: snap.market?.liquidity ?? null, holders: snap.market?.holders ?? null,
+                priceChange5mPct: snap.market?.priceChange5M ?? null, volume5mUsd: snap.market?.volume5M ?? null,
+                riskControlLevel: snap.advanced?.riskControlLevel ?? null,
+                top10HoldPct: snap.advanced?.top10HoldPercent ?? null,
+                devHoldPct: snap.developer?.devHoldingInfo?.devHoldingPercent ?? snap.advanced?.devHoldingPercent ?? null,
+                sniperHoldPct: snap.advanced?.sniperHoldingPercent ?? null,
+                bundleHoldPct: snap.advanced?.bundleHoldingPercent ?? null,
+                suspiciousHoldPct: snap.advanced?.suspiciousHoldingPercent ?? null,
+                lpBurnedPct: snap.advanced?.lpBurnedPercent ?? null,
+                devTokens: snap.developer?.devLaunchedInfo?.totalToken ?? snap.advanced?.devCreateTokenCount ?? null,
+                devRugs: snap.developer?.devLaunchedInfo?.rugPullCount ?? snap.advanced?.devRugPullTokenCount ?? null,
+                devMigrated: snap.developer?.devLaunchedInfo?.migratedCount ?? snap.advanced?.devLaunchedTokenCount ?? null,
+                devFundingAddress: snap.developer?.devHoldingInfo?.fundingAddress ?? null,
+                totalBundlers: snap.bundle?.totalBundlers ?? null,
+                bundlerAthPct: snap.bundle?.bundlerAthPercent ?? null,
+                cfg: configHash,
               });
             }
           }
@@ -1771,8 +1927,16 @@ export class PaperTrader {
       const grossOut = curveSellSolGross(wVSol!, wVTokens!, qSell);
       wVSol = (wVSol ?? 0) - grossOut; wVTokens = (wVTokens ?? 0) + qSell; if (wRealSol != null) wRealSol = Math.max(0, wRealSol - grossOut);
       const costBasis = pos.sizeSol * (qSell / pos.tokenQty);
-      const bankedPnl = proceeds - costBasis;
+      // Same correction as the final leg, for the same reason: a scale-out at +50% is exactly
+      // the kind of gain the chain says only half-materialises. Leaving partials raw while
+      // correcting the remaining leg would quietly restore the optimism through the side door.
+      const rawBanked = proceeds - costBasis;
+      const bankedRealism = costBasis > 0
+        ? applyExecutionRealism((rawBanked / costBasis) * 100)
+        : { pct: 0, applied: false, ratio: null, band: null, bandN: null, calN: null };
+      const bankedPnl = costBasis > 0 ? costBasis * (bankedRealism.pct / 100) : rawBanked;
       pos.partialPnlSol += bankedPnl;
+      pos.rawPartialPnlSol = (pos.rawPartialPnlSol ?? 0) + rawBanked;
       this.hypotheticalRealizedPnlSol += bankedPnl; // audit P0-2: hypothetical always, primary gated below
       // Owner (2026-07-27, after a profitable MANUAL_CLOSE on a would-fail-stage position
       // didn't show up anywhere): a would-fail buy is still excluded from primary AT PARTIAL
@@ -1970,11 +2134,28 @@ export class PaperTrader {
       legPnlPct = Math.max(-100, grossPnl - cost - extraHaircut);
       effCostPct = cost + extraHaircut;
     }
+    // ── EXECUTION REALISM ────────────────────────────────────────────────────
+    // The model has now said what the trade was worth. This says what it would have BEEN PAID,
+    // using the measured transfer function between this simulator's claims and the chain's
+    // answer on the same trades (see execution/exec-realism.ts). Applied here and nowhere else:
+    // every exit DECISION above ran on the raw mark and is untouched — only the booking changes.
+    const rawLegPnlPct = legPnlPct;
+    const realism = applyExecutionRealism(legPnlPct);
+    legPnlPct = realism.pct;
+    // Keep the itemised trail coherent: cost is defined as gross minus what we realized, so it
+    // has to absorb the execution reality too, otherwise the record no longer adds up.
+    effCostPct = grossPnl - legPnlPct;
+    // Raw and booked assembled together, over one denominator — see composeTradePnl().
+    const composed = composeTradePnl({
+      sizeSol: pos.sizeSol, originalSizeSol: pos.originalSizeSol,
+      legPct: legPnlPct, rawLegPct: rawLegPnlPct,
+      partialSol: pos.partialPnlSol, rawPartialSol: pos.rawPartialPnlSol ?? 0,
+    });
     const legSol = pos.sizeSol * (legPnlPct / 100); // SOL from the remaining leg
-    // Total realized for this trade = remaining leg + any partial already banked (0 today).
-    const pnlSol = legSol + pos.partialPnlSol;
-    // Original notional (pre-partial) for a representative % of the whole trade.
-    const pnlPct = (pnlSol / pos.originalSizeSol) * 100;
+    const pnlSol = composed.pnlSol;
+    const pnlPct = composed.pnlPct;
+    const rawTradePnlSol = composed.rawPnlSol;
+    const rawTradePnlPct = composed.rawPnlPct;
     // HYPOTHETICAL ledger — every close, regardless of whether the buy would have executed.
     this.hypotheticalRealizedPnlPct += legPnlPct;
     this.hypotheticalRealizedPnlSol += legSol;
@@ -2049,6 +2230,23 @@ export class PaperTrader {
       peak: pos.peakPriceUsd,
       grossPnlPct: Number(grossPnl.toFixed(2)),
       costPct: Number(effCostPct.toFixed(2)),
+      // ── WHAT THE MODEL SAID, BESIDE WHAT EXECUTION WOULD PAY ──
+      // Never overwrite the raw figure: comparing cohorts across the day this landed is only
+      // possible because both numbers survive in the same row.
+      // Whole trade, raw — same denominator and same scope as `pnlPct` above it.
+      rawPnlPct: Number(rawTradePnlPct.toFixed(2)),
+      rawPnlSol: Number(rawTradePnlSol.toFixed(6)),
+      // Remaining leg only, raw — what the transfer function was actually handed.
+      rawLegPnlPct: Number(rawLegPnlPct.toFixed(2)),
+      rawPartialSol: Number((pos.rawPartialPnlSol ?? 0).toFixed(6)),
+      execRealismApplied: realism.applied,
+      execRealismRatio: realism.ratio,
+      execRealismBand: realism.band,
+      execRealismCalN: realism.calN,
+      // Arm lantai entry-MC. null = di luar eksperimen — jangan pernah digabung ke salah satu sisi.
+      mcArm: pos.mcArm ?? null,
+      mcFloor: pos.mcFloor ?? null,
+      mcCeiling: pos.mcCeiling ?? null,
       pnlPct: Number(pnlPct.toFixed(2)),
       sizeSol: pos.sizeSol,
       tokenQty: pos.tokenQty != null ? Number(pos.tokenQty.toFixed(2)) : undefined, // faithful fill: qty sold
@@ -2216,13 +2414,19 @@ export class PaperTrader {
   /** Start tracking a just-closed token's price to learn if the exit was premature. */
   private registerPostExit(pos: Position, mint: string, symbol: string | undefined, reason: string, exitPrice: number, exitPnlPct: number, heldSec: number): void {
     if (!config.postExit.enabled) return;
-    if (this.postExit.size >= config.postExit.maxTracked) return; // bound load
     const tradeId = pos.tradeId;
+    const capped = this.postExit.size >= config.postExit.maxTracked; // bound the 45-min tracker
     // Baseline in SOL from the swap-api tape so post-exit samples are same-unit,
     // regardless of the position's price mode. Fire-and-forget.
     void latestPriceSol(mint).then((p) => {
       const base = p ?? (exitPrice > 0 ? exitPrice : 0);
       if (base <= 0) return;
+      // The lag probe runs even when the 45-minute tracker is full. At ~70 exits an hour that
+      // tracker saturates almost permanently, and the seconds right after an exit are exactly
+      // the window we have no data for — capping the probe on the tracker's budget would keep
+      // it that way.
+      this.startLagProbe(tradeId, mint, symbol, reason, base, pos);
+      if (capped) return;
       if (this.postExitDone.has(tradeId) || this.postExit.has(tradeId)) return; // never track one trade twice
       this.postExit.set(tradeId, {
         tradeId, decisionId: pos.decisionId, mint, symbol, reason, exitTs: Date.now(),
@@ -2231,6 +2435,66 @@ export class PaperTrader {
         regimeId: regimeOf(pos),
       });
     });
+  }
+
+  /**
+   * WHAT THE PRICE DID IN THE SECONDS AFTER WE DECIDED TO SELL.
+   *
+   * Paper marks an exit at the price on the tick that triggered it. Live sells later — measured
+   * against the chain: p50 3.9s, p90 38.7s. Everything in between is unmodelled, and it is the
+   * leading candidate for why paper's winners do not survive execution (a claim above +100%
+   * returns about a tenth of itself in real SOL).
+   *
+   * We could not test that, because nothing recorded it. The 45-minute tracker samples every
+   * 30s for ALL tracked tokens at once, so a token's first sample lands 0–30s after its exit at
+   * random: across three days that left 215 observations under 40 seconds, against a median
+   * sample age of 1,234s. A tape built to answer "should we have held for minutes?" cannot
+   * answer "what happened in the next four seconds?".
+   *
+   * So this probes on its own schedule, per exit, at the offsets the live lag distribution
+   * actually occupies. It records the elapsed time it MEASURED rather than the offset it aimed
+   * for — the shared rate limiter can delay a sample, and a delayed sample is still a true
+   * observation of a different offset, whereas a sample labelled with its intention is a lie.
+   */
+  private startLagProbe(
+    tradeId: string, mint: string, symbol: string | undefined, reason: string,
+    baselineSol: number, pos: Position,
+  ): void {
+    if (!config.postExit.lagProbeSec.length) return;
+    // Bounded so a burst of exits cannot crowd the price budget that OPEN positions depend on.
+    if (this.lagProbesInFlight >= config.postExit.maxLagProbes) {
+      logRecord("post-exit", { type: "lag-skipped", tradeId, mint, inFlight: this.lagProbesInFlight });
+      return;
+    }
+    this.lagProbesInFlight++;
+    const t0 = Date.now();
+    const armId = process.env.ARM_ID ?? "live";
+    const regimeId = regimeOf(pos);
+    void (async () => {
+      try {
+        for (const target of config.postExit.lagProbeSec) {
+          const wait = t0 + target * 1_000 - Date.now();
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          const price = await latestPriceSol(mint);
+          const elapsed = (Date.now() - t0) / 1000;
+          if (!price || price <= 0) {
+            logRecord("post-exit", { type: "lag", tradeId, mint, symbol: symbol ?? null, reason,
+              targetSec: target, secSinceExit: Number(elapsed.toFixed(2)), pctVsExit: null,
+              policyId: config.strategyVersion, armId, regimeId, mcArm: pos.mcArm ?? null, cfg: configHash });
+            continue;
+          }
+          logRecord("post-exit", {
+            type: "lag", tradeId, mint, symbol: symbol ?? null, reason,
+            targetSec: target,
+            secSinceExit: Number(elapsed.toFixed(2)),
+            pctVsExit: Number((((price - baselineSol) / baselineSol) * 100).toFixed(2)),
+            policyId: config.strategyVersion, armId, regimeId,
+            mcArm: pos.mcArm ?? null, cfg: configHash,
+          });
+        }
+      } catch { /* a probe that fails costs a measurement, never a position */ }
+      finally { this.lagProbesInFlight--; }
+    })();
   }
 
   /**

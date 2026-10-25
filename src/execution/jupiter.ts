@@ -51,3 +51,40 @@ export async function jupiterSellSol(tokenMint: string, tokenQtyUi: number): Pro
   if (!q) return null;
   return { solOut: Number(q.outAmount) / LAMPORTS, impactPct: Math.abs(Number(q.priceImpactPct)) * 100 };
 }
+
+/**
+ * Build a REAL, UNSIGNED Jupiter swap transaction (v1 /swap). This is the execution leg
+ * Strategy 2's live mirror uses: the paper brain picks the token and size, this turns it into
+ * bytes. Returns null on any failure (no route, API down) — the caller treats that as a clean
+ * refusal, never as a position.
+ */
+export async function jupiterSwapTx(
+  inputMint: string,
+  outputMint: string,
+  amountRaw: number,
+  userPublicKey: string,
+): Promise<Uint8Array | null> {
+  try {
+    const q = await quote(inputMint, outputMint, amountRaw);
+    if (!q) return null;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10_000);
+    try {
+      const res = await fetch(`${config.jupiterBaseUrl}/swap/v1/swap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ quoteResponse: q, userPublicKey, wrapAndUnwrapSol: true }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) return null;
+      const j = (await res.json()) as { swapTransaction?: string };
+      if (!j.swapTransaction) return null;
+      const buf = Buffer.from(j.swapTransaction, "base64");
+      return buf.length > 100 ? new Uint8Array(buf) : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}

@@ -1,0 +1,49 @@
+name: CI
+
+# Gerbang yang sama dengan `npm run gate` (minus selftest yang butuh jaringan/log hidup).
+# Tujuan: kelas bug yang ketemu karena DITANYA (kunci bocor, tulisan state basi, paritas berputar)
+# tidak bisa lagi masuk tanpa ada yang menolak.
+
+on:
+  push:
+    branches: [main, live-trading-bridge]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # (FINAL §6) pemindaian rahasia menyasar SEJARAH penuh — butuh checkout penuh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.18.0" # (P0-1) dikunci: @solana/* butuh >=20.18 — versi reproducible
+          cache: npm
+
+      - name: Pasang dependensi (root)
+        run: npm ci
+
+      - name: Tipe (TypeScript)
+        run: npm run typecheck
+
+      - name: Penguji (unit + regresi kelas bug)
+        run: npm run test
+
+      - name: Pemindaian rahasia (gitleaks) — P0-5, bagian dari gerbang keamanan
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o /tmp/gl.tgz
+          tar -xzf /tmp/gl.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1 --report-format sarif --report-path /tmp/gitleaks.sarif || {
+            echo "GITLEAKS MENEMUKAN RAHASIA — periksa laporan (nilai disensor)"; exit 1; }
+
+      - name: Pemeriksa panel web
+        run: |
+          npm --prefix web install --no-audit --no-fund
+          npm run ui:check
+        env:
+          DASHBOARD_PASSWORD: ci-placeholder
+
+      # rh:audit sengaja TIDAK di sini: ia membaca logs/ yang tidak dilacak git (data lane hidup).
+      # Jalankan lokal lewat `npm run gate` sebelum push bila lane sedang berjalan.

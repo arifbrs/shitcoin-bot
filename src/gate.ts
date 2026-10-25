@@ -306,10 +306,14 @@ export async function runGate(c: Candidate): Promise<GateResult> {
 
   // Gate #3: RugCheck enrichment (best-effort, short timeout, never blocks).
   // Also feeds holder count into the community-momentum score.
+  // NULL = layer switched off (RUGCHECK_ENABLED=false) or unavailable — swing path must
+  // tolerate that exactly like the fast path already does.
   const rc = await rugcheckEnrichment(c.mint);
-  checks.push(...rc.checks);
-  if (rc.holders !== undefined) c.holders = rc.holders;
-  if (!c.creator && rc.creator) c.creator = rc.creator; // dev wallet for buy-back/dump tracking
+  if (rc) {
+    checks.push(...rc.checks);
+    if (rc.holders !== undefined) c.holders = rc.holders;
+    if (!c.creator && rc.creator) c.creator = rc.creator; // dev wallet for buy-back/dump tracking
+  }
   if (checks.some((k) => k.hard && !k.passed)) return { verdict: "REJECT", checks, score: 0 };
 
   // Gate #3.5: on-chain metadata (soft signals from reference-bot dissection).

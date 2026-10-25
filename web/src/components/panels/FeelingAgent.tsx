@@ -44,7 +44,13 @@ function useAgentSay(message: string | undefined) {
       el.textContent = "";
       timersRef.current.tw = setInterval(() => {
         i++;
-        el.innerHTML = full.slice(0, i) + (i < full.length ? '<span class="cur">▍</span>' : "");
+        el.textContent = full.slice(0, i);
+        if (i < full.length) {
+          const cursor = document.createElement("span");
+          cursor.className = "cur";
+          cursor.textContent = "▍";
+          el.append(cursor);
+        }
         if (i >= full.length) clearInterval(timersRef.current.tw);
       }, 22);
     }, 520);

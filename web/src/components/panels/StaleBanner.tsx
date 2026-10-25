@@ -57,8 +57,14 @@ export function StaleBanner({ data }: { data: StatsResponse }) {
   // server.ts), jadi `age` di bawah menjadi null dan banner ini otomatis diam. Jalur sniper
   // tetap diawasi oleh `data.stall` di atas — umur peluncuran, umur keputusan, dan deadlock
   // semafor RPC — yang justru pengawas yang benar untuknya.
+  //
+  // MODE GATE (owner, 2026-08-24): saat console switch = LIVE, S2 sengaja IDLE (kredit
+  // mengikuti mode) — heartbeat-nya membusuk BY DESIGN. Alarm "TRADER BERHENTI" di sini
+  // melulu alarm palsu: sniper justru hidup dan trading (terlihat di data.stall yang sehat).
+  // S2 heartbeat hanya bermakna sebagai sinyal ketika mode-nya memang bukan live.
+  const liveMode = data.control?.execMode === "live";
   const age = data.strategy2Primary?.paper.heartbeatAgeSec ?? null;
-  if (age == null || age < WARN_AFTER_SEC) return null;
+  if (liveMode || age == null || age < WARN_AFTER_SEC) return null;
 
   const dead = age >= DEAD_AFTER_SEC;
   const openN = data.strategy2Primary?.paper.open ?? 0;

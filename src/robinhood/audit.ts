@@ -1,0 +1,427 @@
+/**
+ * AUDIT P&L LANE ROBINHOOD — hitung ulang SETIAP trade dari harga mentah + model biaya, lalu
+ * bandingkan dengan angka yang tercatat. Read-only, offline; nol panggilan API.
+ *
+ * PRINSIP: skrip ini SENGAJA tidak meng-import kode dari paper.ts. Definisi varian, rumus
+ * slippage, dan aturan haircut ditulis ulang di sini — audit yang memakai kode yang diaudit
+ * tidak membuktikan apa pun. Kalau paper.ts berubah, angka di sini HARUS ikut diubah manual.
+ *
+ * METODE (revisi 2026-10-07 malam — versi pertama salah menandai 9 varian karena membandingkan
+ * equity state (akumulasi SEMUA close) terhadap Σ close ber-label life saja):
+ *
+ *   REPLAY URUT-WAKTU per varian. Equity di paper lane adalah REALIZED-ONLY (naik/turun hanya
+ *   saat posisi ditutup), jadi urutan close merekonstruksi equity pada setiap titik secara persis.
+ *   Life-2 ditangani di replay: label `life` yang naik → modal direset ke $100 pada titik itu.
+ *   Dari replay ini dua hal diperiksa sekaligus:
+ *     1. SIZING tiap entry == min(risk$5/stop%, cap$25, equity_saat_itu × 50%, 2% liq) — cap
+ *        EQUITY kini ikut dihitung, yang sebelumnya luput dan menghasilkan alarm palsu.
+ *     2. IDENTITY equity akhir == $100 + Σ pnl (dalam life berjalan), dibandingkan dgn state.
+ *   Baris close lama tanpa label `life` diperlakukan sebagai life-1 (satu-satunya bagian history
+ *   yang boleh tidak berlabel), dan jumlahnya dilaporkan.
+ *
+ * Yang diperiksa lain: aritmetika pnl penuh (fee 0.30%/sisi, gas $0.01/sisi, slippage 1%+impak),
+ * pelanggaran batas risiko (stop nominal + biaya), sanity (open−close == posisi state, harga mati,
+ * tidak ada tutup-dobel).
+ *
+ * Exit code: 0 = semua cocok; 1 = ada selisih (jangan percaya laporan sampai dibedah).
+ *
+ * Run: npm run rh:audit
+ */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { config } from "../config.js";
+import { readParityRows, computeParity, parityGaps } from "./ledger-parity.js";
+
+// Model biaya dari SATU sumber (costs.ts) — dulu rumus ini hidup di sini, di paper, dan di
+// backtest; angka tiap alat bisa tidak sebanding tanpa ada yang tahu.
+import { DEX_FEE_PCT, GAS_USD, slipPct } from "./costs.js";
+const RISK_USD = 5, MAX_NOTIONAL = 25, START_EQUITY = 100;
+
+/** STOP% tiap varian — HARUS dicocokkan manual dengan paper.ts bila varian berubah. */
+const STOP: Record<string, number> = {
+  "v01-konservatif": 18, "v02-momentum": 20, "v03-seimbang": 25, "v04-dip": 22, "v05-agresif-baru": 30,
+  "v06-sniper": 35, "v07-runner": 30, "v08-moonshot": 40, "v09-scalp": 12, "v10-degen": 45,
+};
+
+interface Row { [k: string]: unknown }
+const files = readdirSync(config.logDir).filter((f) => f.startsWith("rh-paper-") && f.endsWith(".jsonl")).sort();
+/**
+ * Baris yang sudah ditandai VOID (penutupan ganda, lihat src/robinhood/fix-dupes.ts) DIKECUALIKAN
+ * dari perhitungan. Riwayat tidak dihapus — hanya tidak dihitung — supaya koreksi buku tetap bisa
+ * diaudit: berkas voids menyebut baris mana dan kenapa.
+ */
+function loadVoidKeys(): Set<string> {
+  const path = join(config.logDir, "rh-paper-voids.json");
+  const keys = new Set<string>();
+  try {
+    const j = JSON.parse(readFileSync(path, "utf8")) as { voids?: Array<{ variant: string; token: string; ts: string }> };
+    for (const v of j.voids ?? []) keys.add(`${v.variant}|${v.token}|${v.ts}`);
+  } catch { /* belum ada koreksi — normal */ }
+  return keys;
+}
+const VOID_KEYS = loadVoidKeys();
+const seenLifeKeys = new Set<string>();
+const opens: Row[] = [], closes: Row[] = [], lives: Row[] = [];
+let reconciledRows = 0;
+const reconciledCloseKeys = new Set<string>();
+for (const f of files) {
+  let text: string;
+  try { text = readFileSync(join(config.logDir, f), "utf8"); } catch { continue; }
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Row;
+      // Baris hasil REKONSILIASI STARTUP (ditulis lane saat menemukan selisih ledger↔state akibat
+      // proses berhenti di antara simpan & catat). ATURAN PARITY (2026-10-09):
+      //   • OPEN rekonsiliasi  → IKUT dihitung (state memang memegang posisi itu; tanpa ini hitungan
+      //     buka−tutup jadi kurang dari posisi state).
+      //   • CLOSE rekonsiliasi → dibuang BERSAMA open pasangannya (state sudah menutupnya tetapi
+      //     barisnya hilang; kalau hanya CLOSE yang dibuang, selisihnya berpindah ke arah lain).
+      if (r["reconciled"] === true) {
+        reconciledRows++;
+        if (r["action"] === "RH_CLOSE") reconciledCloseKeys.add(`${r["variant"]}|${r["token"]}|${r["life"] ?? 1}`);
+        else if (r["action"] === "RH_OPEN") opens.push(r);
+        continue;
+      }
+      if (r["action"] === "RH_OPEN") {
+        // Baris ber-void juga bisa berupa OPEN ("posisi hantu": ledger mencatat buka, state tidak
+        // pernah menyimpannya karena proses berhenti sebelum simpan — lihat fix-dupes/2026-10-09).
+        if (!VOID_KEYS.has(`${r["variant"]}|${r["token"]}|${r["ts"]}`)) opens.push(r);
+      }
+      else if (r["action"] === "RH_CLOSE") {
+        // Baris ber-void (penutupan ganda) tidak dihitung — lihat loadVoidKeys().
+        if (!VOID_KEYS.has(`${r["variant"]}|${r["token"]}|${r["ts"]}`)) closes.push(r);
+      }
+      // RH_LIFE = sumber kebenaran transisi life (Life-2). Dibaca langsung, bukan disimpulkan dari
+      // label close: varian yang baru restart dan BELUM trading tidak punya close ber-label life
+      // baru — tanpa event ini, replay salah mengira ia masih di life lama (terjadi live 2026-10-07).
+      // DEDUPE (2026-10-09): transisi yang sama pernah tercatat 2–3× (state belum tersimpan saat
+      // proses berhenti, lalu siklus berikutnya mengulang transisinya). Replay harus menghitung
+      // transisi SEKALI per life — kalau tidak, equity direset berkali-kali dan identity melenceng.
+      else if (r["action"] === "RH_LIFE") {
+        const k = `${r["variant"]}|${r["life"]}`;
+        if (!seenLifeKeys.has(k)) { seenLifeKeys.add(k); lives.push(r); }
+      }
+    } catch { /* baris terpotong — abaikan */ }
+  }
+}
+
+const num = (v: unknown): number => (typeof v === "number" ? v : NaN);
+const tsOf = (r: Row): number => Date.parse(String(r["ts"] ?? "")) || 0;
+let maxDiff = 0, compared = 0, sizeMismatch = 0, lifeMismatch = 0, legacyNoLife = 0, equitySkip = 0, sizingDerived = 0, legacyZeroExit = 0, legacyModel = 0, maxDiffLegacy = 0;
+let legacyQuarantined = 0, legacyUnlisted = 0, sizingDerivedMismatch = 0;
+/** Kunci baris warisan yang DIKARANTINA (dicatat + beralasan) — lihat logs/rh-legacy-exceptions.json. */
+const legacyExceptions = ((): Set<string> => {
+  const out = new Set<string>();
+  try {
+    const j = JSON.parse(readFileSync(join(config.logDir, "rh-legacy-exceptions.json"), "utf8")) as { keys?: string[] };
+    for (const k of j.keys ?? []) out.add(k);
+  } catch { /* belum ada karantina — semua baris warisan harus bisa direproduksi */ }
+  return out;
+})();
+const breaches: Array<{ v: string; sym: string; loss: number; intended: number; reason: string }> = [];
+const replayResult = new Map<string, { equity: number; life: number }>();
+
+// ── REPLAY per varian (urut waktu, life-aware lewat event RH_LIFE) ─────────────
+const lifeEvents = new Map<string, Array<{ ts: number; life: number }>>();
+for (const l of lives) {
+  const v = String(l["variant"] ?? "");
+  const life = typeof l["life"] === "number" ? (l["life"] as number) : null;
+  if (!v || life == null) continue;
+  const arr = lifeEvents.get(v) ?? [];
+  arr.push({ ts: tsOf(l), life });
+  lifeEvents.set(v, arr);
+}
+const byVariant = new Map<string, Row[]>();
+for (const c of closes) {
+  const v = String(c["variant"] ?? "");
+  const arr = byVariant.get(v);
+  if (arr) arr.push(c); else byVariant.set(v, [c]);
+}
+for (const [variant, rows] of byVariant) {
+  const stop = STOP[variant];
+  if (stop == null) continue;
+  rows.sort((a, b) => tsOf(a) - tsOf(b));
+  const evs = (lifeEvents.get(variant) ?? []).sort((a, b) => a.ts - b.ts);
+  /** Life yang berlaku pada waktu t menurut event RH_LIFE (fallback: 1). */
+  const lifeAt = (t: number): number => {
+    let life = 1;
+    for (const e of evs) { if (e.ts <= t) life = e.life; else break; }
+    return life;
+  };
+
+  // PASS A — deret equity realized: gabungan event life (reset ke $100) + close (pnl), urut waktu.
+  const series: Array<{ ts: number; equity: number }> = [];
+  {
+    const timeline: Array<{ ts: number; kind: "life" | "close"; life?: number; pnl?: number; labeledLife?: number | null }> = [
+      ...evs.map((e) => ({ ts: e.ts, kind: "life" as const, life: e.life })),
+      ...rows.map((c) => ({ ts: tsOf(c), kind: "close" as const, pnl: num(c["pnlUsd"]), labeledLife: typeof c["life"] === "number" ? (c["life"] as number) : null })),
+    ].sort((a, b) => a.ts - b.ts);
+    let equity = START_EQUITY;
+    let life = 1;
+    for (const item of timeline) {
+      if (item.kind === "life") {
+        // Reset life WAJIB jadi titik seri tersendiri — tanpa ini, titik terakhir masih membawa
+        // equity life lama dan replay melaporkan angka yang salah (terjadi live 2026-10-07:
+        // v07 replay=$3.87 vs state=$100 karena titik reset tidak tercatat).
+        life = item.life as number; equity = START_EQUITY;
+        series.push({ ts: item.ts, equity });
+        continue;
+      }
+      if (item.labeledLife == null) legacyNoLife++;
+      else if (item.labeledLife !== life) { life = item.labeledLife; equity = START_EQUITY; } // fallback bila event hilang
+      equity += item.pnl ?? 0;
+      series.push({ ts: item.ts, equity });
+    }
+    if (!series.length) series.push({ ts: 0, equity: START_EQUITY });
+  }
+  const equityBefore = (ts: number): number => {
+    let eq = START_EQUITY;
+    for (const p of series) { if (p.ts <= ts) eq = p.equity; else break; }
+    return eq;
+  };
+
+  // PASS B — verifikasi per close.
+  for (const c of rows) {
+    const open = [...opens].reverse().find((x) => x["variant"] === variant && x["token"] === c["token"] && tsOf(x) <= tsOf(c));
+    if (!open) continue;
+
+    const notional = num(c["notionalUsd"]);
+    const entryPrice = num(open["entryPriceUsd"]);
+    const exitPrice = num(c["exitPriceUsd"]); // sudah final (haircut sudah diterapkan paper.ts)
+    const liqIn = typeof open["liqUsd"] === "number" ? (open["liqUsd"] as number) : null;
+    const liqOut = typeof c["liqUsd"] === "number" ? (c["liqUsd"] as number) : liqIn;
+    // WARISAN TANPA LIKUIDITAS MASUK (2026-10-11): kalau baris OPEN-nya adalah baris REKONSILIASI
+    // (dibuat saat catatan aslinya hilang), ia tidak membawa likuiditas — dan model lama jatuh ke
+    // slippage batas 7% sementara lane saat itu memakai likuiditas nyata ~1%. Terukur: 4 baris
+    // berselisih $0,53–$1,75 (persis selisih 7% vs 1%). Likuiditas KELUAR dipakai sebagai proksi
+    // masuk — kolam yang sama, tick yang berdekatan — dan itu dicatat sebagai proksi, bukan fakta.
+    const liqInEffective = liqIn ?? liqOut;
+
+    // 1) aritmetika penuh
+    if (notional > 0 && entryPrice > 0) {
+      // BARIS WARISAN (sebelum 2026-10-10): `exitPrice.toFixed(10)` membulatkan harga rug sekecil
+      // 2,16e-12 menjadi 0 — harga tercatat tak lagi menjelaskan PnL yang dihitung dari harga asli.
+      // Baris seperti ini TIDAK bisa diverifikasi ulang dari ledger, jadi dihitung terpisah dan
+      // dilewati secara terbuka (bukan dipaksa cocok, bukan disembunyikan). Penulisan ke depan
+      // memakai toPrecision(12), jadi kelas ini berhenti di sini.
+      if (exitPrice <= 1e-10 && num(c["pnlUsd"]) > -notional * 0.98) legacyZeroExit++;
+      else {
+        const entrySlipLogged = num(open["entrySlipPct"]);
+        const exitSlipLogged = num(c["exitSlipPct"]);
+        if (Number.isFinite(entrySlipLogged) && Number.isFinite(exitSlipLogged)) {
+          // JALUR EKSAK (2026-10-10): tarif slippage dicatat lane, jadi audit tidak perlu menebak
+          // model — dipakai apa adanya. Ini kelas baris baru; semua baris setelah perubahan ini
+          // masuk ke sini, sehingga perbedaan model tidak lagi menyamarkan kesalahan aritmetika.
+          const tokens = (notional - (notional * (DEX_FEE_PCT + entrySlipLogged) + GAS_USD)) / entryPrice;
+          const gross = tokens * exitPrice;
+          const pnl = gross * (1 - DEX_FEE_PCT - exitSlipLogged) - GAS_USD - notional;
+          const diff = Math.abs(pnl - num(c["pnlUsd"]));
+          maxDiff = Math.max(maxDiff, diff); compared++;
+          if (diff > 0.01) console.log(`  SELISIH (eksak): ${variant} ${String(c["symbol"])} hitung=$${pnl.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diff.toFixed(6)}`);
+        } else {
+          // BARIS WARISAN: tarif slippage belum dicatat → dihitung dengan MODEL, tetap diverifikasi
+          // dengan toleransi eksplisit (model bisa beda ≤$0,5 pada kasus likuiditas ≈ 0). Baris
+          // warisan yang melebihi toleransi TETAP dilaporkan sebagai selisih — bukan disembunyikan.
+          const slipInLegacy = slipPct(notional, liqInEffective);
+          const tokensLegacy = (notional - (notional * (DEX_FEE_PCT + slipInLegacy) + GAS_USD)) / entryPrice;
+          const grossLegacy = tokensLegacy * exitPrice;
+          const slipOutLegacy = slipPct(grossLegacy, liqOut);
+          const pnlLegacy = grossLegacy * (1 - DEX_FEE_PCT - slipOutLegacy) - GAS_USD - notional;
+          const diffLegacy = Math.abs(pnlLegacy - num(c["pnlUsd"]));
+          legacyModel++;
+          maxDiffLegacy = Math.max(maxDiffLegacy, diffLegacy);
+          if (diffLegacy > 0.5) {
+            // KARANTINA WARISAN (2026-10-11): baris SEBELUM pencatatan tarif slippage (2026-10-10)
+            // dan sebelum perbaikan presisi harga tidak bisa direproduksi dari datanya sendiri —
+            // harga keluar dibulatkan toFixed(10) sehingga angkanya memang tidak lengkap. Baris itu
+            // DICATAT DENGAN NAMA + ALASAN di logs/rh-legacy-exceptions.json; yang TIDAK terdaftar
+            // tetap menggagalkan audit, jadi kelas ini tidak bisa dipakai menyembunyikan baris baru.
+            const key = `${variant}|${c["token"]}|${c["ts"]}`;
+            if (legacyExceptions.has(key)) legacyQuarantined++;
+            else {
+              legacyUnlisted++;
+              console.log(`  SELISIH WARISAN TAK TERDAFTAR (>$0,50): ${key} hitung=$${pnlLegacy.toFixed(6)} tercatat=$${String(c["pnlUsd"])} beda=$${diffLegacy.toFixed(6)}`);
+            }
+          }
+        }
+      }
+    } else equitySkip++;
+
+    // 2) SIZING: notional == min(risk/stop, 25, equity_SAAT-ENTRY×50%, 2% liq).
+    // Equity saat entry diambil dari baris OPEN (`equityAtEntryUsd`, dicatat sejak 2026-10-07
+    // malam); baris OPEN lama direkonstruksi dari deret close SEBELUM waktu open — bukan dari
+    // equity saat close (itu yang bikin 9 alarm palsu).
+    const loggedEq = typeof open["equityAtEntryUsd"] === "number" ? (open["equityAtEntryUsd"] as number) : null;
+    const eqAtEntry = loggedEq ?? equityBefore(tsOf(open));
+    if (loggedEq == null) sizingDerived++;
+    const caps = [RISK_USD / (stop / 100), MAX_NOTIONAL, eqAtEntry * 0.5];
+    if (liqIn != null && liqIn > 0) caps.push(liqIn * 0.02);
+    const expected = Math.min(...caps);
+    // Toleransi $0,005: baris OPEN lama mencatat equityAtEntryUsd hanya 2 desimal, dan cap 50%
+    // dihitung dari equity penuh → beda maksimum ~$0,005 yang BUKAN pelanggaran aturan.
+    if (Math.abs(notional - expected) > 0.005) {
+      // JUJUR SOAL YANG TIDAK BISA DIVERIFIKASI (2026-10-11): bila equity saat entry adalah hasil
+      // REKONSTRUKSI (baris OPEN lama tanpa `equityAtEntryUsd`), ukuran posisi TIDAK BISA dinilai —
+      // "harap" dihitung dari angka yang kita karang sendiri. Baris seperti itu dihitung terpisah
+      // dan dilaporkan, bukan dibuat menggagalkan audit; baris dengan equity TERCATAT tetap tegas.
+      if (loggedEq == null) {
+        sizingDerivedMismatch++;
+        console.log(`  SIZING TAK BISA DINILAI (equity rekonstruksi): ${variant} ${String(c["symbol"])} notional=$${notional} harap=$${expected.toFixed(4)} (equity rekonstruksi $${eqAtEntry.toFixed(2)})`);
+      } else {
+        sizeMismatch++;
+        console.log(`  SIZING ANEH: ${variant} ${String(c["symbol"])} notional=$${notional} harap=$${expected.toFixed(4)} (equity saat entry $${eqAtEntry.toFixed(2)}, liq $${liqIn ?? "?"})`);
+      }
+    }
+
+    // 3) batas risiko
+    const intended = notional * (stop / 100) + notional * 0.026 + GAS_USD * 2;
+    const loss = -num(c["pnlUsd"]);
+    if (loss > intended + 0.25) breaches.push({ v: variant, sym: String(c["symbol"] ?? "?"), loss, intended, reason: String(c["reason"] ?? "?") });
+  }
+  // Hasil replay: equity setelah titik terakhir di timeline; life terakhir menurut event RH_LIFE.
+  const lastPoint = series[series.length - 1] as { ts: number; equity: number };
+  replayResult.set(variant, { equity: lastPoint.equity, life: lifeAt(Number.MAX_SAFE_INTEGER) });
+}
+
+// ── BANDINGKAN hasil replay dgn state ─────────────────────────────────────────
+const state = JSON.parse(readFileSync(join(config.logDir, "rh-paper-state.json"), "utf8")) as {
+  variants?: Record<string, { equityUsd?: number; positions?: unknown[]; life?: number }>;
+};
+const openCount = Object.values(state.variants ?? {}).reduce((a, v) => a + (v.positions?.length ?? 0), 0);
+for (const [id, v] of Object.entries(state.variants ?? {})) {
+  const r = replayResult.get(id);
+  if (!r) continue;
+  const stateLife = v.life ?? 1;
+  if (r.life !== stateLife) { lifeMismatch++; console.log(`  LIFE BEDA: ${id} replay life ${r.life} vs state ${stateLife}`); continue; }
+  if (Math.abs(r.equity - (v.equityUsd ?? 0)) > 0.01) {
+    lifeMismatch++;
+    console.log(`  EQUITY BEDA: ${id} (life ${r.life}) replay=$${r.equity.toFixed(2)} state=$${(v.equityUsd ?? 0).toFixed(2)} (beda $${Math.abs(r.equity - (v.equityUsd ?? 0)).toFixed(2)})`);
+  }
+}
+const livesDone = Object.values(state.variants ?? {}).reduce((a, v) => a + ((v.life ?? 1) - 1), 0);
+
+// Tutup-dobel = dua penutupan untuk (varian|token) dalam ≤5 MENIT. Re-entry setelah cooldown 6 jam
+// adalah perilaku SAH, jadi pasangan berjeda jam tidak boleh dihitung sebagai anomali (koreksi
+// 2026-10-09: cek lama menghitung semua pasangan, sehingga selamanya merah padahal bukan bug).
+const dupeTimes = new Map<string, number[]>();
+for (const c of closes) {
+  const k = `${c["variant"]}|${c["token"]}`;
+  if (!dupeTimes.has(k)) dupeTimes.set(k, []);
+  dupeTimes.get(k)!.push(Date.parse(String(c["ts"] ?? "")) || 0);
+}
+let dupCount = 0;
+for (const list of dupeTimes.values()) {
+  list.sort((a, b) => a - b);
+  for (let i = 1; i < list.length; i++) if (list[i]! - list[i - 1]! <= 5 * 60_000) { dupCount++; break; }
+}
+
+// PARITY PER-KUNCI (2026-10-09). Hitungan global (open−close) sering menyesatkan: satu kunci
+// "life lama" bisa menutupi kunci lain yang kurang. Di sini tiap kunci (varian|token|life)
+// dibandingkan sendiri: sisa positif = posisi yang seharusnya masih dipegang.
+// Selisih yang PUNYA PENJELASAN TERCATAT (baris rekonsiliasi untuk kunci itu) dihitung terpisah —
+// tidak disembunyikan, tapi juga tidak lagi membuat seluruh pemeriksaan merah tanpa alasan jelas.
+// SATU RUMUS (2026-10-10): paritas dihitung modul bersama `ledger-parity.ts` — modul yang SAMA
+// dipakai rekonsiliasi di paper.ts. Sebelum ini audit dan rekonsiliasi memakai basis berbeda
+// (baris efektif vs baris nyata) sehingga keduanya tak pernah bertemu: audit merah, rekonsiliasi
+// menulis penyeimbang, audit tetap merah.
+const heldRaw = new Map<string, number>();
+const stateVariants = (state.variants ?? {}) as Record<string, { positions?: Array<{ token: string; openedAt?: number }>; life?: number }>;
+// SISI DIPEGANG DIKEMBALIKAN UTUH (2026-10-11). Percobaan pertama mengabaikan posisi <60 detik di
+// sini — dan itu menciptakan selisih SEPIHAK: baris OPEN-nya sudah tertulis (residual +1) sementara
+// posisinya diabaikan (held 0) → audit merah palsu di kunci yang sebenarnya sehat (terbukti:
+// v06-sniper|0xb274d6… — baris ada, state memegang 1, life sama → selisih sebenarnya NOL).
+// Kunci terlalu-baru sekarang dikecualikan di sisi SELISIH (lihat bawah), bukan di sisi dipegang.
+let terlaluBaru = 0;
+/** Kunci posisi yang baru lahir (<60 detik) — dipakai DUA sisi paritas, supaya adil dua arah. */
+const freshHeldKeys = new Set<string>();
+for (const [id, vs] of Object.entries(stateVariants)) {
+  for (const p of vs.positions ?? []) {
+    if (p.openedAt != null && Date.now() - p.openedAt < 60_000) {
+      terlaluBaru++;
+      freshHeldKeys.add(`${id}|${p.token}|${vs.life ?? 1}`);
+    }
+    heldRaw.set(`${id}|${p.token}`, (heldRaw.get(`${id}|${p.token}`) ?? 0) + 1);
+  }
+}
+const parityRows = readParityRows(config.logDir, VOID_KEYS);
+/** Waktu baris terbaru per kunci — dipakai membedakan "baru lahir" dari "benar-benar bolong". */
+const newestRowTs = new Map<string, number>();
+for (const r of parityRows) {
+  const k = `${r.variant}|${r.token}|${r.life ?? 1}`;
+  newestRowTs.set(k, Math.max(newestRowTs.get(k) ?? 0, Date.parse(String(r.ts ?? "")) || 0));
+}
+const parity = computeParity(parityRows, heldRaw, (v) => stateVariants[v]?.life ?? 1);
+const keyResidual = parity.residual;
+let expectedOpen = 0, explainedKeys = 0;
+// (perhitungan per-kunci ditangani blok di bawah)
+const stateHeld = parity.held;
+// KOREKSI 2026-10-09: sisa positif per kunci BUKAN otomatis anomali — ia cocok dengan posisi yang
+// memang dipegang state (re-entry dalam life yang sama: buka → tutup → buka lagi). Yang benar-benar
+// salah adalah SELISIH antara sisa itu dan jumlah yang dipegang, per kunci.
+let unexplainedGap = 0, freshGap = 0;
+const unexplainedList: string[] = [];
+let extraHeld = 0;
+const extraHeldKeys: string[] = [];
+for (const [key, gapRaw] of parityGaps(parity)) {
+  const heldHere = stateHeld.get(key) ?? 0;
+  const r = keyResidual.get(key) ?? 0;
+  if (r > 0) expectedOpen += r;
+  if (gapRaw > 0) {
+    // Selisih yang punya penjelasan tercatat (baris rekonsiliasi) dihitung terpisah — tidak
+    // disembunyikan, tapi juga tidak membuat seluruh pemeriksaan merah tanpa alasan jelas.
+    if (parity.reconciledCloseKeys.has(key)) { explainedKeys += gapRaw; continue; }
+    // KUNCI TERLALU BARU (2026-10-11): barisnya baru muncul <60 detik lalu — bisa jadi pasangan
+    // buka/tutupnya belum lengkap. Dinilai run berikutnya, dan jumlahnya DILAPORKAN.
+    if (Date.now() - (newestRowTs.get(key) ?? 0) < 60_000) { freshGap += gapRaw; continue; }
+    unexplainedGap += gapRaw;
+    unexplainedList.push(`${key} (+${gapRaw} vs state ${heldHere})`);
+  } else if (gapRaw < 0) {
+    // Sisi sebaliknya: state memegang lebih banyak daripada yang dicatat ledger. Residual NEGATIF
+    // tanpa posisi dipegang BUKAN anomali — itu wajar bagi kunci yang OPEN-nya di-void sementara
+    // CLOSE-nya tetap ada. Yang dihitung hanya kelebihan yang BENAR-BENAR dipegang state.
+    // KELONGGARAN SIMETRIS (2026-10-11): posisi yang baru lahir <60 detik boleh belum punya
+    // barisnya (lane menyimpan state dulu, mencatat kemudian) — sisi atas pun sudah begitu.
+    if (freshHeldKeys.has(key)) { freshGap += -gapRaw; continue; }
+    // HANYA KUNCI YANG BENAR-BENAR MENYUMBANG (2026-10-13): sebelumnya nama kunci didorong ke daftar
+    // SEBELUM menghitung sumbangannya, sehingga audit bisa MENUDUH kunci yang sumbangannya nol
+    // (terbukti pada v10-degen|0x9dbc…: gap −1, held 0 → sumbangan 0, tapi namanya tercetak).
+    // Alat diagnosis yang menyebut nama salah lebih buruk daripada tidak menyebut nama.
+    const sumbangan = Math.max(0, heldHere - Math.max(0, r));
+    if (sumbangan > 0) extraHeldKeys.push(key);
+    extraHeld += sumbangan;
+  }
+}
+const parityOk = unexplainedGap === 0 && extraHeld === 0;
+console.log(`sumber: ${files.length} berkas rh-paper · ${opens.length} buka · ${closes.length} tutup · ${livesDone} life selesai (Life-2)${legacyNoLife ? ` · ${legacyNoLife} close lama tanpa label life dianggap life-1` : ""}${reconciledRows ? ` · ${reconciledRows} baris rekonsiliasi (dihitung terpisah, tidak diaudit)` : ""}`);
+console.log(`\n1) ARITMETIKA   : ${compared} baris terverifikasi EKSAK (tarif slippage tercatat) · selisih max $${maxDiff.toFixed(4)} ${maxDiff <= 0.01 ? "→ COCOK" : "→ TIDAK COCOK"} · ${legacyModel} baris warisan diverifikasi dgn model (selisih maks $${maxDiffLegacy.toFixed(4)}, toleransi $0,50)${legacyQuarantined ? ` · ${legacyQuarantined} dikarantina (terdaftar + beralasan)` : ""}${legacyUnlisted ? ` · ${legacyUnlisted} TAK TERDAFTAR → GAGAL` : ""} · ${equitySkip} dilewati (data harga tak lengkap)${legacyZeroExit ? ` · ${legacyZeroExit} dilewati (harga keluar tercatat 0, presisi log lama)` : ""}`);
+console.log(`2) IDENTITY     : ${lifeMismatch ? `${lifeMismatch} varian BEDA (replay vs state)` : `semua varian: equity replay == $100 + Σpnl per-life`}`);
+console.log(`3) SIZING       : ${sizeMismatch ? `${sizeMismatch} menyimpang` : "semua notional == min(risk$5/stop%, cap $25, 50% equity-SAAT-ENTRY, 2% liq)"}${sizingDerived ? ` · ${sizingDerived} entry lama (equity direkonstruksi)` : ""}${sizingDerivedMismatch ? ` · ${sizingDerivedMismatch} tak bisa dinilai (equity rekonstruksi — bukan pelanggaran aturan, disebut namanya)` : ""}`);
+console.log(`5) SANITY       : ledger bilang ${expectedOpen} posisi · state memegang ${[...stateHeld.values()].reduce((a, b) => a + b, 0)} ${parityOk ? "OK" : "BEDA"}${explainedKeys ? ` · ${explainedKeys} dijelaskan baris rekonsiliasi` : ""}${unexplainedList.length ? ` · TAK TERJELASKAN: ${unexplainedList.slice(0, 3).join(", ")}` : ""}${extraHeld ? ` · ${extraHeld} posisi di state tanpa catatan ledger: ${extraHeldKeys.slice(0, 3).join(", ")}` : ""}${terlaluBaru ? ` · ${terlaluBaru} posisi baru (<60s)` : ""}${freshGap ? ` · ${freshGap} selisih ditunda (baris <60s — dinilai run berikutnya)` : ""} · (varian,token) tutup-dobel=${dupCount}`);
+
+console.log(`\n4) BATAS RISIKO : ${breaches.length} dari ${closes.filter((c) => num(c["pnlUsd"]) < 0).length} trade rugi melebihi stop nominal + biaya`);
+const totalLoss = closes.filter((c) => num(c["pnlUsd"]) < 0).reduce((a, c) => a + num(c["pnlUsd"]), 0);
+const totalPnl = closes.reduce((a, c) => a + num(c["pnlUsd"]), 0);
+if (breaches.length) {
+  const byReason: Record<string, { n: number; excess: number }> = {};
+  let excess = 0;
+  for (const b of breaches) {
+    const e = b.loss - b.intended;
+    excess += e;
+    byReason[b.reason] ??= { n: 0, excess: 0 };
+    byReason[b.reason]!.n++; byReason[b.reason]!.excess += e;
+  }
+  for (const [r, x] of Object.entries(byReason)) console.log(`   ${r.padEnd(10)} ${x.n} trade · kelebihan $${x.excess.toFixed(2)}`);
+  console.log(`   total kelebihan di luar niat $5: $${excess.toFixed(2)}`);
+  console.log(`   sebab: stop_loss = harga GAP melewati stop antar-mark; pool_mati = rugi penuh; mark_basi = haircut 50%; liq_shield = perisai likuiditas kohort-4 (keluar sebelum stop)`);
+}
+console.log(`\nRINGKAS: total rugi $${totalLoss.toFixed(2)} · PnL bersih $${totalPnl.toFixed(2)} (mark-based, belum divalidasi pasar nyata)`);
+
+// Gagal bila: aritmetika melenceng, identity melenceng, sizing menyimpang, ada kunci posisi yang
+// tak terjelaskan (selisih yang punya baris rekonsiliasi TIDAK menggagalkan — itu sudah dilaporkan
+// dengan nama kuncinya), ATAU ada baris warisan di luar toleransi yang BELUM terdaftar di karantina.
+// CELAH YANG DITUTUP (2026-10-13): `dupCount` (tutup-dobel) dulu hanya DILAPORKAN, tidak menggagalkan
+// audit — padahal kelas inilah yang pernah membukukan PnL dua kali (kerusakan buku nyata). Sekarang
+// ia ikut menggagalkan: kelas berbahaya tidak boleh jadi informasi pasif.
+const failed = maxDiff > 0.01 || lifeMismatch > 0 || sizeMismatch > 0 || !parityOk || legacyUnlisted > 0 || dupCount > 0;
+process.exit(failed ? 1 : 0);

@@ -1,6 +1,21 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { duplicateEnvKeys, duplicateSecurityKeys } from "./util/env-audit.js";
+
+// AUDIT 2026-10-24 (round-3 A2): dotenv memakai NILAI TERAKHIR untuk kunci duplikat di .env —
+// duplikat membuat blok pertama lenyap TANPA suara (kasus nyata: MAX_DAILY_SPEND_SOL 0.10 lalu
+// 9999). Keputusan operator untuk membuka cap TETAP dihormati; yang ditutup adalah sisi senyapnya:
+// (1) peringatan startup dengan nama kunci saja, (2) daftar ini diekspos sebagai
+// `config.securityDupKeys` dan control.ts MENOLAK mengarming live selama kunci keamanan
+// terduplikasi (lihat util/env-audit.ts).
+let _envSecurityDupKeys: string[] = [];
+try {
+  const envText = readFileSync(".env", "utf8");
+  const dups = duplicateEnvKeys(envText);
+  if (dups.length) console.warn(`[config] PERINGATAN: kunci .env duplikat — nilai TERAKHIR yang dipakai dotenv: ${dups.join(", ")}`);
+  _envSecurityDupKeys = duplicateSecurityKeys(envText);
+} catch { /* tanpa .env (mis. CI) — bukan fatal */ }
 
 /**
  * Audit fix (2026-07-29): every `Number(process.env.X ?? default)` in this file accepted NaN
@@ -56,6 +71,9 @@ const rpcPool = (() => {
 
 export const config = {
   mode,
+  // (A2, round-3) Kunci keamanan .env yang terduplikasi — tidak kosong = arming live DITOLAK
+  // di control.ts sampai operator membereskan .env (nilai efektif = nilai TERAKHIR dotenv).
+  securityDupKeys: _envSecurityDupKeys,
   /**
    * MEASUREMENT EPOCH. Records written before the trade-identity / post-exit-idempotency /
    * truth-schema work of 2026-07-26 lack `tradeId`, contain duplicated post-exit samples
@@ -212,7 +230,88 @@ export const config = {
   } as Record<string, number>,
   usingPublicRpc: rpcPool[0] === "https://api.mainnet-beta.solana.com",
   rugcheckApiKey: process.env.RUGCHECK_API_KEY?.trim() || undefined,
+  /**
+   * OWNER DECISION 2026-08-23: RUGCHECK_ENABLED=false bypasses the RugCheck API entirely.
+   * The API's 429s/timeouts were (a) slowing the gate's parallel batch to its deadline and
+   * (b) leaving ~18% of entries without rug data anyway (fail-open), so the owner chose to
+   * drop the layer rather than pay latency for partial coverage. What REMAINS on the entry
+   * path: the free instant structural checks (mint/freeze authority) + holder analysis +
+   * metadata + Jupiter intel. Re-enable by removing the env line (default = enabled).
+   */
+  rugcheckEnabled: process.env.RUGCHECK_ENABLED !== "false",
+  /**
+   * S2 LIVE MIRROR (owner, 2026-08-24: "1 inti") — Strategy 2 executes for real when the
+   * console switch is LIVE, via the selected Jupiter/OKX/GMGN route, with its OWN smaller caps.
+   * Shares the guardian's halt + 24h spend ledger with S1. S2_LIVE_ENABLED=false freezes it to
+   * paper-only without touching the brain.
+   */
+  // AUDIT 2026-10-24 (F6): default dulu fail-open (unset = LIVE-enabled). Kunci dana harus
+  // fail-closed: hanya nilai eksplisit "true" yang mempersenjatai. .env mesin ini menuliskan
+  // "true" secara eksplisit, jadi perilaku mesin ini tidak berubah — defaultnya saja yang aman.
+  s2LiveEnabled: process.env.S2_LIVE_ENABLED === "true",
+  s2MaxPerTradeSol: Number(process.env.S2_MAX_PER_TRADE_SOL ?? 0.02),
+  s2MaxDeployedSol: Number(process.env.S2_MAX_DEPLOYED_SOL ?? 0.06),
+  /**
+   * Execution route for the S2 live mirror: "jupiter" (default), "okx" (OnchainOS builds a
+   * Solana transaction, signed locally), or "gmgn" (server-side execution; wallet imported in
+   * the owner's GMGN account). Fees and route are logged per trade.
+   */
+  s2ExecRoute: (() => {
+    const route = (process.env.S2_EXEC_ROUTE ?? "jupiter").trim().toLowerCase();
+    return route === "gmgn" || route === "okx" ? route : "jupiter";
+  })() as "jupiter" | "okx" | "gmgn",
   jupiterApiKey: process.env.JUPITER_API_KEY?.trim() || undefined,
+  /**
+   * OKX OnchainOS provider. Market/radar reads are opt-in with OKX_SHADOW_ENABLED. Execution has
+   * a SECOND independent lock (`OKX_EXECUTION_ENABLED`) and still passes through the global live
+   * gate, wallet-balance read, guardian caps and spend ledger. Secrets never enter config hashes.
+   */
+  okx: {
+    enabled: process.env.OKX_SHADOW_ENABLED === "true" && Boolean(
+      process.env.OKX_API_KEY?.trim() &&
+      process.env.OKX_SECRET_KEY?.trim() &&
+      process.env.OKX_API_PASSPHRASE?.trim(),
+    ),
+    baseUrl: process.env.OKX_BASE_URL?.trim() || "https://web3.okx.com",
+    maxRps: numEnv(process.env.OKX_MAX_RPS, 1, 0.1),
+    timeoutMs: numEnv(process.env.OKX_TIMEOUT_MS, 8_000, 1_000),
+    executionEnabled: process.env.OKX_EXECUTION_ENABLED === "true",
+    slippagePercent: Math.min(50, numEnv(process.env.OKX_SLIPPAGE_PERCENT, 3, 0.01)),
+    /**
+     * WebSocket lane (wss://wsdex.okx.com/ws/v6/dex). Separate switch from the REST lane on
+     * purpose: bounded REST polling cannot replace a push feed on the entry hot path, whereas a
+     * stream has no per-call cost once connected. They fail independently and are measured
+     * independently, so one being down must not silently disable the other.
+     */
+    wsEnabled: process.env.OKX_WS_ENABLED === "true",
+    wsUrl: process.env.OKX_WS_URL?.trim() || "wss://wsdex.okx.com/ws/v6/dex",
+    /** Channels to subscribe on connect, comma-separated. Empty = connect but subscribe nothing. */
+    wsChannels: (process.env.OKX_WS_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    /**
+     * Shadow copy-trading. Records what following a tracked wallet WOULD have produced. It never
+     * buys: the copy lane has to earn its way past the same fixed-horizon evidence bar that the
+     * GMGN smart-money lane failed, where most "smart money buys" landed AFTER our own entry.
+     */
+    copyShadow: process.env.OKX_COPY_SHADOW === "true",
+    /** Wallets to track on address-tracker-activity. OKX caps this at 200 per subscription. */
+    trackedWallets: (process.env.OKX_TRACKED_WALLETS ?? "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 200),
+    /** REST fallback used when the account has no WebSocket entitlement. First page seeds the
+     *  deduper; only rows first observed after startup become observations/copy candidates. */
+    restSignalEnabled: process.env.OKX_REST_SIGNAL_ENABLED !== "false",
+    // 30s ≈86.4k calls/month if left on continuously, under the documented 100k premium free
+    // allowance before accounting for other studies. Faster polling is explicit and quota-aware.
+    restSignalPollMs: numEnv(process.env.OKX_REST_SIGNAL_POLL_MS, 30_000, 5_000),
+    restCopyPollMs: numEnv(process.env.OKX_REST_COPY_POLL_MS, 60_000, 15_000),
+    restCopyMaxWallets: Math.min(200, Math.floor(numEnv(process.env.OKX_REST_COPY_MAX_WALLETS, 25, 1))),
+    /** Persistent pre-execution candidate ledger. This is deliberately safe-by-construction:
+     * candidates can be WATCH/REJECT only and have no route to a signer or broadcaster. */
+    candidateQueueEnabled: process.env.OKX_CANDIDATE_QUEUE_ENABLED !== "false",
+    candidateMaxLagMs: numEnv(process.env.OKX_CANDIDATE_MAX_LAG_MS, 60_000, 1_000),
+    candidateMinAmountUsd: numEnv(process.env.OKX_CANDIDATE_MIN_AMOUNT_USD, 0, 0),
+    candidateMaxRecords: Math.min(10_000, Math.floor(numEnv(process.env.OKX_CANDIDATE_MAX_RECORDS, 1_000, 100))),
+    /** Fixed horizons (seconds) at which every OKX signal/copy candidate is scored. */
+    horizonsSec: (process.env.OKX_HORIZONS_SEC ?? "60,300,900,2700").split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0),
+  },
   // PumpPortal API key (portal.pumpportal.fun). The free WS covers new-token
   // launches; the per-token TRADE stream (subscribeTokenTrade — live buyers/
   // sellers, unique traders) needs a key funded with ≥0.02 SOL. Leave empty to
@@ -544,6 +643,18 @@ export const config = {
       floor: Number(process.env.ENTRY_MC_FLOOR_SOL ?? 30),   // ~1.07× launch — demand actually showed up
       ceiling: Number(process.env.ENTRY_MC_CEIL_SOL ?? 45),  // ~1.6× launch — don't buy the pump
     },
+    /**
+     * ── A/B LANTAI ENTRY-MC (2026-08-25) ──
+     * Setiap kandidat diberi arm dari hash decisionId-nya SAJA, lalu lantai arm itu yang
+     * memutuskan. LO memakai loFloorSol, HI memakai lantai produksi di atas; plafonnya sama.
+     * Ada karena pita produksi terukur −2,47% ±0,96 di n=3.710 setelah koreksi eksekusi,
+     * sementara pita 46–54 nol observasi — menurunkan lantai tanpa ini murni tebakan.
+     * Lihat experiments/mc-band-ab.ts. Mati secara default.
+     */
+    entryMcAb: {
+      enabled: process.env.ENTRY_MC_AB === "true",
+      loFloorSol: Number(process.env.ENTRY_MC_AB_LO_FLOOR_SOL ?? 46),
+    },
     // ── LAUNCH-TIME MC FLOOR (owner's idea) — applied at the CREATE EVENT, before the queue ──
     // A pump.fun curve's virtual reserves are identical for every token at birth (vSol 30 /
     // vTokens 1.073e9 → MC 27.96), so a dev CANNOT choose a starting market cap. Any MC above
@@ -686,6 +797,18 @@ export const config = {
     sampleMs: 30_000, // sample its price this often
     maxTracked: 40, // cap concurrently-tracked closed tokens (bounds swap-api load)
     prematureRisePct: 25, // if price rose ≥ this % vs our exit within the window → exit was PREMATURE
+    /**
+     * ── PROBE JEDA KELUAR (2026-08-26) ──
+     * Offset (detik) untuk menyampel harga SETELAH sinyal keluar, per-exit, di luar irama 30
+     * detik di atas. Dipilih menutupi sebaran jeda live yang TERUKUR terhadap chain: p50 3,9s,
+     * p90 38,7s. Tanpa ini jendela 0-40 detik praktis kosong (215 observasi dalam tiga hari
+     * lawan median umur sampel 1.234 detik), dan pertanyaan "berapa banyak kerugian yang murni
+     * karena kita telat keluar" tidak bisa dijawab sama sekali.
+     * Biaya: 6 panggilan swap-api per exit, ~7/menit pada laju sekarang, dari anggaran 120/menit.
+     */
+    lagProbeSec: (process.env.POST_EXIT_LAG_SEC ?? "2,4,8,15,30,60")
+      .split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x > 0),
+    maxLagProbes: Number(process.env.POST_EXIT_MAX_LAG_PROBES ?? 10),
   },
 
   // pump.fun candles (free OHLCV, swap-api v1) — raw chart fed to the Feeling Agent.
@@ -745,12 +868,14 @@ export const config = {
     // STALE-ENTRY GUARD (P0 fix, 2026-07-28): a candidate whose detect→decide latency has
     // already blown past a real, generous ceiling no longer describes a "snipe" — the setup
     // context (early holders, curve state, competing bots) has almost certainly moved on.
-    // PROVISIONAL — NOT tuned from the dataset it's meant to protect. Measured detect→entry
-    // latency right now: P50 54s / P90 670s / max 892s, entirely dominated by RPC-queue
-    // congestion (rpc-health.json), not this check. Owner's explicit instruction: remeasure
-    // P50/P95 for 30-60min after the new Helius key settles, THEN set a data-driven final budget
-    // (target: P50<5s, P95<15s). 120s here is a structural "this isn't a snipe anymore" bound,
-    // not a percentile reverse-engineered from the same trades used to judge profitability.
+    // REMEASURED 2026-08-22 (live, decisions↔live-exec join, n=104): detect→fill P50 ≈10s /
+    // P90 ≈14s — the old "P50 54s / P90 670s" figure was an RPC-queue-congestion artefact of
+    // 2026-07-28, fixed by the pool work; this budget is NOT the bottleneck anymore. The
+    // remaining ~7s decision→fill is execution (tx build + send + confirm), addressed by the
+    // websocket confirmation path in executor.ts, not by moving this guard.
+    // PROVISIONAL — NOT tuned from the dataset it's meant to protect. 120s here is a structural
+    // "this isn't a snipe anymore" bound, not a percentile reverse-engineered from the same
+    // trades used to judge profitability.
     staleEntryBudgetMs: Number(process.env.STALE_ENTRY_BUDGET_MS ?? 120_000),
 
     // Smart RE-ENTRY: a token we already closed can be entered again, but only
@@ -974,6 +1099,13 @@ export const config = {
     // It IS recoverable by closing the account after selling, but this bot never closes them, so
     // counting it as a cost is the honest (and conservative) treatment.
     ataRentSol: Number(process.env.ATA_RENT_SOL ?? 0.00203928),
+    // ── EXECUTION REALISM (audit 2026-08-25) ──
+    // Book paper P&L at the rate live actually delivers it, using the transfer function that
+    // `npm run live:truth` measures from chain-verified trades. Default ON: the same 680 trades
+    // that paper scored +3.84% returned −9.08% in real SOL, and a simulator whose headline number
+    // is unreachable is not a conservative simulator, it is a broken one. Set EXEC_REALISM=false
+    // to see the raw model (the raw figures stay in every CLOSE record either way).
+    execRealism: process.env.EXEC_REALISM !== "false",
     // ── RECLAIMING THAT RENT (SPL Token CloseAccount) ──
     // Per the SPL Token spec, CloseAccount returns the account's full rent-exempt lamports to a
     // destination of your choosing, and for a non-native account the only precondition is a ZERO
@@ -1044,6 +1176,8 @@ export const config = {
     // ever reach dry-run/simulate/devnet (control.ts). Actual mainnet spending also
     // requires this out-of-band env flag, which a browser can never set. Both locks
     // must be open. Default: closed.
+    // (A2) sementara kunci keamanan terduplikasi di .env, `securityDupKeys` tidak kosong dan
+    // control.ts MENOLAK arming live — override senyap tak boleh ikut menentukan arming.
     liveConfirmed: process.env.LIVE_TRADING_CONFIRMED === "yes",
     /**
      * LIVE BRIDGE — the module that mirrors the paper trader's decisions onto the real
@@ -1253,6 +1387,12 @@ const _cfgMaterial = JSON.stringify({
   // manually on every material Strategy 2 change this session) was the ONLY thing actually
   // isolating cohorts; this makes `cfg` tell the truth too, independent of remembering to bump
   // the epoch by hand.
+  // Booking policy is material: the same trades under EXEC_REALISM produce a different
+  // ledger, so rows either side of this flag must never be pooled.
+  execRealism: config.risk.execRealism,
+  // Admission berubah per-arm: baris LO dan HI tidak boleh dianggap satu populasi
+  // dengan baris dari run tanpa A/B.
+  entryMcAb: config.gate.entryMcAb,
   strategy2Scout: config.strategy2Scout,
   strategy2NewScout: config.strategy2NewScout,
   strategy2Paper: config.strategy2Paper,

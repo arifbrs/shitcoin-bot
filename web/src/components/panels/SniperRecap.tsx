@@ -11,6 +11,17 @@ import type { StatsResponse } from "@/types/stats";
 function SniperRecapInner({ data }: { data: StatsResponse }) {
   const p = data.paper;
   const alive = data.system.sniperAlive;
+  // Live view: balance null = on-chain read failed. Show "unreadable" — never $0.00, which
+  // told the owner their funded wallet was empty (found live 2026-08-24).
+  if (p && p.balanceSol == null) {
+    return (
+      <div className="flex h-full items-center gap-3 px-1 font-mono text-[10px] text-muted-foreground">
+        <span className={`h-[6px] w-[6px] rounded-full ${alive ? "bg-foreground shadow-[0_0_7px_var(--hud-fg)] animate-pulse" : "bg-muted-foreground/40"}`} />
+        <span className="tracking-[0.14em] uppercase">{data.liveBridge?.armed ? "LIVE · saldo tidak terbaca" : "Strategy 1 · Sniper"}</span>
+        <span>menunggu bacaan on-chain berhasil…</span>
+      </div>
+    );
+  }
   if (!p || p.opens === 0) {
     return (
       <div className="flex h-full items-center gap-3 px-1 font-mono text-[10px] text-muted-foreground">
@@ -20,8 +31,10 @@ function SniperRecapInner({ data }: { data: StatsResponse }) {
       </div>
     );
   }
-  const pnl = p.balanceSol - p.floatSol;
-  const pnlPct = p.floatSol > 0 ? (pnl / p.floatSol) * 100 : 0;
+  const bal = p.balanceSol ?? 0;
+  const flt = p.floatSol ?? 0;
+  const pnl = bal - flt;
+  const pnlPct = flt > 0 ? (pnl / flt) * 100 : 0;
   const neg = pnl < 0;
 
   return (
@@ -33,7 +46,7 @@ function SniperRecapInner({ data }: { data: StatsResponse }) {
         {data.liveBridge?.armed ? "LIVE · uang sungguhan" : "Strategy 1 · Sniper"}
       </span>
       <span className={`font-semibold ${neg ? "text-down" : "text-up"}`}>
-        {p.balanceSol.toFixed(3)}◎
+        {bal.toFixed(3)}◎
       </span>
       <span className={neg ? "text-down" : "text-up"}>
         {pnl >= 0 ? "+" : ""}{pnl.toFixed(3)}◎ ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)

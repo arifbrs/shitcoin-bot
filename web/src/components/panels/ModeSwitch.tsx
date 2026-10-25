@@ -141,6 +141,19 @@ export function ModeSwitch({ data, walletFallback }: { data: StatsResponse | nul
             </span>
           </div>
           {bridge?.halted && <p className="pt-1 text-down">⛔ HALTED — {bridge.haltReason ?? "kill switch"}</p>}
+          {/*
+            DOMPET KERING. Ini yang hilang selama lima belas jam pada 24-25 Agustus: saldo jatuh
+            di bawah satu klip, bot menolak 177 pembelian berturut-turut, dan panel ini tetap
+            menulis "ARMED — uang sungguhan". Status armed itu benar dan sekaligus menyesatkan,
+            jadi keadaan ini harus punya barisnya sendiri, bukan disimpulkan dari log.
+          */}
+          {bridge?.dryWallet && (
+            <p className="pt-1 text-down">
+              🪫 DOMPET KERING — butuh {bridge.dryWallet.needSol.toFixed(4)} SOL, ada{" "}
+              {bridge.dryWallet.haveSol.toFixed(4)} SOL. Pembelian dijeda sejak{" "}
+              {new Date(bridge.dryWallet.since).toLocaleTimeString("id-ID")}; penjualan tetap jalan.
+            </p>
+          )}
           <p className="pt-1 leading-relaxed text-muted-foreground">
             Kembali ke PAPER menghentikan pembelian seketika, tapi posisi live yang masih terbuka
             tetap dijual sampai habis.

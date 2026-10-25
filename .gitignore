@@ -17,3 +17,9 @@ backups/
 # Generated every 2h by src/kol-leaderboard-refresh.mjs — runtime state, not config.
 # Tracking it made the tree permanently dirty and blocked a branch checkout mid-session.
 config/kol-watchlist.json
+vendor/
+
+.DS_Store
+
+# Arsip data historis (bukti riset) tetap LOKAL — tidak dipublikasikan ke GitHub
+archive/

@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import { postControl } from "@/lib/api";
 import type { OpenPosition } from "@/types/stats";
 
 function fmtHeld(sec: number): string {
@@ -28,9 +30,36 @@ function fmtHeld(sec: number): string {
  * +300% → 45%), so a constant in the UI would draw a stop that does not exist.
  */
 export function PositionCard({ position, tag }: { position: OpenPosition; tag?: "S1" | "S2" | "LIVE" }) {
+  // TUTUP MANUAL. Perintah close per-mint dilayani oleh mesin sniper; S2 punya namespace
+  // perintahnya sendiri dan hanya mengenal flatten, jadi tombolnya tidak ditawarkan di sana —
+  // menawarkan tombol yang diam-diam tidak melakukan apa-apa lebih buruk daripada tidak ada.
+  const canClose = Boolean(position.mint) && tag !== "S2";
+  const [armed, setArmed] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+
+  function clickClose(): void {
+    if (sent) return;
+    if (!armed) {
+      setArmed(true);
+      armTimer.current = setTimeout(() => setArmed(false), 3000);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmed(false);
+    setSent("mengirim…");
+    postControl({ command: "close", mint: position.mint })
+      .then(() => setSent("✓ terkirim"))
+      .catch((e: Error) => { setSent(null); setArmed(false); void e; });
+  }
+
+  // `null` = nobody can price this bag right now (a LIVE lot whose paper twin is gone). That
+  // must read as absence — neutral em-dash — not as "+0.0%", which invents a fact about money.
+  const unpriced = position.unrealizedPnl == null;
   const pnl = position.unrealizedPnl ?? 0;
-  const up = pnl >= 0;
-  const accent = up ? "var(--hud-up)" : "var(--hud-down)";
+  const up = !unpriced && pnl >= 0;
+  const accent = unpriced ? "var(--hud-dim)" : up ? "var(--hud-up)" : "var(--hud-down)";
   const held = position.heldSec ?? 0;
 
   const peakPct = position.peakPct ?? 0;
@@ -52,8 +81,8 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
     : `tinggal ${fmtHeld(timeRoom)} lagi · ${position.budgetLabel ?? "batas"}`;
 
   const R1 = 27, R2 = 21, C1 = 2 * Math.PI * R1, C2 = 2 * Math.PI * R2;
-  const solPnl = position.sizeSol != null ? position.sizeSol * (pnl / 100) : null;
-  const usdPnl = position.entryCostUsd != null ? position.entryCostUsd * (pnl / 100) : null;
+  const solPnl = !unpriced && position.sizeSol != null ? position.sizeSol * (pnl / 100) : null;
+  const usdPnl = !unpriced && position.entryCostUsd != null ? position.entryCostUsd * (pnl / 100) : null;
 
   const art = position.img ?? position.image ?? null;
 
@@ -130,12 +159,35 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
             compressed into the badges next to it, which is exactly what happened when this card
             was previewed at 392px and then rendered in a 190px grid cell. */}
         <div className="shrink-0 text-right">
-          <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }}>
-            {up ? "+" : "−"}{Math.abs(pnl).toFixed(1)}%
-          </div>
+          {unpriced ? (
+            <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }} title="tidak ada harga yang bisa memvalue tas ini saat ini">
+              —
+            </div>
+          ) : (
+            <div className="font-mono text-[17px] font-semibold leading-none tabular-nums @[300px]:text-[22px]" style={{ color: accent }}>
+              {up ? "+" : "−"}{Math.abs(pnl).toFixed(1)}%
+            </div>
+          )}
           {solPnl != null && (
             <div className="mt-1 font-mono text-[9.5px] tabular-nums" style={{ color: accent }}>
               {solPnl >= 0 ? "+" : "−"}{Math.abs(solPnl).toFixed(4)}◎
+            </div>
+          )}
+          {/*
+            MARK vs YANG AKAN DIBAYAR. Angka besar di atas adalah mark paper. Terukur terhadap
+            chain, mark paper pada token yang sedang BERGERAK justru yang paling tidak bisa
+            dieksekusi: klaim 50-100% cair sekitar dua pertiga, klaim di atas 100% cair
+            sepersepuluh. Kartu +120% bukan +120% yang akan diterima, dan sebelum baris ini
+            tidak ada apa pun di layar yang mengatakannya.
+            Hanya ditampilkan kalau koreksinya BERBEDA secara berarti — menempelkan angka kedua
+            yang identik ke setiap kartu hanya melatih orang mengabaikan keduanya.
+          */}
+          {!unpriced && position.unrealizedPnlAdj != null && Math.abs(position.unrealizedPnlAdj - pnl) >= 1 && (
+            <div
+              className="mt-0.5 font-mono text-[9px] tabular-nums text-muted-foreground"
+              title="Perkiraan yang benar-benar cair saat dijual, dari kurva eksekusi yang diukur terhadap chain. Mark di atas adalah harga kuotasi."
+            >
+              cair ≈ {position.unrealizedPnlAdj >= 0 ? "+" : "−"}{Math.abs(position.unrealizedPnlAdj).toFixed(1)}%
             </div>
           )}
           {solPnl == null && usdPnl != null && (
@@ -149,7 +201,32 @@ export function PositionCard({ position, tag }: { position: OpenPosition; tag?: 
         </div>
       </div>
 
-      {hot && (
+      {/*
+        TUTUP MANUAL — keputusan owner direkam sebagai data, bukan sekadar tindakan.
+        Backend sudah lama menerima {command:"close", mint} tapi tidak pernah ada tombolnya:
+        konsol cuma bisa flatten SEMUA posisi. Jadi satu-satunya kebijakan exit yang pernah
+        terekam adalah kebijakan otomatis. Baris ini membuka jalur kedua — apa yang ditutup
+        manusia, kapan, dan pada mark berapa — supaya "style"-nya bisa disimpulkan dari data
+        alih-alih dari ingatan.
+        Dua ketuk, meniru pola flatten yang sudah ada: satu ketuk salah menghapus satu titik
+        data, dan pada mode live kelak, satu posisi sungguhan.
+      */}
+      {canClose && (
+        <button
+          type="button"
+          onClick={clickClose}
+          className="relative mt-2 w-full rounded border px-2 py-1 font-mono text-[9px] tracking-wide transition-colors"
+          style={{
+            borderColor: armed ? accent : "var(--hud-line)",
+            color: armed ? accent : "var(--muted-foreground)",
+          }}
+          title="Tutup posisi ini sekarang. Tercatat sebagai MANUAL_CLOSE beserta mark yang sedang tampil."
+        >
+          {sent ?? (armed ? "yakin? ketuk lagi" : "tutup posisi")}
+        </button>
+      )}
+
+            {hot && (
         <div className="relative mt-2.5 flex items-center gap-1.5 border-t pt-2 font-mono text-[9px]"
              style={{ borderColor: `color-mix(in srgb, ${accent} 16%, transparent)`, color: accent }}>
           <span className="h-[5px] w-[5px] animate-pulse rounded-full motion-reduce:animate-none" style={{ background: accent }} />

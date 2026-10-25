@@ -40,7 +40,8 @@ function TradeJournalInner({ data }: { data: StatsResponse }) {
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
       {trades.map((t, i) => {
-        const up = t.pnlPct >= 0;
+        const unpriced = t.pnlPct == null;
+        const up = !unpriced && t.pnlPct >= 0;
         return (
           <div key={`${t.ts}-${i}`} className="grid grid-cols-[auto_auto_1fr_auto_auto_auto_auto] items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[10px] hover:bg-secondary/40">
             <span className={`rounded px-1 text-[8px] font-semibold ${t.tag === "LIVE" ? "bg-down/20 text-down" : t.tag === "S1" ? "bg-scout/15 text-scout" : "bg-gold/15 text-gold"}`}>{t.tag}</span>
@@ -59,7 +60,9 @@ function TradeJournalInner({ data }: { data: StatsResponse }) {
             {t.pnlSol !== undefined && (
               <b className={`tabular-nums ${up ? "text-up" : "text-down"}`}>{up ? "+" : ""}{t.pnlSol.toFixed(4)}◎</b>
             )}
-            <b className={`tabular-nums ${up ? "text-up" : "text-down"}`}>{up ? "+" : ""}{t.pnlPct.toFixed(1)}%</b>
+            <b className={`tabular-nums ${unpriced ? "text-muted-foreground" : up ? "text-up" : "text-down"}`}>
+              {unpriced ? "—" : `${t.pnlPct >= 0 ? "+" : ""}${t.pnlPct.toFixed(1)}%`}
+            </b>
           </div>
         );
       })}

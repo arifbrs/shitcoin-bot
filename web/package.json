@@ -11,6 +11,8 @@
     "panel:check": "tsx --tsconfig tsconfig.app.json scripts/panel-render-check.tsx",
     "mode:check": "tsx --tsconfig tsconfig.app.json scripts/mode-switch-check.tsx",
     "poscard:check": "tsx --tsconfig tsconfig.app.json scripts/poscard-check.tsx",
+    "dashboard:check": "tsx --tsconfig tsconfig.app.json scripts/dashboard-check.tsx",
+    "terminal:check": "tsx --tsconfig tsconfig.app.json scripts/terminal-check.tsx",
     "memo:check": "tsx --tsconfig tsconfig.app.json scripts/memo-check.tsx"
   },
   "dependencies": {

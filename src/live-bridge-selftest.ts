@@ -79,6 +79,23 @@ class FakeChain {
   balanceReadable = true;
   tokenReadable = true;
   ataRent = 0.00203928;
+  /**
+   * REAL COSTS, off by default so the existing cases keep their round numbers.
+   *
+   * Turn on for the accounting cases: a buy then costs order size + gas + ATA rent, and a full
+   * sell returns proceeds − gas + that rent. Those are the mainnet-measured shapes, and the
+   * whole 2026-08-25 audit finding was that the bridge booked the ORDER SIZE instead — a fake
+   * with no fees is a fake that can never notice.
+   */
+  chargeFees = false;
+  gasPerTx = 0.000055;
+  /** Real SOL each signature moved, exactly as this fake applied it to `sol`. */
+  txDeltas = new Map<string, number>();
+  /** null = the chain will not tell us (dropped tx / every endpoint down). */
+  txDeltaReadable = true;
+  /** Mints whose ATA still exists — rent can be reclaimed once, by whoever gets there first. */
+  ataOpen = new Set<string>();
+  private sigN = 0;
 
   ops() {
     return {
@@ -86,13 +103,18 @@ class FakeChain {
       tokenBalance: async (mint: string) => (this.tokenReadable ? (this.tokens.get(mint) ?? 0) : null),
       buy: async (mint: string, sizeSol: number) => {
         this.calls.push(`buy:${mint}:${sizeSol}`);
+        const solBefore = this.sol; // production liveBuy returns its pre-buy balance read
+        const sig = `sigbuy${++this.sigN}`;
         if (this.buyResult.ok || this.buyResult.timedOut) {
           if (this.fillTokens > 0) {
             this.tokens.set(mint, (this.tokens.get(mint) ?? 0) + this.fillTokens);
-            this.sol -= sizeSol;
+            const cost = sizeSol + (this.chargeFees ? this.gasPerTx + this.ataRent : 0);
+            if (this.chargeFees) this.ataOpen.add(mint);
+            this.sol -= cost;
+            this.txDeltas.set(sig, -cost);
           }
         }
-        return { ...this.buyResult, signature: "sigbuy" };
+        return { ...this.buyResult, signature: sig, balanceBefore: solBefore };
       },
       sell: async (mint: string, amount: number | string) => {
         // MODEL THE REAL GATE. The fake used to sell unconditionally, so "a HALT does not
@@ -101,18 +123,35 @@ class FakeChain {
         // A fake that is more permissive than production turns its test into a decoration.
         if (this.exitBlocked) return { ok: false, err: "live blocked: HALTED" };
         this.calls.push(`sell:${mint}:${amount}`);
+        const sig = `sigsell${++this.sigN}`;
         if (this.sellLands ?? this.sellResult.ok) {
           const have = this.tokens.get(mint) ?? 0;
           const qty = amount === "100%" ? have : Math.min(have, Number(amount));
           this.tokens.set(mint, have - qty);
-          this.sol += this.solPerFullSell * (have > 0 ? qty / have || 0 : 0);
+          const emptied = have - qty <= 0;
+          // The sell route closes the ATA when it sweeps the bag — which is why the rent comes
+          // back inside the proceeds, and why booking the buy at order size double-counted it.
+          const sweptRent = this.chargeFees && emptied && this.ataOpen.delete(mint) ? this.ataRent : 0;
+          const got = this.solPerFullSell * (have > 0 ? qty / have || 0 : 0)
+            - (this.chargeFees ? this.gasPerTx : 0)
+            + sweptRent;
+          this.sol += got;
+          this.txDeltas.set(sig, got);
         }
-        return { ...this.sellResult, signature: "sigsell" };
+        return { ...this.sellResult, signature: sig };
       },
       closeAta: async (mint: string) => {
         this.calls.push(`ata:${mint}`);
+        // With fees modelled, the sell route already swept the rent — closing again finds
+        // nothing, which is exactly what mainnet reports (0 token accounts, 0 ata-closed).
+        if (this.chargeFees && !this.ataOpen.delete(mint)) return 0;
         this.sol += this.ataRent;
         return this.ataRent;
+      },
+      txWalletDelta: async (sig: string) => {
+        this.calls.push(`txdelta:${sig}`);
+        if (!this.txDeltaReadable) return null;
+        return this.txDeltas.has(sig) ? (this.txDeltas.get(sig) as number) : null;
       },
       now: () => Date.now(),
       sleep: async () => {},
@@ -591,6 +630,146 @@ async function main(): Promise<void> {
       r.ok === false && !r.signature && !r.timedOut, `(${JSON.stringify(r)})`);
   } catch (e) {
     console.log(`  ⚠ PumpPortal unreachable (${(e as Error).message.slice(0, 50)}) — build-refusal path unverified this run`);
+  }
+
+  // ── 2x. DEPOSIT ACKNOWLEDGE ──────────────────────────────────────────────
+  // Setoran owner = pergerakan saldo yang sah, tapi reconcile-or-HALT tidak bisa membedakannya
+  // dari pembobolan. Skenario nyata 2026-08-23: snapshot 0.0147, on-chain 0.4516 → HALT; resume
+  // TANPA acknowledge langsung ter-halt ulang di tick berikutnya (snapshot masih angka lama).
+  console.log("\n2x. ACKNOWLEDGE DEPOSIT (setoran sah vs pembobolan)");
+  {
+    const c = fresh();
+    B.__setBalanceForTest(0.0147);          // snapshot lama (pra-setoran)
+    c.sol = 0.4516;                          // setoran masuk on-chain
+    await B.__reconcileForTest();
+    check("setoran tanpa ack → HALT fail-closed", isHalted().halted === true,
+      `(${isHalted().reason ?? "tidak halt"})`);
+    check("alasannya drift saldo", /unexplained balance move/.test(isHalted().reason ?? ""));
+    const ack = await (B as unknown as { acknowledgeDeposit(): Promise<{ ok: boolean; sol: number | null }> }).acknowledgeDeposit();
+    check("ack membaca saldo on-chain yang baru",
+      ack.ok === true && Math.abs((ack.sol ?? 0) - 0.4516) < 1e-9, `(${JSON.stringify(ack)})`);
+    resume(); // pasangan wajibnya — ack hanya memperbarui snapshot, resume mengangkat halt
+    await B.__reconcileForTest();
+    check("reconcile setelah ack+resume TIDAK halt ulang", isHalted().halted === false,
+      `(${isHalted().reason ?? ""})`);
+    // Dan jalur gagal: chain tak terbaca → ack menolak, tidak mengklaim apa pun.
+    c.balanceReadable = false;
+    const bad = await (B as unknown as { acknowledgeDeposit(): Promise<{ ok: boolean; sol: number | null }> }).acknowledgeDeposit();
+    check("chain tak terbaca → ack MENOLAK (fail-closed)", bad.ok === false && bad.sol === null);
+  }
+
+  // ── 2w. DOMPET KERING — 177 penolakan identik tidak boleh terulang ────────
+  {
+    console.log("\n2w. DOMPET KERING (beli berhenti, keluar tidak)");
+    const c = fresh();
+    c.buyResult = { ok: false, err: "guard: insufficient balance: need 0.0200, have 0.0190" };
+    for (let i = 0; i < 4; i++) {
+      B.bridgeOpen({ tradeId: `dry${i}`, mint: `MDRY${i}`, sizeSol: 0.01 });
+      await B.__drainForTest();
+    }
+    check("beberapa penolakan awal belum mengunci (bisa transien)", B.__dryWalletForTest() === null);
+    B.bridgeOpen({ tradeId: "dry4", mint: "MDRY4", sizeSol: 0.01 });
+    await B.__drainForTest();
+    const latched = B.__dryWalletForTest();
+    check("setelah beruntun → MENGUNCI dan menyebut angkanya", latched?.needSol === 0.02);
+
+    // Terkunci = berhenti bertanya. Inilah yang gagal di produksi.
+    const before = c.calls.filter((x) => x.startsWith("buy:")).length;
+    for (let i = 5; i < 15; i++) {
+      B.bridgeOpen({ tradeId: `dry${i}`, mint: `MDRY${i}`, sizeSol: 0.01 });
+      await B.__drainForTest();
+    }
+    const after = c.calls.filter((x) => x.startsWith("buy:")).length;
+    check("  → 10 sinyal berikutnya TIDAK menembak chain lagi", after === before, `${after - before} percobaan lolos`);
+
+    // Tapi bag yang sudah ada harus tetap bisa keluar — asimetri yang tidak boleh dikorbankan.
+    c.buyResult = { ok: true };
+    B.__resetForTest();
+    const c2 = fresh();
+    c2.buyResult = { ok: true };
+    B.bridgeOpen({ tradeId: "held", mint: "MHELD", sizeSol: 0.01 });
+    await B.__drainForTest();
+    c2.buyResult = { ok: false, err: "guard: insufficient balance: need 0.0200, have 0.0010" };
+    for (let i = 0; i < 6; i++) {
+      B.bridgeOpen({ tradeId: `d2${i}`, mint: `MD2${i}`, sizeSol: 0.01 });
+      await B.__drainForTest();
+    }
+    check("dompet kering → tetap MENGUNCI", B.__dryWalletForTest() !== null);
+    B.bridgeClose("held", "MHELD", "STOP");
+    await B.__drainForTest();
+    check("  → tapi bag yang dipegang TETAP bisa dijual", (c2.tokens.get("MHELD") ?? 0) === 0);
+    check("  → dan lot-nya tertutup bersih", B.__lotsForTest().get("held")?.state === "closed");
+  }
+
+  // ── 2y. AKUNTANSI: UANG YANG DIBUKUKAN HARUS UANG YANG BERGERAK ──────────
+  // Ini gerbang yang absen selama tiga hari perdagangan live. Bug-nya bukan crash: ledger
+  // membukukan UKURAN ORDER (0.01◎) sebagai biaya beli, sementara sisi jual memakai delta
+  // saldo yang sudah termasuk rent ATA balik. Asimetri itu menaikkan tiap trade ≈0.0023◎ —
+  // 20,6% dari notional — dan mengubah −15,65% nyata menjadi +1,71% di layar.
+  {
+    console.log("\n2y. AKUNTANSI — buku harus sama dengan chain");
+    const c = fresh();
+    c.chargeFees = true;              // gas + rent ATA, bentuk mainnet yang terukur
+    c.fillTokens = 1_000_000;
+    c.solPerFullSell = 0.0098;        // jual sedikit di bawah modal
+    const size = 0.01;
+    const solBefore = c.sol;
+
+    B.bridgeOpen({ tradeId: "acc1", mint: "MACC", sizeSol: size });
+    await B.__drainForTest();
+    const lot = B.__lotsForTest().get("acc1");
+
+    const expectedSpend = size + c.gasPerTx + c.ataRent;
+    check("beli dibukukan sebesar DEBIT NYATA, bukan ukuran order",
+      !!lot && Math.abs((lot.spentSol ?? 0) - expectedSpend) < 1e-9,
+      `spent=${lot?.spentSol} seharusnya=${expectedSpend}`);
+    check("  → dan ukuran order saja akan MELEBIH-LEBIHKAN hasil",
+      expectedSpend > size);
+    check("  → ditandai terukur, bukan taksiran", lot?.spentMeasured === true);
+
+    B.bridgeClose("acc1", "MACC", "EARLY_CUT");
+    await B.__drainForTest();
+
+    // Kebenaran tunggal: yang hilang dari dompet harus sama dengan yang dicatat ledger.
+    const walletMoved = c.sol - solBefore;
+    const settled = B.__lotsForTest().get("acc1");
+    const booked = (settled?.proceedsSol ?? 0) + (settled?.rentReclaimedSol ?? 0) - (settled?.spentSol ?? 0);
+    check("net ledger == pergerakan dompet NYATA (≤1 lamport)",
+      Math.abs(booked - walletMoved) < 1e-9,
+      `ledger=${booked.toFixed(9)} dompet=${walletMoved.toFixed(9)}`);
+    check("  → dan angkanya rugi, bukan untung palsu", booked < 0);
+  }
+
+  // Chain bisa saja tidak mau menjawab. Angka taksiran boleh dipakai, tapi TIDAK BOLEH
+  // menyamar sebagai hasil pengukuran — itu justru cara bug ini bersembunyi selama ini.
+  {
+    const c = fresh();
+    c.chargeFees = true;
+    c.txDeltaReadable = false;
+    B.bridgeOpen({ tradeId: "acc2", mint: "MACC2", sizeSol: 0.01 });
+    await B.__drainForTest();
+    const lot = B.__lotsForTest().get("acc2");
+    check("tx tak terbaca → tetap membukukan sesuatu (tidak menggantung)", (lot?.spentSol ?? 0) > 0);
+    check("  → tapi JUJUR menandai dirinya taksiran", lot?.spentMeasured === false);
+  }
+
+  // ── 2z. RIWAYAT SALDO — jangkar rekonsiliasi tingkat dompet ──────────────
+  {
+    console.log("\n2z. RIWAYAT SALDO (audit dompet)");
+    const c = fresh();
+    c.chargeFees = true;
+    B.bridgeOpen({ tradeId: "bal1", mint: "MBAL", sizeSol: 0.01 });
+    await B.__drainForTest();
+    B.bridgeClose("bal1", "MBAL", "STOP");
+    await B.__drainForTest();
+    const lines = readFileSync(join(config.logDir, `live-exec-${new Date().toISOString().slice(0, 10)}.jsonl`), "utf8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type?: string; reason?: string; sol?: number });
+    const bals = lines.filter((l) => l.type === "balance");
+    check("tiap pergerakan uang meninggalkan titik saldo", bals.length >= 2,
+      `hanya ${bals.length} titik`);
+    check("  → dengan alasan yang bisa dibaca", bals.some((b) => b.reason === "buy") && bals.some((b) => b.reason === "sell"));
+    const last = bals[bals.length - 1];
+    check("  → dan saldo terakhir == saldo chain", Math.abs((last?.sol ?? -1) - c.sol) < 1e-9);
   }
 
   restore();

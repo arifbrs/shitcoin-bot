@@ -6,11 +6,25 @@ import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
 import { config, configHash } from "./config.js";
 import { readControl, writeControl } from "./control.js";
+import { buildQualityView } from "./quality-view.js";
+import { summarizeTraces } from "./robinhood/mark-trace.js";
 import { botPubkey, balanceSol, withdrawSol } from "./execution/wallet.js";
+import { validateWithdraw, withdrawPolicyFromEnv, withdrawModeFromEnv, applyWithdrawMode, withdrawnTodaySol } from "./execution/withdraw-gate.js";
+import { logRecord } from "./util/log.js";
+import { applyExecutionRealism } from "./execution/exec-realism.js";
 import { gmgnTokenInfo } from "./discovery/gmgn.js";
 import { solPriceUsd } from "./execution/jupiter.js";
 import { guardStatus, halt, resume } from "./execution/guardian.js";
-import { bridgeStatus } from "./execution/live-bridge.js";
+import { acknowledgeDeposit, bridgeStatus } from "./execution/live-bridge.js";
+import { poolBalanceSol, poolLatestBlockhashFull } from "./execution/rpc.js";
+import {
+  OKX_ENDPOINTS, okxCredentialWarnings, okxLeaderboardWalletTypeCodes,
+  okxLeaderboardWalletTypeLabel, type OkxEndpointSpec,
+} from "./discovery/okx.js";
+import { verifyStrictLedger } from "./discovery/okx-strict-ledger.js";
+import { fetchCandles } from "./chart-data.js";
+import { strictPaperReport } from "./okx-strict-paper-report.js";
+import { inspectRobinhoodToken, searchRobinhoodTokens } from "./robinhood/intelligence.js";
 
 /**
  * The dashboard (this process) now runs standalone from the sniper (src/index.ts) — the two
@@ -191,6 +205,61 @@ const SERVER_START = Date.now();
 type DecisionRow = { ts?: string; candidate?: { mint?: string; symbol?: string; mode?: string; source?: string; holders?: number; marketCapUsd?: number }; gate?: { verdict?: string; checks?: GateCheck[]; score?: number }; action?: string };
 const CLOSE_WINDOW_MAX = 400; // payload bound only — the real span is decided by ledger continuity
 
+interface OkxAggregate {
+  total: number;
+  priced: number;
+  wins: number;
+  sumPct: number;
+  /** Two heaps give an exact streaming median without sorting the entire 7-day log on every
+   * dashboard refresh. lower is a max-heap, upper a min-heap. */
+  lower: number[];
+  upper: number[];
+}
+
+function okxHeapPush(heap: number[], value: number, before: (a: number, b: number) => boolean): void {
+  heap.push(value);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = Math.floor((i - 1) / 2);
+    if (!before(heap[i]!, heap[parent]!)) break;
+    [heap[i], heap[parent]] = [heap[parent]!, heap[i]!];
+    i = parent;
+  }
+}
+
+function okxHeapPop(heap: number[], before: (a: number, b: number) => boolean): number | null {
+  if (heap.length === 0) return null;
+  const root = heap[0]!;
+  const last = heap.pop()!;
+  if (heap.length === 0) return root;
+  heap[0] = last;
+  let i = 0;
+  for (;;) {
+    const left = i * 2 + 1, right = left + 1;
+    let best = i;
+    if (left < heap.length && before(heap[left]!, heap[best]!)) best = left;
+    if (right < heap.length && before(heap[right]!, heap[best]!)) best = right;
+    if (best === i) break;
+    [heap[i], heap[best]] = [heap[best]!, heap[i]!];
+    i = best;
+  }
+  return root;
+}
+
+const okxMaxBefore = (a: number, b: number): boolean => a > b;
+const okxMinBefore = (a: number, b: number): boolean => a < b;
+function okxMedianAdd(aggregate: OkxAggregate, value: number): void {
+  if (aggregate.lower.length === 0 || value <= aggregate.lower[0]!) okxHeapPush(aggregate.lower, value, okxMaxBefore);
+  else okxHeapPush(aggregate.upper, value, okxMinBefore);
+  if (aggregate.lower.length > aggregate.upper.length + 1) {
+    const moved = okxHeapPop(aggregate.lower, okxMaxBefore);
+    if (moved != null) okxHeapPush(aggregate.upper, moved, okxMinBefore);
+  } else if (aggregate.upper.length > aggregate.lower.length) {
+    const moved = okxHeapPop(aggregate.upper, okxMinBefore);
+    if (moved != null) okxHeapPush(aggregate.lower, moved, okxMaxBefore);
+  }
+}
+
 const STORE = {
   decisions: {
     total: 0, passed: 0, rejected: 0, bought: 0,
@@ -251,6 +320,25 @@ const STORE = {
     latency: new Ring<{ preMs?: number; gateMs?: number; openMs?: number; totalMs?: number }>(200),
     execLadder: { theoretical: 0, "tx-built": 0, unavailable: 0, "would-fail": 0, executable: 0 } as Record<string, number>,
     integrity: null as Record<string, unknown> | null, // newest ledger-reconciliation result
+    // OKX Web3 dashboard data. These are folded from the local JSONL stream in the SAME pass as
+    // the rest of the dashboard, so opening /api/okx/overview never spends OKX API quota.
+    okx: {
+      signalCount: 0,
+      copyCount: 0,
+      candidateCount: 0,
+      recentSignals: new Ring<Row>(30),
+      recentCopies: new Ring<Row>(30),
+      recentCandidates: new Ring<Row>(30),
+      recentObservations: new Ring<Row>(30),
+      recentStudyOutcomes: new Ring<Row>(30),
+      observationAgg: {} as Record<string, OkxAggregate>,
+      studyAgg: {} as Record<string, OkxAggregate>,
+      laneStatus: null as Row | null,
+      studyStatus: null as Row | null,
+      radarSweep: null as Row | null,
+      radarSelection: null as Row | null,
+      lastEventAt: null as string | null,
+    },
   },
   trades: [] as Row[],
   patterns: [] as Row[],
@@ -301,6 +389,56 @@ function refreshStore(): void {
   tailStream("events", (r) => {
     const t = String(r["type"] ?? "?");
     E.counts[t] = (E.counts[t] ?? 0) + 1;
+
+    // OKX product view — local log projection only. Source events are counted once here;
+    // observation-open/settlement rows are deliberately NOT counted as another signal.
+    const O = E.okx;
+    if (t.startsWith("okx-") && typeof r["ts"] === "string") O.lastEventAt = r["ts"] as string;
+    const okxData = r["data"] && typeof r["data"] === "object" ? r["data"] as Row : null;
+    const okxChannel = String(r["channel"] ?? "");
+    const okxSide = String(okxData?.["tradeType"] ?? okxData?.["side"] ?? okxData?.["direction"] ?? "").toLowerCase();
+    const isBuy = !okxSide || okxSide.includes("buy") || okxSide === "1";
+    if (t === "okx-rest-signal" || (t === "okx-ws-event" && (okxChannel === "dex-market-new-signal-openapi" || okxChannel === "kol_smartmoney-tracker-activity"))) {
+      O.signalCount++;
+      O.recentSignals.push(r);
+    }
+    if (t === "okx-rest-copy" || (t === "okx-ws-event" && okxChannel === "address-tracker-activity" && isBuy)) {
+      O.copyCount++;
+      O.recentCopies.push(r);
+    }
+    if (t === "okx-candidate") {
+      O.candidateCount++;
+      O.recentCandidates.push(r);
+    }
+    if (t === "okx-observation") {
+      const kind = String(r["kind"] ?? "signal");
+      const horizon = Number(r["horizonSec"]);
+      if (Number.isFinite(horizon) && horizon > 0) {
+        const key = `${kind}:${horizon}`;
+        const a = O.observationAgg[key] ??= { total: 0, priced: 0, wins: 0, sumPct: 0, lower: [], upper: [] };
+        a.total++;
+        const pct = typeof r["pctChange"] === "number" && Number.isFinite(r["pctChange"]) ? r["pctChange"] as number : null;
+        if (pct != null) { a.priced++; a.sumPct += pct; okxMedianAdd(a, pct); if (pct > 0) a.wins++; }
+      }
+      O.recentObservations.push(r);
+    }
+    if (t === "okx-outcome") {
+      const verdict = String(r["verdict"] ?? "UNKNOWN");
+      const horizon = Number(r["horizonSec"]);
+      if (Number.isFinite(horizon) && horizon > 0) {
+        const key = `${verdict}:${horizon}`;
+        const a = O.studyAgg[key] ??= { total: 0, priced: 0, wins: 0, sumPct: 0, lower: [], upper: [] };
+        a.total++;
+        const pct = typeof r["pctChange"] === "number" && Number.isFinite(r["pctChange"]) ? r["pctChange"] as number : null;
+        if (pct != null) { a.priced++; a.sumPct += pct; okxMedianAdd(a, pct); if (pct > 0) a.wins++; }
+      }
+      O.recentStudyOutcomes.push(r);
+    }
+    if (t === "okx-lane-status") O.laneStatus = r;
+    else if (t === "okx-study-status") O.studyStatus = r;
+    else if (t === "okx-radar-sweep") O.radarSweep = r;
+    else if (t === "okx-radar-selection") O.radarSelection = r;
+
     if (t.startsWith("strategy2-") && t.endsWith("-rejected") && r["strategy2Epoch"] === config.strategy2Epoch) {
       E.gateRejectionsEpoch[t] = (E.gateRejectionsEpoch[t] ?? 0) + 1;
     }
@@ -728,11 +866,31 @@ function exitProximity(opts: { peakPct: number; fromPeakPct: number; engine: "S1
  * seconds and a chain read on that path would spend the RPC budget the trader needs. `null`
  * means UNKNOWN and must stay null all the way to the UI — never coerced to zero.
  */
+let cachedBlockhash: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
 let cachedWalletSol: number | null = null;
+// Failure-streak visibility: the $0.00 incident (2026-08-24) was a balance read failing for
+// minutes with ZERO trace in this process's log. After 3 consecutive misses, say so once —
+// silence means "healthy", never "we stopped looking".
+let walletReadMissStreak = 0;
+const noteWalletRead = (v: number | null): void => {
+  if (v != null) {
+    if (walletReadMissStreak >= 3) console.warn(`[wallet] bacaan saldo pulih setelah ${walletReadMissStreak} gagal beruntun — saldo ${v.toFixed(4)} SOL`);
+    walletReadMissStreak = 0;
+    cachedWalletSol = v;
+  } else {
+    walletReadMissStreak++;
+    if (walletReadMissStreak === 3) console.warn("[wallet] 3× bacaan saldo gagal beruntun di semua endpoint — panel dompet akan menampilkan 'tidak terbaca', bukan nol");
+  }
+};
+// POOL, NOT RAW (2026-08-24): this poll used to hit `config.rpcUrl` directly — endpoint #0,
+// forever, bypassing rotation. That is the exact anti-pattern safety/onchain.ts documents:
+// one throttled key eats every read while four siblings sit idle, and the dashboard's own
+// polling then competes with the trader for the same key OUTSIDE the pool's rate limiter.
+// The pool's token bucket + rotation is the shared quota treaty; join it.
 setInterval(() => {
-  void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => { /* keep the last known value */ });
+  void poolBalanceSol(botPubkey()).then(noteWalletRead).catch(() => noteWalletRead(null));
 }, 20_000);
-void balanceSol(config.rpcUrl).then((v) => { cachedWalletSol = Number.isFinite(v) && v >= 0 ? v : null; }).catch(() => {});
+void poolBalanceSol(botPubkey()).then(noteWalletRead).catch(() => noteWalletRead(null));
 
 function artFor(mint: string | undefined): string | null {
   if (!mint) return null;
@@ -1227,7 +1385,34 @@ function buildStats() {
   // after the last RESET marker. Prior runs live in the run-ledger below.
   let lastReset = -1;
   for (let i = 0; i < allTrades.length; i++) if (allTrades[i]!.action === "RESET") lastReset = i;
-  const trades = lastReset >= 0 ? allTrades.slice(lastReset + 1) : allTrades;
+  let trades = lastReset >= 0 ? allTrades.slice(lastReset + 1) : allTrades;
+  /**
+   * ── SATU REZIM AKUNTANSI SAJA ─────────────────────────────────────────────
+   *
+   * Sejak 2026-08-25T10:01Z P&L paper dibukukan pada laju yang benar-benar cair (lihat
+   * execution/exec-realism.ts). Baris sebelum itu dibukukan dengan cara lama. Menjumlahkan
+   * keduanya menghasilkan angka yang bukan apa-apa: saat audit ini ditulis ada 211 baris
+   * terkoreksi lawan 4.958 baris lama, jadi "cum P&L" di halaman utama praktis adalah angka
+   * lama dengan sedikit angka baru menempel.
+   *
+   * Yang memisahkan BUKAN cfg. Hash cfg berubah pada tiap suntingan kode — hari ini lima kali —
+   * dan memfilter dengannya akan mereset kurva ekuitas karena hal-hal yang tidak ada
+   * hubungannya dengan uang. Yang memisahkan adalah rezim pembukuannya sendiri, dan itu
+   * tertulis di tiap baris.
+   *
+   * Baris lama tidak dibuang; ia dilaporkan terpisah di `legacy` supaya tetap bisa dilihat
+   * dan tidak pernah ikut terjumlah.
+   */
+  const inRegime = (t: { execRealismApplied?: boolean }): boolean =>
+    (t.execRealismApplied === true) === config.risk.execRealism;
+  const legacyTrades = trades.filter((t) => !inRegime(t as { execRealismApplied?: boolean }));
+  const legacyCloses = legacyTrades.filter((t) => t.action === "CLOSE");
+  const legacyRealizedSol = legacyCloses
+    .filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN")
+    .reduce((s, t) => s + (t.pnlSol ?? (t.sizeSol ?? config.risk.paperTradeSizeSol) * ((t.pnlPct ?? 0) / 100)), 0);
+  trades = trades.filter((t) => inRegime(t as { execRealismApplied?: boolean }));
+
+
   // Post-exit learning: after each close we keep sampling the token's price. The
   // summaries tell us how often our exits were PREMATURE (it ran after we sold) and
   // how much upside we left — the data to tune hold time.
@@ -1358,13 +1543,42 @@ function buildStats() {
   // regardless of what the entry simulation predicted. Every dashboard number that reads as
   // P&L, win/loss, or a tuning signal below is computed from `execCloses`/`execPartials` (this
   // qualification) only. The unfiltered `closes` above still feeds `paperHypothetical`.
+  /**
+   * ── "EXECUTABLE ONLY" BUTUH BUKTI, DAN BUKTINYA BISA TIDAK PERNAH DIKUMPULKAN ──
+   *
+   * Angka utama sengaja hanya menghitung trade yang simulasi mainnet buktikan BENAR-BENAR
+   * mendarat (audit P0-2): buy would-fail tidak pernah mempertaruhkan SOL. Aturan itu benar
+   * selama `execStage` memang terisi.
+   *
+   * Ia tidak terisi di sini. Cap `executable` ditulis oleh simulasi buy yang hanya berjalan
+   * sinkron ketika execMode "simulate" DAN skipWouldFail menyala; pada execMode "dry-run"
+   * keduanya tidak, jadi setiap baris ditutup dengan execStage "pending". Terukur saat ini:
+   * 214 CLOSE rezim berlaku, SEMUANYA pending, sementara 3.710 baris "executable" seluruhnya
+   * milik rezim pembukuan lama.
+   *
+   * Akibatnya panel utama menghitung NOL trade sejak mode berpindah -- angka yang terpampang
+   * seluruhnya sejarah, dan tampak hidup. Itu persis mode kegagalan yang sedang diaudit.
+   *
+   * Menyaring habis data karena buktinya tidak pernah dikumpulkan bukan kehati-hatian, itu
+   * kebutaan. Jadi: pakai kualifikasi selama ADA buktinya; kalau tidak ada sama sekali, hitung
+   * semuanya dan katakan begitu, dengan lantang, di payload -- supaya layar bisa menjelaskan
+   * dirinya sendiri alih-alih menampilkan nol yang misterius.
+   */
+  const execEvidence = closes.some((t) => {
+    const st = (t as { execStage?: string }).execStage;
+    return st === "executable" || st === "would-fail";
+  });
+  const execStageUnresolved = !execEvidence && closes.length > 0;
+
   const qualifyingTradeIds = new Set(
     closes
       .filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN")
       .map((t) => (t as { tradeId?: string }).tradeId)
       .filter((id): id is string => Boolean(id)),
   );
-  const execCloses = closes.filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN");
+  const execCloses = execStageUnresolved
+    ? closes // buktinya tidak pernah dikumpulkan — lihat catatan di atas
+    : closes.filter((t) => (t as { execStage?: string }).execStage === "executable" || t.reason === "MANUAL_CLOSE" || t.reason === "MANUAL_FLATTEN");
   // #8 entry-latency telemetry: how long from detect → entry (honest about "momentum
   // follower, not opening sniper"). Also per-mode P&L split (owner wants clean per-mode data).
   const lat = opens.map((t) => (t as { decisionLatencyMs?: number }).decisionLatencyMs).filter((x): x is number => typeof x === "number");
@@ -1415,6 +1629,13 @@ function buildStats() {
         image: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint) ?? undefined,
         img: (p.candidate as { image?: string })?.image ?? artFor(p.candidate?.mint),
         entryPrice: p.entryPriceUsd, lastPrice: p.lastPriceUsd, unrealizedPnl: p.lastPnlPct, peak: p.peakPriceUsd,
+        // MARK vs YANG AKAN DIBAYAR. `unrealizedPnl` adalah mark paper apa adanya — dan mark
+        // paper pada token yang sedang bergerak justru yang terbukti tidak bisa dieksekusi:
+        // klaim 50-100% cair ~66%, klaim di atas 100% cair ~10%. Kartu bertuliskan +120% BUKAN
+        // +120% yang akan diterima. Koreksinya sengaja tidak menyentuh keputusan exit (itu
+        // suntingan strategi, bukan tampilan), jadi angka ini murni untuk dibaca manusia.
+        unrealizedPnlAdj: typeof p.lastPnlPct === "number"
+          ? Number(applyExecutionRealism(p.lastPnlPct).pct.toFixed(1)) : undefined,
         heldSec: p.openedAt ? Math.round((nowMs - p.openedAt) / 1000) : undefined, armed: p.armed,
         sizeSol: config.risk.paperTradeSizeSol,
         ...exitProximity({
@@ -1446,6 +1667,7 @@ function buildStats() {
   // qualification computed above instead of checking the partial's own execStage in isolation.
   const execPartials = partials.filter((t) => {
     const id = (t as { tradeId?: string }).tradeId;
+    if (execStageUnresolved) return true; // sama alasannya dengan execCloses di atas
     return id ? qualifyingTradeIds.has(id) : (t as { execStage?: string }).execStage === "executable";
   });
   // Realized SOL = remaining-leg SOL from every close + every banked partial-TP. EXECUTABLE ONLY
@@ -1829,6 +2051,20 @@ function buildStats() {
      * ikut benar tanpa perubahan di sana. Begitu S2 dihidupkan lagi, objeknya kembali sendiri.
      */
     strategy2Primary: strategy2Alive() ? buildStrategy2Primary() : undefined,
+    // LANE ROBINHOOD (2026-10-07): ikut di payload SSE supaya panel update PUSH setiap state
+    // ditulis (mark 30 detik) — bukan polling. Cache internal 4 detik; murah (state kecil +
+    // log harian + 2 file laporan). GMGN TIDAK ikut di sini karena sumbernya file events besar.
+    laneRobinhood: buildRobinhoodPaper(),
+    // KESEHATAN LANE (2026-10-09): sebelumnya kartu status di dashboard HARDCODE "AKTIF" — kalau
+    // lane mati, kartunya tetap hijau (dashboad bisa berbohong). Ini dihitung dari mtime berkas
+    // state yang ditulis tiap siklus: murah (statSync), tanpa membaca isi, tanpa kuota API.
+    laneHealth: buildLaneHealth(),
+    // LANE BARU (2026-10-08): DexScreener (13 endpoint + 6 stream WS realtime) dan OKX strict-paper
+    // (uang kertas + verifikasi hash-chain ledger). Keduanya ikut payload SSE supaya panel ikut push
+    // saat state ditulis; cache internal masing-masing 4 detik (ledger 60 detik).
+    laneDex: buildDexOverview(),
+    laneOkxPaper: buildOkxPaper(),
+    quality: buildQualityView(config.logDir),
     latencyBreakdown, // where detect→entry time actually goes
     setupToxicCodes: D.setupToxicCodes, // which toxic verdict is doing the filtering
     // Launches dropped at the create event by the launch-MC floor — they never reached the
@@ -2077,6 +2313,22 @@ function buildStats() {
       equityLast: equity.length ? equity[equity.length - 1] : null,
       equityPoints: equity.length,
       openPositions,
+      /**
+       * Baris dari rezim pembukuan LAIN — tidak ikut dijumlah di angka mana pun di atas.
+       * Dilaporkan supaya "kenapa cum P&L-ku mengecil?" punya jawaban di layar, bukan hanya
+       * di commit log.
+       */
+      /**
+       * true = kualifikasi "executable only" TIDAK bisa diterapkan karena simulasi buy tidak
+       * pernah berjalan pada mode ini, jadi angka di atas memuat SEMUA trade rezim berlaku.
+       * Bukan klaim yang lebih lemah — klaim yang berbeda, dan layar harus mengatakannya.
+       */
+      execStageUnresolved,
+      legacy: {
+        corrected: config.risk.execRealism,
+        closed: legacyCloses.length,
+        realizedSol: Number(legacyRealizedSol.toFixed(4)),
+      },
     },
     // AUDIT P0-2 — "what if every simulated buy had actually landed on-chain, would-fail
     // included". Comparison/research data ONLY. Never use this for tuning or as a performance
@@ -2151,8 +2403,667 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+// ── OKX Web3 product projection ──────────────────────────────────────────────
+// Everything below reads configuration, process state, the radar cache, and rows already on
+// disk. It MUST stay network-free: the browser refreshes this view, and a dashboard repaint is
+// never a valid reason to consume provider quota or slow the signal lane.
+
+const okxNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+};
+
+// ── LANE VIEWS (dashboard multi-lane, 2026-10-07) ────────────────────────────
+// Reader state LOKAL saja (quotaCost = 0) dengan cache pendek: dashboard boleh poll sesukanya
+// tanpa membaca ulang berkas events harian yang besar setiap request.
+const laneCache = new Map<string, { at: number; data: unknown }>();
+/** Cache chart manual (klik koin) + single-flight: dua klik cepat = satu panggilan GT. */
+const chartCache = new Map<string, { at: number; data: unknown }>();
+const chartInflight = new Map<string, Promise<unknown>>();
+let chartLastFetchAt = 0;
+function cachedLane(key: string, ttlMs: number, build: () => unknown): unknown {
+  const hit = laneCache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+  const data = build();
+  laneCache.set(key, { at: Date.now(), data });
+  return data;
+}
+function readJsonSafe<T>(p: string): T | null {
+  try { return JSON.parse(readFileSync(p, "utf8")) as T; } catch { return null; }
+}
+function recentRowFiles(prefix: string, days: number): string[] {
+  try {
+    const cut = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    return readdirSync(config.logDir)
+      .filter((f) => f.startsWith(prefix) && f.endsWith(".jsonl") && f.slice(prefix.length, prefix.length + 10) >= cut)
+      .sort().map((f) => join(config.logDir, f));
+  } catch { return []; }
+}
+function latestMd(prefix: string, maxChars = 9_000): { file: string; text: string } | null {
+  try {
+    const files = readdirSync(config.logDir).filter((f) => f.startsWith(prefix) && f.endsWith(".md")).sort();
+    const f = files[files.length - 1];
+    if (!f) return null;
+    const text = readFileSync(join(config.logDir, f), "utf8");
+    return { file: f, text: text.length > maxChars ? `${text.slice(0, maxChars)}\n… (dipotong)` : text };
+  } catch { return null; }
+}
+
+/**
+ * Kesehatan lane dari mtime berkas state — bukan dari niat. Ambang per lane mengikuti irama
+ * siklusnya (dengan kelonggaran ~3×): RH paper menulis tiap tick mark (10s), Dex tiap siklus (5m),
+ * OKX paper tiap putaran toplist (detik), GMGN watch tiap 15m.
+ */
+function buildLaneHealth(): Record<string, { ageSec: number | null; fresh: boolean }> {
+  const probe = (file: string, freshWithinSec: number): { ageSec: number | null; fresh: boolean } => {
+    try {
+      const st = statSync(join(config.logDir, file));
+      const ageSec = Math.round((Date.now() - st.mtimeMs) / 1000);
+      return { ageSec, fresh: ageSec <= freshWithinSec };
+    } catch { return { ageSec: null, fresh: false }; }
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    // RH diperiksa dari STATE (ditulis tiap tick mark 10 detik), BUKAN berkas harian: berkas harian
+    // hanya bertambah saat ada trade, jadi 30 menit tanpa trade = "DIAM" palsu (alarm palsu yang
+    // menetap melatih orang mengabaikan peringatan — prinsip yang sama dengan alarm S2 dulu).
+    robinhood: probe("rh-paper-state.json", 5 * 60),
+    gmgn: probe("gmgn-full-watch-state.json", 45 * 60),
+    dex: probe("dex-full-state.json", 15 * 60),
+    okxPaper: probe("okx-strict-paper-v2-state.json", 5 * 60),
+  };
+}
+
+/** Lane DexScreener (2026-10-08): 13 endpoint REST (siklus 5 menit) + 6 stream WS realtime. */
+function buildDexOverview(): Record<string, unknown> {
+  return cachedLane("dex", 4_000, () => {
+    const now = Date.now();
+    const state = readJsonSafe<{
+      seen?: Record<string, { at: number; kind: string; amt?: number }>;
+      watch?: Record<string, { at: number; chain: string; symbol: string; liqUsd: number | null; vol24: number | null; chg24: number | null; mcUsd: number | null }>;
+    }>(join(config.logDir, "dex-full-state.json"));
+    const watch = Object.entries(state?.watch ?? {});
+    // Pergerakan terbesar dulu — beserta likuiditasnya, supaya "naik 900% tapi liq $0k" terbaca
+    // sebagai jebakan di layar, bukan sebagai peluang.
+    const movers = watch
+      .filter(([, w]) => w.chg24 != null)
+      .sort((a, b) => Math.abs(b[1].chg24 ?? 0) - Math.abs(a[1].chg24 ?? 0))
+      .slice(0, 8)
+      .map(([key, w]) => ({ symbol: w.symbol, chain: w.chain, token: key.split("|")[1] ?? "", chg24: w.chg24, liqUsd: w.liqUsd, vol24: w.vol24 }));
+    // Promosi berbayar: entri "boost-amt|<chain>|<token>" menyimpan total belanja terakhir per token.
+    const promotions = Object.entries(state?.seen ?? {})
+      .filter(([k, v]) => k.startsWith("boost-amt|") && (v.amt ?? 0) > 0)
+      .map(([k, v]) => {
+        const parts = k.split("|");
+        const chain = parts[1] ?? "?";
+        const token = parts[2] ?? "";
+        const w = state?.watch?.[`${chain}|${token}`];
+        return { chain, token, amountUsd: v.amt ?? 0, symbol: w?.symbol ?? null, liqUsd: w?.liqUsd ?? null, vol24: w?.vol24 ?? null, chg24: w?.chg24 ?? null };
+      })
+      .sort((a, b) => b.amountUsd - a.amountUsd)
+      .slice(0, 10);
+    const discovered: Record<string, number> = {};
+    let cycles24h = 0, ws: Record<string, unknown> | null = null, wsReconnects = 0;
+    let lastCycle: Record<string, unknown> | null = null;
+    let metas: Array<{ slug: string; tokens: number; vol: number }> = [];
+    for (const f of recentRowFiles("events-", 2)) {
+      let text: string;
+      try { text = readFileSync(f, "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        if (!line.includes('"dex-')) continue;
+        try {
+          const r = JSON.parse(line) as Record<string, unknown>;
+          const ts = Date.parse(String(r["ts"] ?? ""));
+          if (!Number.isFinite(ts) || now - ts > 86_400_000) continue;
+          const type = String(r["type"]);
+          const short = type.replace("dex-", "");
+          discovered[short] = (discovered[short] ?? 0) + 1;
+          if (type === "dex-cycle") { cycles24h++; lastCycle = { ts: r["ts"], calls: r["calls"], ms: r["ms"], watch: r["watch"] }; }
+          if (type === "dex-ws-status") ws = { ts: r["ts"], alive: r["alive"], streams: r["streams"] };
+          if (type === "dex-ws-reconnect") wsReconnects++;
+          if (type === "dex-metas" && Array.isArray(r["top"])) metas = (r["top"] as Array<{ slug: string; tokens: number; vol: number }>).slice(0, 5);
+        } catch { /* baris rusak — abaikan */ }
+      }
+    }
+    return {
+      updatedAt: new Date().toISOString(),
+      watchlistTotal: watch.length, seenTotal: Object.keys(state?.seen ?? {}).length,
+      cycles24h, lastCycle, ws, wsReconnects, discovered, metas, promotions, movers, quotaCost: 0,
+    };
+  }) as Record<string, unknown>;
+}
+
+/**
+ * Lane OKX strict-paper (2026-10-08): uang kertas — prosesnya tidak mengimpor signer/broadcast.
+ * Termasuk VERIFIKASI hash-chain ledger (dihitung ulang dari berkas, cache 60 detik): angka paper
+ * yang ledger-nya rusak ditandai di layar, bukan dipercaya diam-diam.
+ */
+function buildOkxPaper(): Record<string, unknown> {
+  const lane = cachedLane("okx-paper", 4_000, () => {
+    const state = readJsonSafe<{
+      updatedAt?: string;
+      positions?: Record<string, {
+        status?: string; policyVersion?: number; symbol?: string | null; mint?: string; source?: string;
+        detectedAt?: number; walletType?: string | null;
+        adaptive?: { exit?: { pnlPct?: number; triggerReason?: string } | null } | null;
+      }>;
+      budget?: { premiumUsed?: number; basicUsed?: number; premiumPaused?: boolean; basicPaused?: boolean };
+      primed?: { scanner?: boolean; ranking?: boolean; signal?: boolean; trackers?: string[] };
+      pendingCandidates?: Record<string, { symbol?: string | null; mint?: string }>;
+      scoutCache?: Record<string, unknown>;
+    }>(join(config.logDir, "okx-strict-paper-v2-state.json"));
+    const positions = Object.entries(state?.positions ?? {}).map(([id, p]) => ({ id, ...p }));
+    const open = positions.filter((p) => p.status === "OPEN");
+    const closed = positions.filter((p) => p.status === "CLOSED");
+    const kinds: Record<string, number> = {};
+    const reasons: Record<string, number> = {};
+    const closes: Array<Record<string, unknown>> = [];
+    try {
+      const tail = readFileSync(join(config.logDir, "okx-strict-paper-v2.jsonl"), "utf8").slice(-400_000).split("\n");
+      for (const line of tail) {
+        if (!line.trim()) continue;
+        try {
+          const r = JSON.parse(line) as Record<string, unknown>;
+          const ts = Date.parse(String(r["ts"] ?? ""));
+          if (!Number.isFinite(ts) || Date.now() - ts > 86_400_000) continue;
+          const type = String(r["type"]);
+          kinds[type] = (kinds[type] ?? 0) + 1;
+          if (type === "CANDIDATE_TERMINAL") {
+            const raw = r["reasons"] ?? r["reason"];
+            const list = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+            for (const one of list) if (one) reasons[String(one).trim()] = (reasons[String(one).trim()] ?? 0) + 1;
+          }
+          if (type === "POSITION_CLOSED" && closes.length < 8) {
+            const pnlLamports = Number(r["pnlLamports"] ?? 0);
+            closes.push({
+              ts: r["ts"], symbol: r["symbol"] ?? r["mint"] ?? "?",
+              pnlSol: Number((pnlLamports / 1e9).toFixed(6)),
+              trigger: (r["adaptive"] as { exit?: { triggerReason?: string } } | undefined)?.exit?.triggerReason ?? r["reason"] ?? null,
+            });
+          }
+        } catch { /* baris rusak — abaikan */ }
+      }
+    } catch { /* ledger belum ada */ }
+    return {
+      updatedAt: state?.updatedAt ?? null,
+      open: open.map((p) => ({ id: p.id, symbol: p.symbol ?? p.mint ?? "?", source: p.source ?? "?", detectedAt: p.detectedAt ?? null, policyVersion: p.policyVersion ?? null })),
+      closedTotal: closed.length,
+      pending: Object.keys(state?.pendingCandidates ?? {}).length,
+      scoutCache: Object.keys(state?.scoutCache ?? {}).length,
+      budget: state?.budget ?? null,
+      primed: { scanner: state?.primed?.scanner ?? false, ranking: state?.primed?.ranking ?? false, signal: state?.primed?.signal ?? false, trackers: state?.primed?.trackers?.length ?? 0 },
+      activity24h: kinds, rejectReasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 6), recentCloses: closes.reverse(),
+      quotaCost: 0,
+    };
+  }) as Record<string, unknown>;
+  const ledger = cachedLane("okx-paper-ledger", 60_000, () => {
+    const v = verifyStrictLedger(join(config.logDir, "okx-strict-paper-v2.jsonl"));
+    return { ok: v.ok, records: v.records.length, lastSeq: v.records.at(-1)?.seq ?? 0, error: v.error };
+  });
+  return { ...lane, ledger };
+}
+
+/** Lane Robinhood: state 10 varian + trade terakhir + laporan backtest/review terakhir. */
+function buildRobinhoodPaper(): Record<string, unknown> {
+  return cachedLane("rh-paper", 4_000, () => {
+    const startEnv = Number(process.env.RH_START_EQUITY_USD);
+    const startEquity = Number.isFinite(startEnv) && startEnv > 0 ? startEnv : 100;
+    const state = readJsonSafe<{
+      startedAt?: number; cycles?: number;
+      variants?: Record<string, {
+        equityUsd?: number; trades?: number; wins?: number; losses?: number; maxDdPct?: number;
+        bankruptAt?: number; life?: number; lifeHistory?: Array<{ endEquityUsd: number }>;
+        cohort?: string;
+        positions?: Array<{ symbol?: string; lastPrice?: number; lastMarkAt?: number; notionalUsd?: number }>;
+      }>;
+    }>(join(config.logDir, "rh-paper-state.json"));
+    const now = Date.now();
+    const laneDays = state?.startedAt ? (now - state.startedAt) / 86_400_000 : 0;
+    const variants = Object.entries(state?.variants ?? {}).map(([id, v]) => {
+      const positions = (v.positions ?? []).map((p) => ({
+        symbol: p.symbol ?? "?", lastPrice: p.lastPrice ?? 0,
+        markAgeSec: p.lastMarkAt ? Math.round((now - p.lastMarkAt) / 1000) : null,
+        notionalUsd: typeof p.notionalUsd === "number" ? p.notionalUsd : 0,
+      }));
+      // EXPOSURE TERBUKA (2026-10-07 malam): batas 50% berlaku PER-ENTRY, bukan agregat — v10
+      // terbukti bisa menyentuh equity NEGATIF (-$1.61, dd 101.6%) dan v01 pernah $175 exposure di
+      // atas $69.73 equity. Angka ini ditampilkan supaya risikonya terbaca, bukan tersembunyi.
+      const exposureUsd = positions.reduce((a, p) => a + p.notionalUsd, 0);
+      const trades = v.trades ?? 0;
+      const equityUsd = v.equityUsd ?? startEquity;
+      // Status berlapis: BANKRUT (equity < $4 atau sedang menunggu restart life baru) > SIAP > jalan.
+      // Tanpa ini, varian yang modalnya habis tampil seolah masih berdagang.
+      const status = v.bankruptAt != null || equityUsd < 4 ? "bankrut" : laneDays >= 7 && trades >= 10 ? "siap direview" : "jalan";
+      // LIFE-2: P&L per-life (equity−100) + kumulatif (semua life yang sudah selesai + life berjalan).
+      const historyPnl = (v.lifeHistory ?? []).reduce((a, l) => a + (l.endEquityUsd - startEquity), 0);
+      return {
+        id, equityUsd: Number(equityUsd.toFixed(2)), pnlUsd: Number((equityUsd - startEquity).toFixed(2)),
+        cohort: v.cohort ?? null,
+        life: v.life ?? 1, cumulativePnlUsd: Number((historyPnl + equityUsd - startEquity).toFixed(2)),
+        bankrupt: v.bankruptAt != null,
+        trades, wins: v.wins ?? 0, losses: v.losses ?? 0,
+        winRate: trades ? Number((((v.wins ?? 0) / trades) * 100).toFixed(1)) : null,
+        maxDdPct: Number((v.maxDdPct ?? 0).toFixed(2)), openPositions: positions.length, positions,
+        exposureUsd: Number(exposureUsd.toFixed(2)),
+        status,
+      };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+    const rows: Array<Record<string, unknown>> = [];
+    for (const f of recentRowFiles("rh-paper-", 2)) {
+      try {
+        for (const line of readFileSync(f, "utf8").split("\n")) {
+          if (!line.includes('"RH_')) continue;
+          try { rows.push(JSON.parse(line) as Record<string, unknown>); } catch { /* baris rusak */ }
+        }
+      } catch { /* skip */ }
+    }
+    const recent = rows.slice(-30).reverse().map((r) => ({
+      action: String(r["action"] ?? "?"), variant: String(r["variant"] ?? "?"), symbol: String(r["symbol"] ?? "?"),
+      pnlUsd: typeof r["pnlUsd"] === "number" ? r["pnlUsd"] : null,
+      pnlPct: typeof r["pnlPct"] === "number" ? r["pnlPct"] : null,
+      reason: typeof r["reason"] === "string" ? r["reason"] : null,
+      ts: String(r["ts"] ?? ""),
+      entryPriceUsd: typeof r["entryPriceUsd"] === "number" ? r["entryPriceUsd"] : null,
+      exitPriceUsd: typeof r["exitPriceUsd"] === "number" ? r["exitPriceUsd"] : null,
+    }));
+    const backtest = latestMd("rh-backtest-");
+    const review = latestMd("robinhood-review-");
+    return {
+      updatedAt: new Date().toISOString(), startEquityUsd: startEquity,
+      laneDays: Number(laneDays.toFixed(2)), cycles: state?.cycles ?? 0,
+      openTotal: variants.reduce((a, v) => a + v.openPositions, 0), variants, recent,
+      backtestMd: backtest?.text ?? null, backtestFile: backtest?.file ?? null,
+      reviewMd: review?.text ?? null, reviewFile: review?.file ?? null,
+    };
+  }) as Record<string, unknown>;
+}
+
+/** Lane GMGN: sinyal 24 jam, kualitas wallet (state permanen), trade terpantau, laporan harian. */
+function buildGmgnOverview(): Record<string, unknown> {
+  return cachedLane("gmgn", 60_000, () => {
+    const now = Date.now();
+    const dayMs = 86_400_000;
+    const signals: Array<Record<string, unknown>> = [];
+    const watched: Array<Record<string, unknown>> = [];
+    let lastCycle: Record<string, unknown> | null = null;
+    for (const f of recentRowFiles("events-", 2)) {
+      try {
+        for (const line of readFileSync(f, "utf8").split("\n")) {
+          if (!line.includes('"gmgn-')) continue;
+          try {
+            const r = JSON.parse(line) as Record<string, unknown>;
+            const t = String(r["type"] ?? "");
+            if (t === "gmgn-signal") signals.push(r);
+            else if (t === "gmgn-watched-trade") watched.push(r);
+            else if (t === "gmgn-full-cycle") lastCycle = r;
+          } catch { /* baris rusak */ }
+        }
+      } catch { /* skip */ }
+    }
+    const tsOf = (r: Record<string, unknown>): number => Date.parse(String(r["ts"] ?? "")) || 0;
+    const sig24 = signals.filter((r) => now - tsOf(r) <= dayMs);
+    const byType = new Map<number, Array<Record<string, unknown>>>();
+    for (const s of sig24) {
+      const t = Number(s["signalType"] ?? 0);
+      const a = byType.get(t);
+      if (a) a.push(s); else byType.set(t, [s]);
+    }
+    const signals24h = [...byType.entries()].map(([signalType, rows]) => ({
+      signalType, count: rows.length,
+      sample: rows.slice(-4).map((r) => ({ sym: String(r["sym"] ?? "?"), mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null, ts: String(r["ts"] ?? "") })),
+    })).sort((a, b) => b.count - a.count);
+    const state = readJsonSafe<{ walletQuality?: Record<string, { at?: number; tags?: string[]; winrate?: number | null; realizedProfit?: number | null; tokens?: number | null }> }>(join(config.logDir, "gmgn-full-watch-state.json"));
+    const wallets = Object.entries(state?.walletQuality ?? {}).map(([wallet, q]) => ({
+      wallet, tags: q.tags ?? [], winrate: q.winrate ?? null, realizedProfit: q.realizedProfit ?? null, tokens: q.tokens ?? null, at: q.at ?? 0,
+    })).sort((a, b) => (b.winrate ?? -1) - (a.winrate ?? -1)).slice(0, 20);
+    const report = latestMd("gmgn-report-", 12_000);
+    return {
+      updatedAt: new Date().toISOString(),
+      signals24h,
+      recentSignals: sig24.slice(-12).reverse().map((r) => ({
+        sym: String(r["sym"] ?? "?"), signalType: Number(r["signalType"] ?? 0),
+        mcUsd: typeof r["mcUsd"] === "number" ? r["mcUsd"] : null,
+        triggerMc: typeof r["triggerMc"] === "number" ? r["triggerMc"] : null,
+        ath: typeof r["ath"] === "number" ? r["ath"] : null,
+        holders: typeof r["holders"] === "number" ? r["holders"] : null,
+        rugRatio: typeof r["rugRatio"] === "number" ? r["rugRatio"] : null,
+        ts: String(r["ts"] ?? ""),
+      })),
+      wallets, walletsScored: Object.keys(state?.walletQuality ?? {}).length,
+      watchedTrades24h: watched.filter((r) => now - tsOf(r) <= dayMs).length,
+      watchedRecent: watched.slice(-8).reverse().map((r) => ({
+        symbol: String(r["symbol"] ?? "?"), side: String(r["side"] ?? "?"), maker: String(r["maker"] ?? ""),
+        amountUsd: typeof r["amountUsd"] === "number" ? r["amountUsd"] : null,
+        watchType: String(r["watchType"] ?? "?"), ts: String(r["ts"] ?? ""),
+      })),
+      lastCycle: lastCycle ? {
+        ts: String(lastCycle["ts"] ?? ""), calls: Number(lastCycle["calls"] ?? 0), ms: Number(lastCycle["ms"] ?? 0),
+        positions: Number(lastCycle["positions"] ?? 0), candidates: Number(lastCycle["candidates"] ?? 0),
+        signals: Number(lastCycle["signals"] ?? 0), walletsScored: Number(lastCycle["walletsScored"] ?? 0),
+      } : null,
+      reportMd: report?.text ?? null, reportFile: report?.file ?? null,
+    };
+  }) as Record<string, unknown>;
+}
+
+function buildOkxStatus(): Record<string, unknown> {
+  const entries = Object.entries(OKX_ENDPOINTS) as Array<[string, OkxEndpointSpec]>;
+  const counts = Object.fromEntries(["live", "params-unknown", "unavailable", "unprobed"].map(
+    (status) => [status, entries.filter(([, spec]) => spec.status === status).length],
+  ));
+  const control = readControl();
+  const guardian = guardStatus();
+  const blockers: string[] = [];
+  if (!config.okx.enabled) blockers.push("OKX read lane disabled or credentials incomplete");
+  if (!config.okx.executionEnabled) blockers.push("OKX_EXECUTION_ENABLED is not true");
+  if (config.s2ExecRoute !== "okx") blockers.push(`S2 route is ${config.s2ExecRoute}, not okx`);
+  if (!config.s2LiveEnabled) blockers.push("S2 live bridge is disabled");
+  if (!config.exec.liveConfirmed) blockers.push("global live permission is not confirmed");
+  if (control.execMode !== "live") blockers.push(`console mode is ${control.execMode}, not live`);
+  if (control.paused) blockers.push("trading is paused");
+  if (guardian.halted) blockers.push(`guardian halted${guardian.haltReason ? `: ${guardian.haltReason}` : ""}`);
+
+  return {
+    enabled: config.okx.enabled,
+    executionEnabled: config.okx.executionEnabled,
+    executionRouteSelected: config.s2ExecRoute === "okx",
+    // "Armed" now means every configuration/runtime gate visible to the server is open. The
+    // signing key, balance, route, exposure and caps are still re-checked fail-closed per order.
+    executionArmed: blockers.length === 0,
+    executionBlockers: blockers,
+    executionChecksAtOrder: ["signing key", "wallet balance", "route", "per-trade cap", "deployed cap", "24h spend cap"],
+    controlMode: control.execMode,
+    paused: control.paused,
+    guardianHalted: guardian.halted,
+    route: config.s2ExecRoute,
+    slippagePercent: config.okx.slippagePercent,
+    websocketEnabled: config.okx.wsEnabled,
+    websocketChannels: config.okx.wsChannels,
+    restSignalFallback: config.okx.restSignalEnabled,
+    restSignalPollMs: config.okx.restSignalPollMs,
+    copyShadow: config.okx.copyShadow,
+    candidateQueueEnabled: config.okx.candidateQueueEnabled,
+    candidateMaxLagMs: config.okx.candidateMaxLagMs,
+    candidateMinAmountUsd: config.okx.candidateMinAmountUsd,
+    trackedWallets: config.okx.trackedWallets.length,
+    restCopyMaxWallets: config.okx.restCopyMaxWallets,
+    endpointTotal: entries.length,
+    endpointCounts: counts,
+    warnings: okxCredentialWarnings(),
+    endpoints: entries.map(([id, spec]) => ({ id, ...spec })),
+  };
+}
+
+interface OkxRadarFileRow {
+  walletAddress?: string;
+  firstSeen?: string;
+  lastSeen?: string;
+  sweepCount?: number;
+  cellHits?: number;
+  cells?: string[];
+  walletTypeCodes?: string[];
+  walletTypes?: string[];
+  lastRealizedPnlUsd?: number | null;
+  lastWinRatePercent?: number | null;
+  lastAvgBuyValueUsd?: number | null;
+  lastTxs?: number | null;
+  lastActiveTimestamp?: number | null;
+}
+
+let okxRadarCache: { mtimeMs: number; snapshot: Record<string, unknown> } | null = null;
+function okxRadarSnapshot(): Record<string, unknown> {
+  const path = join(config.logDir, "okx-radar-wallets.json");
+  if (!existsSync(path)) return { available: false, totalWallets: 0, copyableWallets: 0, updatedAt: null, topWallets: [] };
+  try {
+    const stat = statSync(path);
+    if (okxRadarCache?.mtimeMs === stat.mtimeMs) return okxRadarCache.snapshot;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, OkxRadarFileRow>;
+    const rows = Object.values(parsed).filter((row) => typeof row.walletAddress === "string" && row.walletAddress.length > 0);
+    const activeCutoff = Date.now() - 48 * 3_600_000;
+    const excluded = new Set(["developer", "newWallet", "insider", "sniper", "suspectedPhishing", "bundledTrader"]);
+    const normalized = rows.map((row) => {
+      const walletTypeCodes = okxLeaderboardWalletTypeCodes(row.cells ?? [], row.walletTypeCodes ?? []);
+      const walletTypes = walletTypeCodes.length
+        ? walletTypeCodes.map(okxLeaderboardWalletTypeLabel).filter((v): v is NonNullable<typeof v> => v !== null)
+        : row.walletTypes ?? [];
+      return { ...row, walletTypeCodes, walletTypes };
+    });
+    const copyable = normalized
+      .filter((row) => (row.sweepCount ?? 0) >= 2)
+      .filter((row) => (row.lastWinRatePercent ?? 0) >= 50)
+      .filter((row) => {
+        const raw = row.lastActiveTimestamp ?? 0;
+        const at = raw > 0 && raw < 1e12 ? raw * 1000 : raw;
+        return at >= activeCutoff;
+      })
+      // Same rule as okxRadarSelect(): exclude a wallet only when ALL its known identities are
+      // inherently uncopyable. A smart-money wallet that also appears as "fresh" stays visible.
+      .filter((row) => !(row.walletTypes?.length && row.walletTypes.every((type) => excluded.has(type))))
+      .sort((a, b) => ((b.sweepCount ?? 0) - (a.sweepCount ?? 0)) || ((b.cellHits ?? 0) - (a.cellHits ?? 0)) || ((b.lastRealizedPnlUsd ?? 0) - (a.lastRealizedPnlUsd ?? 0)));
+    const snapshot = {
+      available: true,
+      totalWallets: rows.length,
+      copyableWallets: copyable.length,
+      updatedAt: new Date(stat.mtimeMs).toISOString(),
+      topWallets: copyable.slice(0, 12).map((row) => ({
+        walletAddress: row.walletAddress,
+        sweepCount: row.sweepCount ?? 0,
+        cellHits: row.cellHits ?? 0,
+        walletTypes: row.walletTypes ?? [],
+        realizedPnlUsd: row.lastRealizedPnlUsd ?? null,
+        winRatePercent: row.lastWinRatePercent ?? null,
+        avgBuyValueUsd: row.lastAvgBuyValueUsd ?? null,
+        txs: row.lastTxs ?? null,
+        lastActiveTimestamp: row.lastActiveTimestamp ?? null,
+      })),
+    };
+    okxRadarCache = { mtimeMs: stat.mtimeMs, snapshot };
+    return snapshot;
+  } catch {
+    return { available: false, totalWallets: 0, copyableWallets: 0, updatedAt: null, topWallets: [] };
+  }
+}
+
+function okxSourceEvent(row: Row): Record<string, unknown> {
+  const data = row["type"] === "okx-candidate"
+    ? row
+    : row["data"] && typeof row["data"] === "object" ? row["data"] as Row : {};
+  const token = data["token"] && typeof data["token"] === "object" ? data["token"] as Row : {};
+  const mint = String(data["tokenAddress"] ?? data["tokenContractAddress"] ?? data["mint"] ?? token["tokenAddress"] ?? token["tokenContractAddress"] ?? "");
+  const symbol = String(data["symbol"] ?? data["tokenSymbol"] ?? token["symbol"] ?? "");
+  const wallet = String(data["walletAddress"] ?? data["triggerWalletAddress"] ?? data["trader"] ?? data["userAddress"] ?? "");
+  return {
+    ts: row["ts"] ?? null,
+    channel: row["channel"] ?? (row["type"] === "okx-rest-copy" ? "address-tracker-activity-rest" : "dex-market-new-signal-openapi-rest"),
+    mint,
+    symbol: symbol || null,
+    wallet: wallet || null,
+    walletType: data["walletType"] ?? data["tag"] ?? null,
+    amountUsd: okxNumber(data["amountUsd"] ?? data["valueUsd"] ?? data["quoteAmountUsd"] ?? data["volumeUsd"]),
+    marketCapUsd: okxNumber(data["marketCapUsd"] ?? data["marketCap"] ?? token["marketCapUsd"]),
+    holders: okxNumber(data["holders"] ?? token["holders"]),
+    detectLagMs: okxNumber(row["detectLagMs"]),
+    status: data["status"] ?? null,
+    executionState: data["executionState"] ?? null,
+    reasons: Array.isArray(data["reasons"]) ? data["reasons"] : [],
+  };
+}
+
+function okxOutcomeEvent(row: Row): Record<string, unknown> {
+  return {
+    ts: row["ts"] ?? null,
+    kind: row["kind"] ?? null,
+    mint: row["mint"] ?? null,
+    symbol: row["symbol"] ?? null,
+    wallet: row["wallet"] ?? null,
+    verdict: row["verdict"] ?? null,
+    horizonSec: okxNumber(row["horizonSec"]),
+    pctChange: okxNumber(row["pctChange"]),
+    status: row["status"] ?? row["verdict"] ?? null,
+  };
+}
+
+function okxAggregateRows(values: Record<string, OkxAggregate>, labelKey: "kind" | "verdict"): Array<Record<string, unknown>> {
+  return Object.entries(values).map(([key, a]) => {
+    const split = key.lastIndexOf(":");
+    const label = split >= 0 ? key.slice(0, split) : key;
+    const horizonSec = split >= 0 ? Number(key.slice(split + 1)) : 0;
+    const median = a.lower.length === 0
+      ? null
+      : a.lower.length === a.upper.length
+        ? (a.lower[0]! + a.upper[0]!) / 2
+        : a.lower[0]!;
+    return {
+      [labelKey]: label,
+      horizonSec,
+      total: a.total,
+      priced: a.priced,
+      unpriced: a.total - a.priced,
+      winRatePercent: a.priced ? Number((a.wins / a.priced * 100).toFixed(1)) : null,
+      avgPct: a.priced ? Number((a.sumPct / a.priced).toFixed(2)) : null,
+      medianPct: median == null ? null : Number(median.toFixed(2)),
+    };
+  }).sort((a, b) => Number(a["horizonSec"]) - Number(b["horizonSec"]) || String(a[labelKey]).localeCompare(String(b[labelKey])));
+}
+
+let okxProcessesCache = { at: 0, lane: false, study: false, paper: false };
+function okxProcesses(): { lane: boolean; study: boolean; paper: boolean } {
+  if (Date.now() - okxProcessesCache.at < 5_000) {
+    return { lane: okxProcessesCache.lane, study: okxProcessesCache.study, paper: okxProcessesCache.paper };
+  }
+  const alive = (pattern: string): boolean => {
+    try { execSync(`pgrep -f '${pattern}'`, { stdio: ["ignore", "pipe", "ignore"] }); return true; }
+    catch { return false; }
+  };
+  okxProcessesCache = {
+    at: Date.now(),
+    lane: alive("[s]rc/okx-lane.ts"),
+    study: alive("[s]rc/okx-study.ts"),
+    paper: alive("[s]rc/okx-strict-paper.ts"),
+  };
+  return { lane: okxProcessesCache.lane, study: okxProcessesCache.study, paper: okxProcessesCache.paper };
+}
+
+let okxStrictPaperCache: { mtimeMs: number; snapshot: Record<string, unknown> } | null = null;
+function okxStrictPaperSnapshot(): Record<string, unknown> {
+  const path = join(config.logDir, "okx-strict-paper-v2.jsonl");
+  if (!existsSync(path)) return { available: false, ledgerIntegrity: "MISSING", error: null, exitSummary: [] };
+  try {
+    const stat = statSync(path);
+    if (okxStrictPaperCache?.mtimeMs === stat.mtimeMs) return okxStrictPaperCache.snapshot;
+    const verified = verifyStrictLedger(path);
+    const snapshot = verified.ok
+      ? { available: true, ledgerIntegrity: "OK", error: null, ...strictPaperReport(verified.records) }
+      : { available: true, ledgerIntegrity: "FAILED", error: verified.error, exitSummary: [] };
+    okxStrictPaperCache = { mtimeMs: stat.mtimeMs, snapshot };
+    return snapshot;
+  } catch (error) {
+    return { available: true, ledgerIntegrity: "FAILED", error: (error as Error).message, exitSummary: [] };
+  }
+}
+
+function okxStatusRow(row: Row | null, keys: string[]): Record<string, unknown> | null {
+  if (!row) return null;
+  return Object.fromEntries(["ts", ...keys].map((key) => [key, row[key] ?? null]));
+}
+
+function buildOkxOverview(): Record<string, unknown> {
+  refreshStore();
+  const O = STORE.events.okx;
+  const radar = okxRadarSnapshot();
+  const processes = okxProcesses();
+  return {
+    generatedAt: new Date().toISOString(),
+    status: buildOkxStatus(),
+    processes,
+    radar: {
+      ...radar,
+      lastSweep: okxStatusRow(O.radarSweep, ["cells", "rows", "wallets", "fresh"]),
+      lastSelection: okxStatusRow(O.radarSelection, ["radarCount", "manualCount", "trackedCount"]),
+    },
+    lane: {
+      mode: config.okx.copyShadow ? "shadow-copy" : "signals-only",
+      status: okxStatusRow(O.laneStatus, ["openObservations", "trackedWallets", "channelCounts", "restSignalEvents", "restCopyEvents", "candidates"]),
+      signals: { total: O.signalCount, recent: O.recentSignals.last(12).reverse().map(okxSourceEvent) },
+      copies: { total: O.copyCount, liveExecution: false, recent: O.recentCopies.last(12).reverse().map(okxSourceEvent) },
+      candidates: { total: O.candidateCount, liveExecution: false, recent: O.recentCandidates.last(12).reverse().map(okxSourceEvent) },
+      outcomes: okxAggregateRows(O.observationAgg, "kind"),
+      recentOutcomes: O.recentObservations.last(12).reverse().map(okxOutcomeEvent),
+    },
+    study: {
+      status: okxStatusRow(O.studyStatus, ["scanned", "registered", "settled", "open", "seen", "CLEAN", "TOXIC", "UNKNOWN", "cfg"]),
+      outcomes: okxAggregateRows(O.studyAgg, "verdict"),
+      recent: O.recentStudyOutcomes.last(12).reverse().map(okxOutcomeEvent),
+    },
+    paper: okxStrictPaperSnapshot(),
+    lastLocalEventAt: O.lastEventAt,
+    quotaCost: 0,
+  };
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 // Named so BOTH loopback listeners (IPv4 below, IPv6 at the bottom) share one implementation.
+// R6 P6: antrean seri withdraw — permintaan dalam satu proses dashboard dieksekusi satu-per-satu,
+// sehingga cek plafon-harian + baris audit tidak bisa dilompati oleh permintaan bersamaan.
+let withdrawChain: Promise<unknown> = Promise.resolve();
+
+async function handleWithdraw(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  let b: { destination?: string; amount?: number | "all" } = {};
+  try { b = JSON.parse(body || "{}"); } catch { /* ignore */ }
+  const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin ?? null;
+  const proto = String(req.headers["x-forwarded-proto"] ?? "http");
+  const expectedOrigin = `${proto}://${req.headers.host ?? ""}`;
+  const policy = withdrawPolicyFromEnv(process.env, originHeader, expectedOrigin);
+  const audit = (result: Record<string, unknown>): void => {
+    try { logRecord("events", { type: "withdraw-audit", destination: b.destination, amount: b.amount ?? null, ...result }); } catch { /* audit tidak boleh menggagalkan jalur */ }
+  };
+  if ("error" in policy) {
+    audit({ outcome: "REJECTED", reason: policy.error });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: policy.error })); return;
+  }
+  // MODE eksplisit (round-4): deny = semua ditolak; policy = wajib allowlist; legacy = perilaku lama.
+  const mode = withdrawModeFromEnv(process.env);
+  if (typeof mode !== "string") {
+    audit({ outcome: "REJECTED", reason: mode.error });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: mode.error })); return;
+  }
+  let balance = Number.NaN;
+  try { balance = await balanceSol(config.rpcUrl); } catch { /* gagal baca → validateWithdraw menolak fail-closed */ }
+  let decision = validateWithdraw(
+    { destination: String(b.destination ?? ""), amount: b.amount === "all" ? "all" : Number(b.amount), balanceSol: balance, feeSol: 5_000 / 1e9 },
+    policy,
+  );
+  decision = applyWithdrawMode(mode, decision, policy);
+  // Plafon harian opsional (replay protection praktis): total SENT hari ini dari baris audit.
+  if (decision.ok && mode !== "legacy") {
+    const dailyMax = Number(process.env.WITHDRAW_DAILY_MAX_SOL ?? "");
+    if (process.env.WITHDRAW_DAILY_MAX_SOL && Number.isFinite(dailyMax) && dailyMax > 0) {
+      let sentToday = 0;
+      try { sentToday = withdrawnTodaySol(readFileSync(join(config.logDir, `events-${new Date().toISOString().slice(0, 10)}.jsonl`), "utf8")); } catch { /* tanpa berkas = 0 */ }
+      if (sentToday + decision.amountSol > dailyMax) {
+        audit({ outcome: "REJECTED", reason: `plafon harian: ${sentToday} + ${decision.amountSol} > WITHDRAW_DAILY_MAX_SOL ${dailyMax}` });
+        res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `daily limit: ${sentToday.toFixed(4)} SOL already sent today` })); return;
+      }
+    }
+  }
+  if (!decision.ok) {
+    audit({ outcome: "REJECTED", reason: decision.reason, balanceSol: Number.isFinite(balance) ? balance : null });
+    res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: decision.reason })); return;
+  }
+  try {
+    const r = await withdrawSol(config.rpcUrl, b.destination!, decision.amountSol);
+    audit({ outcome: "SENT", signature: r.signature, sentSol: r.sentSol });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, signature: r.signature, sentSol: r.sentSol }));
+  } catch (e) {
+    audit({ outcome: "FAILED", error: (e as Error).message.slice(0, 200) });
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+  }
+}
+
 const handler = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -2220,6 +3131,125 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
+  // OKX capability/arming truth. This is intentionally configuration + registry state only: the
+  // dashboard must not spend paid API quota every time it polls. `npm run okx:probe` remains the
+  // explicit live-health test, while this endpoint makes missing/unprobed/armed states visible.
+  // Audit 2026-10-24 (F4): dua endpoint ini satu-satunya /api tanpa isAuthed — bocor alamat dompet
+  // + saldo + posisi live tanpa sesi, dan tiap hit memicu RPC eksternal. Kini wajib auth seperti
+  // tetangganya (panel web selalu kirim cookie sesi, jadi perilaku panel tidak berubah).
+  if (path === "/api/live") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    try {
+      const { liveStatus } = await import("./robinhood/live-status.js");
+      res.end(JSON.stringify(await liveStatus()));
+    } catch (error) {
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
+  if (path === "/api/paper") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    try {
+      const { paperStatus } = await import("./rhpaper/status.js");
+      res.end(JSON.stringify(await paperStatus()));
+    } catch (error) {
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
+  if (path === "/api/okx/status") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildOkxStatus()));
+    return;
+  }
+
+  // Full OKX Web3 product view. Unlike /api/okx/status this includes radar, signal/copy activity
+  // and measured outcomes, but it still reads LOCAL state only (quotaCost=0).
+  if (path === "/api/okx/overview") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildOkxOverview()));
+    return;
+  }
+
+  // Separate, read-only EVM intelligence lane. No wallet, signer, or execution path.
+  if (path === "/api/robinhood/search" || path === "/api/robinhood/token") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    try {
+      const data = path.endsWith("/search")
+        ? await searchRobinhoodTokens(url.searchParams.get("q") ?? "")
+        : await inspectRobinhoodToken(url.searchParams.get("address") ?? "", Number(url.searchParams.get("whaleUsd") ?? 10_000));
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(400, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+    return;
+  }
+
+  // Lane views untuk dashboard multi-lane (2026-10-07): state lokal saja, cache pendek.
+  if (path === "/api/robinhood/paper" || path === "/api/gmgn/overview" || path === "/api/dex/overview" || path === "/api/okx/paper") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    const lane = path === "/api/robinhood/paper" ? buildRobinhoodPaper()
+      : path === "/api/gmgn/overview" ? buildGmgnOverview()
+      : path === "/api/dex/overview" ? buildDexOverview()
+      : buildOkxPaper();
+    res.end(JSON.stringify(lane));
+    return;
+  }
+
+  // KARTU KUALITAS EKSEKUSI (2026-10-11): data untuk kartu dashboard — retensi harga pasca-keluar
+  // (dihitung dari jejak hari ini dengan fungsi yang SAMA dipakai review & realism) plus ringkasan
+  // berkas laporan alat (kualitas stop, realisme keluar, arm OKX). Semua dari berkas lokal, nol API.
+  if (path === "/api/quality") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(buildQualityView(config.logDir)));
+    return;
+  }
+
+  // CHART per koin (2026-10-08): permintaan MANUAL dari dashboard (klik koin), bukan polling.
+  // Limit GeckoTerminal ketat dan IP ini dipakai bersama lane Robinhood → cache 60 detik per kunci
+  // + jarak minimum 3 detik antar-fetch berbeda. Kegagalan dilaporkan apa adanya (429/404/kosong).
+  if (path === "/api/chart") {
+    if (!isAuthed(req)) { res.writeHead(401, { "content-type": "application/json" }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+    const chartChain = (url.searchParams.get("chain") ?? "solana").trim();
+    const chartToken = url.searchParams.get("token")?.trim() || undefined;
+    const chartPool = url.searchParams.get("pool")?.trim() || undefined;
+    const chartTf = (url.searchParams.get("tf") ?? "5m").trim();
+    const chartBars = Math.min(300, Math.max(10, Number(url.searchParams.get("bars") ?? 60) || 60));
+    if (!chartToken && !chartPool) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"token atau pool wajib diisi"}'); return; }
+    const key = `${chartChain}|${chartToken ?? chartPool}|${chartTf}|${chartBars}`;
+    const cached = chartCache.get(key);
+    if (cached && Date.now() - cached.at < 60_000) {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ...(cached.data as object), cached: true }));
+      return;
+    }
+    let pending = chartInflight.get(key);
+    if (!pending) {
+      const gap = chartLastFetchAt + 3_000 - Date.now();
+      if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+      chartLastFetchAt = Date.now();
+      pending = fetchCandles({ chain: chartChain, token: chartToken, pool: chartPool, tf: chartTf, bars: chartBars })
+        .then((out) => ({ chain: chartChain, token: chartToken ?? null, pool: out.pool, tf: chartTf, bars: chartBars, source: out.source, error: out.error, candles: out.candles }))
+        .finally(() => chartInflight.delete(key));
+      chartInflight.set(key, pending);
+    }
+    const data = await pending;
+    chartCache.set(key, { at: Date.now(), data });
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ ...(data as object), cached: false }));
+    return;
+  }
+
   // DEEP ANALYTICS — every answer computed from the COMPLETE trade records (owner: "answer
   // with DATA not assumptions"). ?cfg=<hash> to isolate one strategy version (default: current).
   if (path === "/api/analytics") {
@@ -2262,6 +3292,16 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     // dry-run so it's ready before live). Halting blocks every real spend.
     if (next.guardHalt === true) halt("kill switch (console)");
     if (next.guardHalt === false) resume();
+    // DEPOSIT ACKNOWLEDGE: an owner top-up trips reconcile-or-HALT by definition (a balance
+    // move the bridge did not make). Acknowledging re-seeds the expected-balance snapshot to
+    // the CURRENT on-chain value and then lifts the halt — in that order, so the next
+    // reconcile tick cannot immediately re-halt on the same drift. A failed read returns an
+    // error WITHOUT resuming: never lift a kill switch on an unknown balance.
+    let walletAckResult: { ok: boolean; sol: number | null } | null = null;
+    if (next.walletAck === true) {
+      walletAckResult = await acknowledgeDeposit();
+      if (walletAckResult.ok) resume();
+    }
     // One-shot COMMAND (flatten all / close one / reset run) — the trader executes it on
     // its next command-poll. Timestamped id so it runs exactly once.
     if (next.command === "flatten" || next.command === "reset-run" || (next.command === "close" && typeof next.mint === "string")) {
@@ -2283,7 +3323,7 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     }
     const state = writeControl(patch);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(state));
+    res.end(JSON.stringify({ ...state, walletAck: walletAckResult ?? undefined }));
     scheduleBroadcast();
     return;
   }
@@ -2299,15 +3339,21 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   // Latest mainnet blockhash — lets the browser build a funding tx without
-  // exposing our Helius key client-side. Auth-gated.
+  // exposing our Helius key client-side. Auth-gated. Served through the rotating
+  // pool (poolLatestBlockhash) + a 20s cache: a raw Connection here bypassed
+  // rotation AND re-fetched an almost-identical blockhash on every browser open.
   if (path === "/api/blockhash") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     try {
-      const { Connection } = await import("@solana/web3.js");
-      const conn = new Connection(config.rpcUrl, "confirmed");
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+      let bh = cachedBlockhash;
+      if (!bh || Date.now() - bh.at > 20_000) {
+        const fresh = await poolLatestBlockhashFull();
+        if (!fresh) throw new Error("no pool endpoint answered getLatestBlockhash");
+        bh = { ...fresh, at: Date.now() };
+        cachedBlockhash = bh;
+      }
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      res.end(JSON.stringify({ blockhash, lastValidBlockHeight, botAddress: botPubkey() }));
+      res.end(JSON.stringify({ blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight, botAddress: botPubkey() }));
     } catch (e) {
       res.writeHead(502, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: (e as Error).message }));
@@ -2316,10 +3362,13 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   // Bot wallet status (address + balances) for the Controls view.
+  // Mainnet read goes through the ROTATING POOL: this used to be a raw read against
+  // config.rpcUrl (endpoint #0, forever) — the exact bypass that made /api/wallet return -1
+  // whenever that one key was throttled, even while six siblings sat healthy.
   if (path === "/api/wallet") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
     const [mainnet, devnet] = await Promise.all([
-      balanceSol(config.rpcUrl).catch(() => -1),
+      poolBalanceSol(botPubkey()).then((v) => v ?? -1).catch(() => -1),
       balanceSol(config.exec.devnetRpc).catch(() => -1),
     ]);
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
@@ -2329,22 +3378,13 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
 
   // Withdraw SOL out of the bot wallet (owner doesn't want money sitting idle). Real
   // on-chain transfer — needs the destination + amount. Never touches trading.
+  // A1 (round-3): gerbang additif — env OFF = perilaku lama utuh; env ON = allowlist/plafon.
+  // Origin mismatch (CSRF) dan jumlah NaN kini ditolak; SETIAP percobaan diaudit ke events.
+  // R6 P6: permintaan DISERIALISASI (rantai promise) — dua withdraw bersamaan tidak lagi bisa
+  // lolos cek plafon-harian sebelum baris audit keduanya tertulis (race audit ditemukan audit).
   if (path === "/api/wallet/withdraw" && req.method === "POST") {
     if (!isAuthed(req)) { res.writeHead(401); res.end(); return; }
-    const body = await readBody(req);
-    let b: { destination?: string; amount?: number | "all" } = {};
-    try { b = JSON.parse(body || "{}"); } catch { /* ignore */ }
-    if (!b.destination || typeof b.destination !== "string" || b.destination.length < 32) {
-      res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "valid destination address required" })); return;
-    }
-    try {
-      const r = await withdrawSol(config.rpcUrl, b.destination, b.amount === "all" ? "all" : Number(b.amount));
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, signature: r.signature, sentSol: r.sentSol }));
-    } catch (e) {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
-    }
+    withdrawChain = withdrawChain.then(() => handleWithdraw(req, res)).catch(() => { /* sudah direspons */ });
     return;
   }
 

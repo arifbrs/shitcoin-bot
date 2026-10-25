@@ -1,0 +1,9 @@
+#!/bin/bash
+# ENTRYPOINT RISET (FINAL) — HANYA lane nol-modal. Tanpa live-exits, tanpa dashboard
+# bila DASHBOARD_DISABLED=1, tanpa jalur Solana live. Tidak membaca berkas kunci manapun.
+cd "$(dirname "$0")" || exit 1
+export DASHBOARD_DISABLED="${DASHBOARD_DISABLED:-1}"
+nohup ./run-rhpaper-supervised.sh  > logs/rhpaper-supervisor.out 2>&1 &
+nohup ./run-gmgn-supervised.sh    > logs/gmgn-supervisor.out    2>&1 &
+nohup ./run-hunter-supervised.sh  > logs/hunter-supervisor.out  2>&1 &
+wait

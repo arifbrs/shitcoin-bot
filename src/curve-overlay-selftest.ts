@@ -6,6 +6,7 @@ import {
   curveExitProceedsSol,
   curveSellSolGross,
   gasPerSideSol,
+  rebaseOverlayForAdoptedFill,
   replayObservedCurveDelta,
 } from "./execution/curve-math.js";
 
@@ -51,4 +52,37 @@ assert.deepEqual(
   "the next raw mark must not erase a prior hypothetical partial sell",
 );
 
-console.log("curve-overlay-selftest: 13/13 passed");
+// ── LIVE-FILL ADOPTION RE-BASE (regression: the +1668% fantasy peak) ─────────────
+// A real fill replaced a paper entry ~12x smaller in basis. Without re-basing, the SAME
+// proceeds divided by the shrunken basis read as a massive gain and poisoned the trail HWM.
+const paperSize = 0.15;
+const realSize = 0.0126;
+const paperFill = curveEntryFill(postBuy.vSol, postBuy.vTokens, paperSize, "pump");
+const withPaperEntry = counterfactualPostBuyReserves(postBuy, paperFill);
+// Production reports the CHAIN's token count for the real fill; model it consistently here.
+// (A 12x-smaller buy does NOT get 1/12th the tokens — the curve is concave — so deriving the
+// quantity from the same curveEntryFill math is what keeps the scenario physically coherent.)
+const realFill = curveEntryFill(postBuy.vSol, postBuy.vTokens, realSize, "pump");
+const rebased = rebaseOverlayForAdoptedFill(
+  withPaperEntry,
+  { sizeSol: paperSize, tokenQty: paperFill.tokenQty },
+  { spentSol: realSize, tokens: realFill.tokenQty, pool: "pump" },
+);
+// The re-based overlay must describe exactly what a native REAL-sized entry would have built:
+const directReal = counterfactualPostBuyReserves(postBuy, realFill);
+assert(
+  Math.abs(rebased.vSol - directReal.vSol) < 1e-9,
+  `vSol re-base mismatch: ${rebased.vSol} vs ${directReal.vSol}`,
+);
+assert(
+  Math.abs(rebased.vTokens - directReal.vTokens) / directReal.vTokens < 1e-9,
+  `vTokens re-base mismatch: ${rebased.vTokens} vs ${directReal.vTokens}`,
+);
+// And the executable P&L under the REAL basis must stay sane (no four-figure gains from
+// an accounting flip): mark-to-market on flat reserves ≈ small negative after costs.
+const flatProceeds = curveSellSolGross(rebased.vSol, rebased.vTokens, realFill.tokenQty)
+  * (1 - 0.01) - gasPerSideSol();
+const flatPnlPct = ((flatProceeds - realSize) / realSize) * 100;
+assert(flatPnlPct < 50 && flatPnlPct > -100, `adopted-basis mark exploded: ${flatPnlPct}%`);
+
+console.log("curve-overlay-selftest: 19/19 passed");

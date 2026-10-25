@@ -11,6 +11,10 @@ import { PositionCard } from "./PositionCard";
  */
 function OpenPositionsInner({ data }: { data: StatsResponse }) {
   const s2 = (data.strategy2Primary?.paper.openPositions ?? []).map((p) => ({ pos: p, tag: "S2" as const }));
+  // When live is ARMED, `paper.openPositions` IS the bridge's real bags (lib/liveView maps them
+  // in). They must wear the LIVE badge — red, "real SOL at risk" — not S1's purple scout tag,
+  // which names a simulation engine for money that is actually on-chain.
+  const s1Tag = data.liveBridge?.armed ? ("LIVE" as const) : ("S1" as const);
   const s1 = (data.paper?.openPositions ?? []).map((p, i) => ({
     pos: {
       // SPREAD FIRST. This used to name every field it forwarded, so when the server started
@@ -20,7 +24,7 @@ function OpenPositionsInner({ data }: { data: StatsResponse }) {
       // false statement about the position. Explicit keys below still win where normalization is
       // genuinely needed.
       ...p,
-      mint: p.mint ?? `${p.symbol}-${i}`, symbol: p.symbol, unrealizedPnl: p.unrealizedPnl ?? 0, heldSec: p.heldSec ?? 0,
+      mint: p.mint ?? `${p.symbol}-${i}`, symbol: p.symbol, unrealizedPnl: p.unrealizedPnl ?? null, heldSec: p.heldSec ?? 0,
       entryPrice: p.entryPrice ?? 1, lastPrice: p.lastPrice ?? 1, noManualClose: true as const,
           // NOT `?? 0`. Strategy 1 does not report market cap or holder count for an open
           // position, and defaulting them to zero rendered "MC $0 · 0 holders" on screen — a
@@ -28,14 +32,18 @@ function OpenPositionsInner({ data }: { data: StatsResponse }) {
           // an em-dash for null, so absence stays visible as absence.
           marketCap: p.marketCap ?? null, holders: p.holders ?? null,
     } satisfies OpenPosition,
-    tag: "S1" as const,
+    tag: s1Tag,
   }));
   const positions = [...s1, ...s2];
 
   if (!positions.length) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="font-mono text-[11px] text-muted-foreground">no open positions — waiting for confirmed demand</p>
+        <p className="font-mono text-[11px] text-muted-foreground">
+          {data.liveBridge?.armed
+            ? "tidak ada bag live — menunggu kandidat lolos gate"
+            : "tidak ada posisi terbuka — menunggu permintaan terkonfirmasi"}
+        </p>
       </div>
     );
   }

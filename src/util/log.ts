@@ -18,6 +18,9 @@ const day = () => new Date().toISOString().slice(0, 10);
 const RETAIN_DAYS: Record<string, number> = {
   "paper-trades": 90, "run-ledger": 90, "patterns": 90, // the P&L / analysis record — keep
   "decisions": 7, "events": 7, "path": 3, "post-exit": 14, "arm-results": 90, // high-volume diagnostics — recent only
+  // Robinhood Chain lane (ditambah 2026-10-07): trade paper = catatan P&L (keep), rh-events =
+  // observasi/telemetri volume tinggi (cukup 14 hari; ledger durabel dipegang rh:review).
+  "rh-paper": 90, "rh-events": 14,
   // Per-tick position marks: one line per open position every 5s. Dense but short-lived — it
   // exists to answer "what was this worth at T seconds?", which needs days, not months.
   "ticks": 3,
@@ -66,7 +69,7 @@ function sanitize(obj: unknown, path = ""): unknown {
   return obj;
 }
 
-export function logRecord(stream: "decisions" | "paper-trades" | "events" | "run-ledger" | "post-exit" | "patterns" | "path" | "ticks" | "arm-results" | "live-exec", record: unknown): void {
+export function logRecord(stream: "decisions" | "paper-trades" | "events" | "run-ledger" | "post-exit" | "patterns" | "path" | "ticks" | "arm-results" | "live-exec" | "rh-paper" | "rh-events", record: unknown): void {
   const rec = sanitize({ ts: new Date().toISOString(), ...(record as object) });
   appendFileSync(join(config.logDir, `${stream}-${day()}.jsonl`), JSON.stringify(rec) + "\n");
 }

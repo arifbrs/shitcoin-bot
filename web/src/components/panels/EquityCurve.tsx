@@ -24,8 +24,36 @@ import type { StatsResponse } from "@/types/stats";
  */
 export function EquityCurve({ data }: { data: StatsResponse }) {
   const c = data.combined;
+  const legacy = data.paper?.legacy;
   const paper = data.strategy2Primary?.paper;
+
+  // LIVE + on-chain read failed → UNKNOWN. The old fallback rendered $0.00 with an all-red
+  // tape, which told the owner their funded wallet was empty. Say "unreadable" instead.
+  //
+  // URUTAN PENTING (2026-10-09): pemeriksaan ini HARUS lebih dulu dari penjaga `!paper` di bawah.
+  // Dulu ia berada setelahnya, sehingga begitu lane S2 dimatikan (2026-10-07) panel jatuh ke pesan
+  // "Strategy 2 belum jalan" dan pesan "saldo tidak terbaca" TIDAK PERNAH muncul — pemeriksa
+  // `live saldo null` karena itu mustahil hijau. Fakta terpenting (dompet tak terbaca) tidak boleh
+  // bisa disembunyikan oleh kondisi lane lain yang tak berhubungan.
+  const s1 = c?.s1;
+  const unreadable = c != null && (s1 == null || s1.balanceSol == null || s1.floatSol == null);
+  if (unreadable) {
+    return (
+      <div className="flex h-full flex-col justify-center gap-1.5">
+        <p className="font-mono text-[13px] text-muted-foreground">saldo tidak terbaca</p>
+        <p className="font-mono text-[10px] leading-relaxed text-muted-foreground/60">
+          Bacaan on-chain gagal sebentar (RPC). Uang TIDAK hilang — dompet tetap terbaca begitu
+          salah satu endpoint menjawab. Panel ini tidak akan pernah menampilkan nol palsu untuk
+          saldo yang tidak diketahui.
+        </p>
+      </div>
+    );
+  }
   if (!paper || !c) return <p className="font-mono text-xs text-muted-foreground">Strategy 2 belum jalan.</p>;
+  // Lokal SETELAH penjaga: penyempitan tipe tidak bertahan lewat akses properti berulang, dan angka
+  // saldo yang tak terbaca tidak boleh bocor diam-diam ke perhitungan (maka tetap diperiksa lagi).
+  const s1Sol = c.s1?.balanceSol ?? null;
+  const s1Float = c.s1?.floatSol ?? null;
 
   const rate = c.solUsd;
   const totalUsd = c.totalUsd ?? 0;
@@ -34,7 +62,7 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
   const gapPct = floatUsd > 0 ? (gap / floatUsd) * 100 : 0;
 
   // Native-denomination performance, per engine.
-  const s1Pct = c.s1.floatSol > 0 ? (c.s1.balanceSol / c.s1.floatSol - 1) * 100 : 0;
+  const s1Pct = s1Float != null && s1Float > 0 && s1Sol != null ? (s1Sol / s1Float - 1) * 100 : 0;
   const s2Pct = c.s2.floatUsd > 0 ? (c.s2.balanceUsd / c.s2.floatUsd - 1) * 100 : 0;
   const s1Share = totalUsd > 0 ? ((c.s1.balanceUsd ?? 0) / totalUsd) * 100 : 0;
 
@@ -102,11 +130,38 @@ export function EquityCurve({ data }: { data: StatsResponse }) {
         {rate != null && rate > 0 && <> / {(floatUsd / rate).toFixed(4)} ◎</>}
       </p>
 
+      {/*
+        Baris dari rezim pembukuan LAMA. Sejak 2026-08-25 P&L paper dibukukan pada laju yang
+        benar-benar cair; baris sebelum itu tidak. Menjumlahkan keduanya menghasilkan angka yang
+        bukan apa-apa, jadi angka di atas hanya memuat rezim yang sedang berlaku — dan baris ini
+        ada supaya "kenapa cum P&L-ku berubah?" punya jawaban di layar, bukan di commit log.
+      */}
+      {/*
+        Kualifikasi "executable only" ditulis oleh simulasi buy, yang tidak berjalan pada mode
+        ini — jadi angka di atas memuat SEMUA trade, bukan hanya yang terbukti mendarat. Tanpa
+        baris ini panel akan diam-diam mengganti arti angkanya sendiri.
+      */}
+      {data.paper?.execStageUnresolved && (
+        <p className="mb-2 -mt-1 font-mono text-[9px] tabular-nums text-muted-foreground/50"
+           title="execStage tetap 'pending' karena simulasi buy hanya berjalan pada execMode simulate. Angka memuat semua trade, bukan hanya yang terbukti dapat dieksekusi.">
+          semua trade dihitung — bukti "dapat dieksekusi" tidak dikumpulkan pada mode ini
+        </p>
+      )}
+      {legacy != null && legacy.closed > 0 && (
+        <p
+          className="mb-2 -mt-1 font-mono text-[9px] tabular-nums text-muted-foreground/50"
+          title="Trade lama dibukukan sebelum koreksi eksekusi terpasang. Angka di atas sengaja tidak menjumlahkannya."
+        >
+          {legacy.closed.toLocaleString("id-ID")} trade lama ({legacy.realizedSol >= 0 ? "+" : "−"}
+          {Math.abs(legacy.realizedSol).toFixed(2)} ◎) tidak dijumlah — pembukuan berbeda
+        </p>
+      )}
+
       <AssetRow
         sym="SOL" accent="var(--hud-gold)"
-        native={`${c.s1.balanceSol.toFixed(4)} ◎`}
-        quote={c.s1.balanceUsd != null ? `≈ ${money(c.s1.balanceUsd)}` : "—"}
-        dp={s1Pct} share={s1Share} wl={`${c.s1.wins}W/${c.s1.losses}L`}
+        native={s1Sol != null ? `${s1Sol.toFixed(4)} ◎` : "—"}
+        quote={c.s1?.balanceUsd != null ? `≈ ${money(c.s1.balanceUsd)}` : "—"}
+        dp={s1Pct} share={s1Share} wl={`${c.s1?.wins ?? 0}W/${c.s1?.losses ?? 0}L`}
       />
       <AssetRow
         sym="USD" accent="var(--hud-scout)"

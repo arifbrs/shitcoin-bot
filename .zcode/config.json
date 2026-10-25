@@ -1,0 +1,8 @@
+{
+  "plugins": {
+    "enabledPlugins": {
+      "ios-simulator@zcode-plugins-official": true,
+      "computer-use@zcode-plugins-official": true
+    }
+  }
+}

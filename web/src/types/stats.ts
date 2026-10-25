@@ -28,7 +28,18 @@ export interface OpenPosition {
   image?: string;
   mint: string;
   symbol: string;
-  unrealizedPnl: number; // percent
+  /**
+   * Percent. `null` when nothing can honestly price the bag right now — a LIVE lot whose paper
+   * twin is gone has no mark, and rendering 0.0% there would fabricate a fact about real money
+   * (the card draws an em-dash instead). Never coerce to 0 at the source.
+   */
+  unrealizedPnl: number | null;
+  /**
+   * Perkiraan P&L yang benar-benar cair kalau posisi ini dijual sekarang, memakai kurva
+   * eksekusi terukur. `unrealizedPnl` di atasnya adalah mark kuotasi — dan mark itulah yang
+   * terbukti tidak bisa dieksekusi pada token yang sedang bergerak.
+   */
+  unrealizedPnlAdj?: number;
   heldSec: number;
   entryPrice: number; // synthetic (always 1) for Strategy 2 — see marketCap/holders for the real numbers
   lastPrice: number; // synthetic (1 + unrealizedPnl/100)
@@ -142,15 +153,7 @@ export interface Strategy2Scout {
   candidates: ScoutCandidate[];
 }
 
-// ── Cross-cutting (used by both Strategy 2 and legacy panels) ─────────────────
-
-/**
- * ONE bankroll in USD. Strategy 1 trades in SOL and Strategy 2 in USD; showing them as two
- * separate accounts meant wins scrolled through the journal while the headline balance sat
- * still. Money is combined here at the live rate; strategy stays a property of each trade.
- * Every USD field is null when no live SOL price is available — the SOL leg cannot be valued
- * without one, and guessing it is worse than saying so.
- */
+/** Combined USD valuation; USD fields remain null when the SOL price is unavailable. */
 export interface CombinedWallet {
   solUsd: number | null;
   totalUsd: number | null;
@@ -161,7 +164,12 @@ export interface CombinedWallet {
   losses: number;
   winRate: number;
   open: number;
-  s1: { balanceUsd: number | null; floatUsd: number | null; balanceSol: number; floatSol: number; wins: number; losses: number; open: number };
+  /**
+   * `null` balanceSol/floatSol = the on-chain read failed — UNKNOWN, never zero. Rendering
+   * $0.00 there told the owner their funded wallet was empty (found live 2026-08-24); the
+   * wallet panel draws an explicit "tidak terbaca" state instead.
+   */
+  s1: { balanceUsd: number | null; floatUsd: number | null; balanceSol: number | null; floatSol: number | null; wins: number; losses: number; open: number };
   s2: { balanceUsd: number; floatUsd: number; wins: number; losses: number; open: number };
   /** Combined balance over time (both legs merged on wall-clock, SOL valued at the current rate). */
   equity: EquityPoint[];
@@ -332,12 +340,23 @@ export interface SniperPaper {
   returnPctOfFloat: number;
   exitReasons: Record<string, number>;
   tradeSizeSol: number;
-  floatSol: number;
+  /** null = on-chain balance unreadable (live view) — UNKNOWN, never zero. */
+  floatSol: number | null;
   realizedSol: number;
-  balanceSol: number;
+  balanceSol: number | null;
   compounding: boolean;
   equity: Array<{ t: string; bal: number }>;
   openPositions: SniperOpenPosition[];
+  /**
+   * Baris dari rezim pembukuan LAIN, dilaporkan terpisah dan TIDAK pernah ikut dijumlah di
+   * angka mana pun di atas. `corrected` menyatakan rezim mana yang sedang berlaku.
+   */
+  /**
+   * true = kualifikasi "executable only" tidak bisa diterapkan (simulasi buy tidak berjalan
+   * pada mode ini), jadi angka di atas memuat SEMUA trade rezim berlaku.
+   */
+  execStageUnresolved?: boolean;
+  legacy?: { corrected: boolean; closed: number; realizedSol: number };
 }
 
 export interface RecentDecision {
@@ -453,6 +472,12 @@ export interface LiveBridgeStatus {
   realizedSol: number;
   wallet: string;
   expectedBalanceSol: number | null;
+  /**
+   * Set = pembelian dijeda karena saldo tidak cukup mendanai satu klip. Dibaca dari DISK oleh
+   * server (proses web tidak berbagi memori dengan bridge), jadi panel bisa menampilkan keadaan
+   * yang dulu hanya terlihat sebagai 177 baris log identik.
+   */
+  dryWallet?: { since: number; needSol: number; haveSol: number } | null;
   spentLast24h: number;
   caps: { maxPerTradeSol: number; maxDeployedSol: number; maxDailySpendSol: number; feeReserveSol: number; reconcileToleranceSol: number };
   clipSol: number;
@@ -529,7 +554,63 @@ export interface BandWatch {
   entries: Array<{ ts: string; mint?: string; sym: string; mcSol: number; img?: string | null; ageSec: number | null }>;
 }
 
+export interface DexPromotionView {
+  chain: string; token: string; amountUsd: number; symbol: string | null;
+  liqUsd: number | null; vol24: number | null; chg24: number | null;
+}
+export interface DexMoverView { symbol: string; chain: string; token: string; chg24: number | null; liqUsd: number | null; vol24: number | null }
+export interface DexMetaView { slug: string; tokens: number; vol: number }
+/** Lane DexScreener (2026-10-08): 13 endpoint REST + 6 stream WebSocket realtime (diukur gratis). */
+export interface LaneDexResponse {
+  updatedAt: string; watchlistTotal: number; seenTotal: number; cycles24h: number;
+  lastCycle: { ts: string; calls: number; ms: number; watch: number } | null;
+  ws: { ts: string; alive: number; streams: string } | null;
+  wsReconnects: number;
+  discovered: Record<string, number>;
+  metas: DexMetaView[]; promotions: DexPromotionView[]; movers: DexMoverView[];
+  quotaCost: 0;
+}
+export interface OkxPaperCloseView { ts: string; symbol: string; pnlSol: number; trigger: string | null }
+/** Lane OKX strict-paper (2026-10-08): uang kertas, tanpa signer/broadcast, ledger hash-chain. */
+export interface LaneOkxPaperResponse {
+  updatedAt: string | null;
+  open: Array<{ id: string; symbol: string; source: string; detectedAt: number | null; policyVersion: number | null }>;
+  closedTotal: number; pending: number; scoutCache: number;
+  budget: { premiumUsed?: number; basicUsed?: number; premiumPaused?: boolean; basicPaused?: boolean } | null;
+  primed: { scanner: boolean; ranking: boolean; signal: boolean; trackers: number };
+  activity24h: Record<string, number>;
+  rejectReasons: Array<[string, number]>;
+  recentCloses: OkxPaperCloseView[];
+  ledger: { ok: boolean; records: number; lastSeq: number; error: string | null };
+  quotaCost: 0;
+}
+/** Grafik per koin (2026-10-08): lilin dari GeckoTerminal (gratis) / GMGN kline (cadangan Solana). */
+export interface ChartCandleView { t: number; o: number; h: number; l: number; c: number; v: number }
+export interface ChartResponse {
+  chain: string; token: string | null; pool: string | null; tf: string; bars: number;
+  source: "geckoterminal" | "gmgn-kline" | null;
+  error: string | null;
+  candles: ChartCandleView[];
+  cached: boolean;
+}
 export interface StatsResponse {
+  /** Lane Robinhood (push via SSE, 2026-10-07) — panel 10 varian tidak lagi polling. */
+  laneRobinhood?: RobinhoodPaperResponse;
+  /** Lane DexScreener + OKX paper (push via SSE, 2026-10-08). */
+  laneDex?: LaneDexResponse;
+  laneOkxPaper?: LaneOkxPaperResponse;
+  /** Kartu kualitas eksekusi (2026-10-11): retensi harga pasca-keluar + ringkasan laporan alat. */
+  quality?: {
+    day?: string;
+    traceRows?: number;
+    retention?: Array<{ reason?: string; n?: number; p50?: number; p10?: number; vanished?: number }>;
+    stop?: { file?: string; mtime?: string; lines?: string[] } | null;
+    realism?: { file?: string; mtime?: string; lines?: string[] } | null;
+    okxArms?: { file?: string; mtime?: string; lines?: string[] } | null;
+    note?: string;
+  };
+  /** Kesehatan lane dari mtime berkas state (2026-10-09) — kartu status TIDAK lagi hardcode AKTIF. */
+  laneHealth?: Record<string, { ageSec: number | null; fresh: boolean }>;
   stall?: { launchAgeSec: number | null; decisionAgeSec: number | null; deadlocked: boolean; starved: boolean; stalled: boolean };
   bandWatch?: BandWatch;
   pipeline?: PipelineData;
@@ -681,4 +762,242 @@ export interface WithdrawResult {
   signature?: string;
   sentSol?: number;
   error?: string;
+}
+
+// ── /api/okx/overview response ───────────────────────────────────────────────
+
+export interface OkxEndpointCounts {
+  live: number;
+  "params-unknown": number;
+  unavailable: number;
+  unprobed: number;
+}
+
+export interface OkxStatus {
+  enabled: boolean;
+  executionEnabled: boolean;
+  executionRouteSelected: boolean;
+  executionArmed: boolean;
+  executionBlockers: string[];
+  executionChecksAtOrder: string[];
+  controlMode: string;
+  paused: boolean;
+  guardianHalted: boolean;
+  route: "jupiter" | "okx" | "gmgn";
+  slippagePercent: number;
+  websocketEnabled: boolean;
+  websocketChannels: string[];
+  restSignalFallback: boolean;
+  restSignalPollMs: number;
+  copyShadow: boolean;
+  candidateQueueEnabled: boolean;
+  candidateMaxLagMs: number;
+  candidateMinAmountUsd: number;
+  trackedWallets: number;
+  restCopyMaxWallets: number;
+  endpointTotal: number;
+  endpointCounts: OkxEndpointCounts;
+  warnings: string[];
+  endpoints: Array<Record<string, unknown>>;
+}
+
+export interface OkxRadarWalletView {
+  walletAddress: string;
+  sweepCount: number;
+  cellHits: number;
+  walletTypes: string[];
+  realizedPnlUsd: number | null;
+  winRatePercent: number | null;
+  avgBuyValueUsd: number | null;
+  txs: number | null;
+  lastActiveTimestamp: number | null;
+}
+
+export interface OkxSourceEventView {
+  ts: string | null;
+  channel: string;
+  mint: string;
+  symbol: string | null;
+  wallet: string | null;
+  walletType: string | null;
+  amountUsd: number | null;
+  marketCapUsd: number | null;
+  holders: number | null;
+  detectLagMs: number | null;
+  status?: "WATCH" | "REJECT" | null;
+  executionState?: "BLOCKED" | null;
+  reasons?: string[];
+}
+
+export interface OkxOutcomeAggregate {
+  kind?: "signal" | "copy" | string;
+  verdict?: "CLEAN" | "TOXIC" | "UNKNOWN" | string;
+  horizonSec: number;
+  total: number;
+  priced: number;
+  unpriced: number;
+  winRatePercent: number | null;
+  avgPct: number | null;
+  medianPct: number | null;
+}
+
+export interface OkxOutcomeEventView {
+  ts: string | null;
+  kind: string | null;
+  mint: string | null;
+  symbol: string | null;
+  wallet: string | null;
+  verdict: string | null;
+  horizonSec: number | null;
+  pctChange: number | null;
+  status: string | null;
+}
+
+export interface OkxStrictPaperExitSummary {
+  policyVersion: number;
+  source: string;
+  lane: string;
+  eligibility: "live-eligible" | "paper-only";
+  horizonSec: number;
+  observations: number;
+  built: number;
+  routeFailures: number;
+  wins: number;
+  winRatePct: number | null;
+  medianPnlPct: number | null;
+  meanPnlPct: number | null;
+  totalPnlSol: number;
+  medianBuildMs: number | null;
+}
+
+export interface OkxStrictPaperScalpSummary {
+  policyVersion: number;
+  source: string;
+  lane: string;
+  eligibility: "live-eligible" | "paper-only";
+  observations: number;
+  built: number;
+  routeFailures: number;
+  wins: number;
+  winRatePct: number | null;
+  medianPnlPct: number | null;
+  meanPnlPct: number | null;
+  totalPnlSol: number;
+  triggerCounts: Record<string, number>;
+  medianExecutionDelayMs: number | null;
+  medianTriggerToExecutionGapPct: number | null;
+}
+
+export interface OkxPaperPurchaseReadiness {
+  purpose: "PAID_WEBSOCKET_LATENCY_AB_ONLY";
+  scope: string;
+  status: "WAITING_FOR_SAMPLE" | "READY_FOR_PAID_WEBSOCKET_AB" | "EDGE_NOT_PROVEN";
+  passed: boolean;
+  observations: number;
+  minimumObservations: number;
+  totalPnlSol: number;
+  meanPnlPct: number | null;
+  medianPnlPct: number | null;
+  lower95MeanPnlPct: number | null;
+  recent30MeanPnlPct: number | null;
+  routeFailurePct: number | null;
+  requirements: Record<string, boolean>;
+  disclaimer: string;
+}
+
+export interface OkxStrictPaperView {
+  available: boolean;
+  ledgerIntegrity: "OK" | "FAILED" | "MISSING";
+  error: string | null;
+  epoch?: string;
+  ledgerRecords?: number;
+  firstRecordAt?: string | null;
+  lastRecordAt?: string | null;
+  candidateFunnel?: {
+    accepted: number;
+    opened: number;
+    pendingAccepted: number;
+    rejectedOrFailed: number;
+    terminalCounts: Record<string, number>;
+  };
+  positions?: { opened: number; allHorizonsObserved: number; exitObservations: number; scalpExitObservations: number };
+  purchaseReadiness?: OkxPaperPurchaseReadiness;
+  candidateDecisionLatency?: Array<{
+    policyVersion: number; lane: string; observations: number;
+    medianDecisionMs: number | null; p95DecisionMs: number | null;
+  }>;
+  rankingThroughput?: Array<{
+    policyVersion: number; cycles: number; evaluatedSnapshots: number;
+    transientFilteredSnapshots: number; expired: number; accepted: number;
+    filterChanges: number; medianApiMs: number | null;
+    observedCallsPerHour: number | null;
+    configuredPollMs: number | null; configuredRecheckMs: number | null;
+  }>;
+  latestStatus?: Record<string, unknown> | null;
+  exitSummary: OkxStrictPaperExitSummary[];
+  scalpSummary?: OkxStrictPaperScalpSummary[];
+}
+
+export interface OkxOverviewResponse {
+  generatedAt: string;
+  status: OkxStatus;
+  processes: { lane: boolean; study: boolean; paper: boolean };
+  radar: {
+    available: boolean;
+    totalWallets: number;
+    copyableWallets: number;
+    updatedAt: string | null;
+    topWallets: OkxRadarWalletView[];
+    lastSweep: Record<string, unknown> | null;
+    lastSelection: Record<string, unknown> | null;
+  };
+  lane: {
+    mode: "shadow-copy" | "signals-only";
+    status: Record<string, unknown> | null;
+    signals: { total: number; recent: OkxSourceEventView[] };
+    copies: { total: number; liveExecution: false; recent: OkxSourceEventView[] };
+    candidates: { total: number; liveExecution: false; recent: OkxSourceEventView[] };
+    outcomes: OkxOutcomeAggregate[];
+    recentOutcomes: OkxOutcomeEventView[];
+  };
+  study: {
+    status: Record<string, unknown> | null;
+    outcomes: OkxOutcomeAggregate[];
+    recent: OkxOutcomeEventView[];
+  };
+  paper: OkxStrictPaperView;
+  lastLocalEventAt: string | null;
+  quotaCost: 0;
+}
+
+// ── LANE VIEWS (multi-lane dashboard, 2026-10-07) ────────────────────────────
+export interface RobinhoodVariantView {
+  id: string; equityUsd: number; pnlUsd: number; trades: number; wins: number; losses: number;
+  winRate: number | null; maxDdPct: number; openPositions: number;
+  life: number; cumulativePnlUsd: number; bankrupt: boolean;
+  exposureUsd: number;
+  /** Penanda kohort (dari state, 2026-10-10) — panel mengelompokkan kartu berdasarkan ini. */
+  cohort: string | null;
+  positions: Array<{ symbol: string; lastPrice: number; markAgeSec: number | null; notionalUsd: number }>;
+  status: string;
+}
+export interface RobinhoodTradeView {
+  action: string; variant: string; symbol: string; pnlUsd: number | null; pnlPct: number | null;
+  reason: string | null; ts: string; entryPriceUsd: number | null; exitPriceUsd: number | null;
+}
+export interface RobinhoodPaperResponse {
+  updatedAt: string; startEquityUsd: number; laneDays: number; cycles: number; openTotal: number;
+  variants: RobinhoodVariantView[]; recent: RobinhoodTradeView[];
+  backtestMd: string | null; backtestFile: string | null; reviewMd: string | null; reviewFile: string | null;
+}
+export interface GmgnOverviewResponse {
+  updatedAt: string;
+  signals24h: Array<{ signalType: number; count: number; sample: Array<{ sym: string; mcUsd: number | null; ts: string }> }>;
+  recentSignals: Array<{ sym: string; signalType: number; mcUsd: number | null; triggerMc: number | null; ath: number | null; holders: number | null; rugRatio: number | null; ts: string }>;
+  wallets: Array<{ wallet: string; tags: string[]; winrate: number | null; realizedProfit: number | null; tokens: number | null; at: number }>;
+  walletsScored: number;
+  watchedTrades24h: number;
+  watchedRecent: Array<{ symbol: string; side: string; maker: string; amountUsd: number | null; watchType: string; ts: string }>;
+  lastCycle: { ts: string; calls: number; ms: number; positions: number; candidates: number; signals: number; walletsScored: number } | null;
+  reportMd: string | null; reportFile: string | null;
 }

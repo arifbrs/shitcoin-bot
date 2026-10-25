@@ -66,8 +66,16 @@ export interface GuardVerdict {
  * All caps come from config.exec.guard and are checked against the persisted
  * 24h spend ledger.
  */
-export function guardBuy(sizeSol: number, walletBalanceSol: number, deployedSol: number, now = Date.now()): GuardVerdict {
-  const g = config.exec.guard;
+export function guardBuy(
+  sizeSol: number,
+  walletBalanceSol: number,
+  deployedSol: number,
+  now = Date.now(),
+  /** Strategy-specific caps (S2 live mirror uses smaller ones). Omit = S1 defaults.
+   *  Halt state + the 24h spend ledger are ALWAYS shared — total blast radius stays visible. */
+  caps?: { maxPerTradeSol: number; maxDeployedSol: number },
+): GuardVerdict {
+  const g = caps ? { ...config.exec.guard, ...caps } : config.exec.guard;
   const s = load();
   prune(s, now);
 

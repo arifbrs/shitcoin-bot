@@ -1,0 +1,18 @@
+url: http://127.0.0.1:4317/app
+name: Dashboard terminal navigation (desktop)
+---
+- launchApp
+- assertVisible: 'a[aria-label="Shitcoin terminal"]'
+- assertVisible: '.terminal-scanner-rail .terminal-scanner'
+- takeScreenshot: terminal-workspace-desktop
+- tapOn: '.terminal-scanner-rail button[aria-label="Buka lane Robinhood"]'
+- assertVisible: 'section[aria-label="Robinhood Chain paper lane"]'
+- takeScreenshot: terminal-robinhood
+- tapOn: 'button[aria-label="Tutup panel"]'
+- tapOn: 'button[aria-label="Menu akun dan diagnostik"]'
+- assertVisible: 'Akun & workspace'
+- takeScreenshot: terminal-account
+- tapOn: 'button[aria-label="Tutup panel"]'
+- tapOn: '.terminal-server-ledger button[aria-label="Tampilkan trade server"]'
+- assertVisible: '.terminal-server-ledger button[aria-label="Tampilkan trade server"][aria-pressed="true"]'
+- takeScreenshot: terminal-server-trades

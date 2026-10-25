@@ -62,6 +62,37 @@ export function replayObservedCurveDelta(
   };
 }
 
+/**
+ * RE-BASE the counterfactual overlay when a LIVE fill replaces the hypothetical entry.
+ *
+ * The overlay exists because paper trades are not real: it holds observed reserves PLUS our
+ * hypothetical buy's impact. When reality lands (bridge fill), the position's basis and quantity
+ * change — and keeping the PAPER impact under a REAL basis is not a rounding error, it is a
+ * different position: measured live 2026-08-22, a ~12x basis shrink under unchanged proceeds
+ * turned a −36% mark into a "+1668% peak", which loosened the trail band to its top rung and
+ * let winners give back everything before any exit fired.
+ *
+ * Exact arithmetic: postBuy(real) = postBuy(paper) − impact(paper) + impact(real), where a buy's
+ * impact is +solIntoCurve on both reserve sides and −tokenQty on the token side. Returns the
+ * input unchanged when the caller has no overlay yet (null-safe at the call site).
+ */
+export function rebaseOverlayForAdoptedFill(
+  overlay: CurveReserves,
+  paper: { sizeSol: number; tokenQty: number },
+  real: { spentSol: number; tokens: number; pool?: string },
+): CurveReserves {
+  const impactOf = (sizeSol: number) => {
+    const tradeSol = Math.max(0, sizeSol - gasPerSideSol() - config.risk.ataRentSol);
+    return tradeSol * (1 - curveFeeFrac(real.pool, false));
+  };
+  const deltaSol = impactOf(real.spentSol) - impactOf(paper.sizeSol);
+  return {
+    vSol: Math.max(1e-12, overlay.vSol + deltaSol),
+    vTokens: Math.max(1e-9, overlay.vTokens + (paper.tokenQty - real.tokens)),
+    realSol: Math.max(0, overlay.realSol + deltaSol),
+  };
+}
+
 export function curveEntryFill(vSol: number, vTokens: number, sizeSol: number, pool?: string): CurveEntryFill {
   const tradeSol = Math.max(0, sizeSol - gasPerSideSol() - config.risk.ataRentSol);
   const solIntoCurve = tradeSol * (1 - curveFeeFrac(pool, false));

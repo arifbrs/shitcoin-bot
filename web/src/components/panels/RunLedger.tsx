@@ -12,6 +12,25 @@ import type { StatsResponse } from "@/types/stats";
  */
 function RunLedgerInner({ data }: { data: StatsResponse }) {
   const r = data.runs;
+  if (!r && data.liveBridge?.armed) {
+    // Live view zeroes `runs` (no float → no refills → no run history). The old body here said
+    // "Belum ada data run." — a PAPER message ("not yet") under a tile labelled "tidak berlaku",
+    // promising data that by construction can never arrive. Say what IS true instead.
+    return (
+      <div className="flex h-full flex-col justify-center gap-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <p>
+          <span className="font-semibold text-down">LIVE</span> — konsep run tidak berlaku: dompet
+          sungguhan tidak punya float yang di-refill otomatis, jadi tidak ada sejarah run untuk
+          dinilai.
+        </p>
+        <p>
+          Pertanyaan padanannya di live: apakah hasil bersih melawan biaya? Jawabannya ada di{" "}
+          <span className="text-foreground">Trade Journal</span> (per trade) dan{" "}
+          <span className="text-foreground">Exit Quality</span> (distribusi alasan keluar).
+        </p>
+      </div>
+    );
+  }
   if (!r) return <p className="font-mono text-xs text-muted-foreground">Belum ada data run.</p>;
 
   const rows = r.recent ?? [];

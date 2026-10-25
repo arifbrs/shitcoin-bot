@@ -1,75 +1,35 @@
-import { useEffect, useState } from "react";
+import { Activity, LogOut, Settings2, Workflow } from "lucide-react";
 import type { StatsResponse } from "@/types/stats";
-
-function Pill({ children, tone }: { children: React.ReactNode; tone: "on" | "off" | "sim" | "dim" | "live" }) {
-  const toneClass = {
-    on: "text-up border-up/35",
-    off: "text-down border-down/35",
-    sim: "text-gold border-gold/35",
-    dim: "text-muted-foreground border-border",
-    // LIVE must not look like any other state. It is the only one spending real money.
-    live: "text-down border-down bg-down/15 font-semibold",
-  }[tone];
-  return (
-    <span className={`rounded-full border px-2.5 py-1 font-mono text-[9px] tracking-[0.13em] whitespace-nowrap ${toneClass}`}>
-      {children}
-    </span>
-  );
-}
-
-function Clock() {
-  const [now, setNow] = useState(new Date());
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return <Pill tone="on">{now.toLocaleTimeString("id-ID", { hour12: false })}</Pill>;
-}
+import type { ConnectionStatus } from "@/hooks/useLiveStats";
 
 interface Props {
   data: StatsResponse | null;
+  status: ConnectionStatus;
+  healthy: boolean;
   onOpenControl: () => void;
   onOpenDiagnostics: () => void;
 }
 
-export function TopBar({ data, onOpenControl, onOpenDiagnostics }: Props) {
-  const isS2 = !!data?.strategy2Primary;
-  const primaryUp = isS2 ? data?.system.strategy2Alive : data?.system.sniperAlive;
-  const execMode = data?.control.execMode ?? "dry-run";
-  const paused = data?.control.paused === true;
-  const agentOn = data?.feeling.enabled !== false;
-
+export function TopBar({ data, status, healthy, onOpenControl, onOpenDiagnostics }: Props) {
+  const mode = data?.control.execMode;
+  const armed = data?.liveBridge?.armed === true;
+  const label = healthy ? "Feed tersambung" : status === "reconnecting" ? "Menyambungkan ulang" : status === "open" ? "Snapshot tertinggal" : "Menunggu feed";
   return (
-    <header className="flex items-center justify-between border-b border-border px-5 py-3">
-      <div className="flex items-center gap-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-up shadow-[0_0_7px_rgba(75,208,127,0.8)]" />
-        <span className="font-mono text-xs font-semibold tracking-[0.2em] text-foreground">SHITCOIN</span>
-        <span className="hidden font-mono text-[9px] tracking-[0.2em] text-muted-foreground sm:inline">SOLANA MOMENTUM ENGINE</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <Pill tone={primaryUp ? "on" : "off"}>{primaryUp ? "FEED LIVE" : "ARCHIVED"}</Pill>
-        <Pill tone={agentOn ? "on" : "dim"}>{agentOn ? "AGENT ON" : "AGENT —"}</Pill>
-        <Pill tone={paused ? "off" : execMode === "live" ? "live" : execMode === "dry-run" ? "dim" : "sim"}>
-          {execMode === "live" ? "● LIVE" : execMode.toUpperCase()}{paused ? " · PAUSED" : ""}
-        </Pill>
-        <Clock />
-        <button
-          onClick={onOpenDiagnostics}
-          className="rounded-full border border-border px-2.5 py-1 font-mono text-[10px] text-muted-foreground hover:text-foreground"
-          title="Diagnostics"
-        >
-          ◎
-        </button>
-        <button
-          onClick={onOpenControl}
-          className="rounded-full border border-border px-2.5 py-1 font-mono text-[10px] text-muted-foreground hover:text-foreground"
-          title="Control"
-        >
-          ⚙
-        </button>
-        <a href="/logout" className="rounded-full border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.13em] text-muted-foreground hover:text-foreground">
-          LOGOUT
-        </a>
+    <header className="console-header">
+      <a href="/app" className="console-brand" aria-label="Shitcoin console">
+        <span className="brand-symbol"><Workflow size={21} strokeWidth={1.7} /></span>
+        <span><strong>SHITCOIN<span className="text-up">.</span></strong><small>Multi-lane console</small></span>
+      </a>
+      <div className="console-actions">
+        <span className={`connection-pill ${healthy ? "text-up" : "text-gold"}`} role="status">
+          <span className={`status-dot ${healthy ? "is-live" : ""}`} />{label}
+        </span>
+        <span className={`execution-pill ${armed || mode === "live" ? "text-down border-down/40" : "text-muted-foreground"}`}>
+          {mode ? `Solana · ${armed ? "LIVE · ARMED" : mode.toUpperCase()}${data?.control.paused ? " · PAUSED" : ""}` : "Mode belum tersedia"}
+        </span>
+        <button type="button" className="console-icon-button" onClick={onOpenDiagnostics} disabled={!data} aria-label="Buka diagnostik" title="Diagnostik"><Activity size={18} /></button>
+        <button type="button" className="console-icon-button" onClick={onOpenControl} aria-label="Buka kontrol" title="Kontrol"><Settings2 size={18} /></button>
+        <a href="/logout" className="console-icon-button" aria-label="Keluar" title="Keluar"><LogOut size={17} /></a>
       </div>
     </header>
   );
