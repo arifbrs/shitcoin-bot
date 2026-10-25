@@ -7,7 +7,7 @@
 import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { read } from "./journal.js";
+import { read, reduceOutcomes } from "./journal.js";
 import { watchDir } from "./watchlist.js";
 import { OUTCOME_HORIZONS_MIN, type EntryPolicy, type PolicyEvaluation } from "./types.js";
 import { paperForPolicy } from "./results.js";
@@ -22,7 +22,8 @@ export function report(now = Date.now()): void {
   const fixtures = all.filter((r) => r.source === "fixture" || r.fixture === true);
   const live = all.filter((r) => r.source !== "fixture" && r.fixture !== true);
   const decisions = live.filter((r) => r.type === "shadow-decision");
-  const marks = live.filter((r) => r.type === "outcome-mark");
+  // (S9-P0) laporan memakai STATE tereduksi (reduceOutcomes) - bukan baris event mentah.
+  const marks = [...reduceOutcomes(live).values()].map((s) => ({ horizonMin: Number(s.key.split(":")[2]), status: s.status, changePct: s.changePct }));
   const tokens = live.filter((r) => r.type === "token-observed");
   const feedLags = tokens.map((t) => t.feedLagMs).filter((v): v is number => typeof v === "number" && v >= 0);
 

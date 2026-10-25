@@ -180,7 +180,7 @@ test("SPRINT outcomes: PENDING→OBSERVED dari candle SELESAI; retry berbatas; c
   // horizon 1m, target 61_000; candle 60_000 SELESAI di asOf=61_500 (60k+60s<=61.5k).
   const r1 = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 61_000, horizonMin: 1, candles: [c(0), c(60_000, 2.2)], intervalMs: 60_000, asOf: 121_000 });
   eq(r1.status, "OBSERVED", "close candle selesai terdekat dipakai");
-  eq(r1.priceAtTarget, 2, "harga = close candle [0,60s) (close-time 60k terdekat ke target 61k) - bukan open, bukan candle 60k yg baru selesai di 120k");
+  eq(r1.priceAtTarget, 2.2, "harga = close candle PERTAMA dgn close-time >= target (candle 60k close di 120k; candle [0,60s) close 60k < target 61k = DITOLAK semantik baru)");
   // satu-satunya candle yg bisa melayani target masih IN-PROGRESS (selesai 120k, asOf 110k):
   const r2 = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 100_000, horizonMin: 1, candles: [c(60_000, 2.2)], intervalMs: 60_000, asOf: 110_000 });
   eq(r2.status, "PENDING", "candle in-progress TIDAK dipakai → PENDING (retry), bukan MISSING permanen");
@@ -199,7 +199,13 @@ test("SPRINT paper no-look-ahead: entry = close candle SELESAI pasca-trigger; MF
   assert(pr.exitPrice != null && pr.grossPct != null, "exit matang");
   assert(pr.mfePct != null && pr.maePct != null, "MFE/MAE terisi");
   eq(pr.costPp, 5.0, "biaya model 5pp");
+  eq(pr.grossPct != null && pr.netPct != null && Math.abs((pr.netPct ?? 0) + 5 - pr.grossPct!) < 1e-9 ? 1 : 1, 1, "gross dan net dipisah (net = gross - 5pp persen)");
   assert(pr.netPct != null && Math.abs(pr.netPct - ((pr.grossPct ?? 0) - 5)) < 1e-9, "net = gross − biaya");
+  // (S9-P1) solUsd tak tersedia → netUsd UNKNOWN (null), bukan biaya-tetap-diasumsikan-0.
+  const noSol = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles, 60_000, 300_000, PUMP_PAPER_COST_V1, null);
+  eq(noSol.netUsd["3"], null, "netUsd $3 UNKNOWN tanpa harga SOL");
+  const withSol = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles, 60_000, 300_000, PUMP_PAPER_COST_V1, 200);
+  assert(withSol.netUsd["3"] != null && withSol.netUsd["3"]! < noSol.grossPct! * 3 / 100 - 0.1, "biaya tetap 0,001 SOL dikurangkan saat harga ada");
   // look-ahead: evaluasi SEBELUM candle entry selesai → skip eksplisit, bukan harga karangan.
   const early = paperForPolicy({ decisionTs: 5_000, priceAtDecision: 1.0 }, policy, 4, candles.slice(0, 1), 60_000, 60_000);
   eq(early.skipReason, "CANDLE_ENTRY_SELESAI_BELUM_ADA", "tanpa candle selesai = skip berlabel");
@@ -238,28 +244,54 @@ test("S8-P2 premature: asOf < target → PENDING selalu; candle jauh-sebelum-tar
 
 test("S8-P4 onchain decode: delta saldo token pemilik → BUY/SELL + SOL delta; identitas signature:owner", () => {
   const mint = "Mint1111111111111111111111111111111111111111";
+  const W = "W" + "1".repeat(43); const TA = "T" + "2".repeat(43); // 44-char base58-like
   const tx = {
     slot: 100, blockTime: 1_790_000_000, signature: "sigAAA",
-    transaction: { message: { accountKeys: ["OwnerW111111111111111111111111111111111111111", "Curve111111111111111111111111111111111111111"] } },
+    transaction: { message: { accountKeys: [W, TA, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], instructions: [
+      { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", parsed: { type: "transfer", info: { source: TA, destination: W } } }, // jsonParsed: transfer SPL menyentuh akun token mint
+    ] } },
     meta: {
-      preBalances: [1_000_000_000, 5_000_000_000], postBalances: [900_000_000, 5_100_000_000],
-      preTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 100 } }],
-      postTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 250 } }],
+      preBalances: [1_000_000_000, 0, 0], postBalances: [900_000_000, 0, 0],
+      preTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 100, amount: "100000000" } }],
+      postTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 250, amount: "250000000" } }],
     },
   };
-  const trades = decodePumpTx(tx as never, mint, 1_790_000_500_000);
+  const trades = decodePumpTx(tx as never, mint, 6, 1_790_000_500_000);
   eq(trades.length, 1, "satu wallet berubah");
   const t = trades[0]!;
   eq(t.side, "buy", "token bertambah = BUY");
+  eq(t.state, "VERIFIED_SWAP", "instruksi transfer mint ada = swap terverifikasi");
+  eq(t.tokenAmountRaw, "150000000", "jumlah RAW dari amount SPL (bukan tebakan desimal)");
   eq(t.signature, "sigAAA", "signature asli");
   eq(t.slot, 100, "slot asli");
   eq(t.sourceTs, 1_790_000_000_000, "timestamp sumber = blockTime");
   assert(t.sol > 0 && Math.abs(t.sol - 0.1) < 1e-9, "SOL delta 0.1 (beli: SOL berkurang, diambil absolut)");
-  eq(t.dedupeKey, "sigAAA:OwnerW111111111111111111111111111111111111111", "identitas signature:owner");
+  eq(t.dedupeKey, `sigAAA:${W}`, "identitas signature:owner");
   // jual: token berkurang
-  const txSell = { ...tx, signature: "sigBBB", meta: { ...tx.meta, preBalances: [900_000_000, 5_100_000_000], postBalances: [950_000_000, 5_050_000_000],
-    preTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 250 } }], postTokenBalances: [{ accountIndex: 0, mint, owner: "OwnerW111111111111111111111111111111111111111", uiTokenAmount: { uiAmount: 100 } }] } };
-  eq(decodePumpTx(txSell as never, mint, 0)[0]!.side, "sell", "token berkurang = SELL");
-  // mint lain / tanpa perubahan → kosong
-  eq(decodePumpTx({ ...tx, meta: null } as never, mint, 0).length, 0, "tanpa meta = kosong");
+  const txSell = { ...tx, signature: "sigBBB", meta: { ...tx.meta, preBalances: [900_000_000, 0, 0], postBalances: [950_000_000, 0, 0],
+    preTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 250, amount: "250000000" } }], postTokenBalances: [{ accountIndex: 1, mint, owner: W, uiTokenAmount: { uiAmount: 100, amount: "100000000" } }] } };
+  eq(decodePumpTx(txSell as never, mint, 6, 0)[0]!.side, "sell", "token berkurang = SELL");
+  // tanpa instruksi transfer → UNVERIFIED_BALANCE_DELTA (bukan trade riset)
+  const noInstr = decodePumpTx({ ...tx, signature: "sigCCC", transaction: { message: { accountKeys: [W, TA, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] } } } as never, mint, 6, 0);
+  eq(noInstr[0]!.state, "UNVERIFIED_BALANCE_DELTA", "delta tanpa bukti instruksi = dilabel, bukan swap");
+  // tx gagal = ditolak
+  const failed = decodePumpTx({ ...tx, meta: { ...tx.meta!, err: { InstructionError: [0, { Custom: 1 }] } } } as never, mint, 6, 0);
+  eq(failed.length, 0, "meta.err != null → tidak ada trade");
+  eq(decodePumpTx({ ...tx, meta: null } as never, mint, 6, 0).length, 0, "tanpa meta = kosong");
+});
+
+test("S9-P0 24h/48h: candle tersedia SEBELUM target yang belum-matang → PENDING; candle-jauh-sebelum tak jadi hasil", () => {
+  const c = (ts: number, close = 2): Candle => ({ ts, open: 1, high: 3, low: .5, close, volumeSol: 1 });
+  const H24 = 24 * 60 * 60_000;
+  // candle selesai 1 jam sebelum target 24h; asOf 30 menit sebelum target (belum matang):
+  const pre = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 10 * H24, horizonMin: 1440, candles: [c(9 * H24, 9.9)], intervalMs: 60_000, asOf: 10 * H24 - 30 * 60_000 });
+  eq(pre.status, "PENDING", "belum jatuh tempo = PENDING (candle tidak dipakai)");
+  // tepat setelah matang, hanya candle jauh-sebelum-target tersedia → tetap PENDING-retry (bukan OBSERVED dgn harga basi):
+  const staleOnly = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 10 * H24, horizonMin: 1440, candles: [c(9 * H24, 9.9)], intervalMs: 60_000, asOf: 10 * H24 + 60_000 });
+  eq(staleOnly.status, "PENDING", "candle 1 jam sebelum target (close 9h<target) DITOLAK - retry");
+  eq(staleOnly.reason, "RETRY (1/5)", "retry berbatas");
+  // candle yg close TEPAT >= target dlm 1 interval → OBSERVED dgn close candle itu:
+  const ok = resolveOutcome({ status: "PENDING", attempts: 0, targetAt: 10 * H24, horizonMin: 1440, candles: [c(9 * H24, 9.9), c(10 * H24 - 60_000, 4.5)], intervalMs: 60_000, asOf: 10 * H24 + 2 * 60_000 });
+  eq(ok.status, "OBSERVED", "");
+  eq(ok.priceAtTarget, 4.5, "harga = close candle yg menutupi target");
 });

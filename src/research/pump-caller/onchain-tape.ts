@@ -1,89 +1,204 @@
 /**
- * TAPE ON-CHAIN TERDEKODE (S8-P4) — dari RPC Solana umum (pooledRpc, bebas-kunci):
- * getSignaturesForAddress(bondingCurve) → getTransaction → delta saldo token pemilik wallet.
- * HANYA transaksi nyata terdekode: signature+slot+wallet+arah+jumlah+SOL delta+blockTime.
- * Identitas dedupe = signature:owner. Ini bukan agregat; GMGN top-traders tetap kontekstual.
- * Terikat kuota: limit kecil (default 10), dipanggil berkala oleh observer dengan cooldown.
+ * TAPE ON-CHAIN TERDEKODE (S9-P0 dikoreksi) — dari RPC Solana umum (pooledRpc).
+ * Validasi per transaksi:
+ *   1. meta.err == null (tx GAGAL ditolak).
+ *   2. Ada instruksi transfer token mint-tersebut (top-level / inner) → kaki SWAP terbukti;
+ *      tanpa itu → delta saldo = UNVERIFIED_BALANCE_DELTA (bukan trade).
+ *   3. SOL notional = delta lamports akun SOL MILIK WALLET (accountKeys[idx] == owner),
+ *      BUKAN accountIndex token-account (bug lama). Label sol_incl_fees_rent (jujur).
+ *   4. Desimal mint diambil dari getAccountInfo(mint) (cache) — bukan asumsi 6.
+ *   5. Akun token hanya-pre / hanya-post (pembuatan/penutupan) ditangani; CloseAccount
+ *      terdeteksi (penjualan penuh / keluar).
+ * Hanya swap TERVALIDASI yang layak masuk riset; ambiguitas dilabel, tidak diarang.
  */
 import { pooledRpc } from "../../safety/onchain.js";
 import type { TradeEvent } from "./types.js";
 
-interface RawTx {
-  slot?: number;
-  blockTime?: number | null;
-  transaction?: { message?: { accountKeys?: string[] } };
+// Program token ditemukan LIVE (2026-10-25): token pump memakai Token-2022 bawaan Pump
+// ("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"), plus SPL Token standar & Token-2022 umum.
+const TOKEN_PROGRAMS = new Set([
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "TokenzQdBNbLkgHcc8TwG4m3ak7otR59gsCXsP3hHhHxn",
+]);
+const PUMP_PROGRAMS = new Set(["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "pAMMBay6oceH9fJKBRHGP5D4dDv9awq3qnX651rkFiw6"]);
+
+export interface RawTxLike {
+  slot?: number; blockTime?: number | null; signature?: string;
+  transaction?: { message?: { accountKeys?: string[]; instructions?: Array<{ programIdIndex?: number; accounts?: number[]; data?: string }> } };
   meta?: {
+    err?: unknown | null;
     preBalances?: number[]; postBalances?: number[];
+    innerInstructions?: Array<{ index?: number; instructions?: Array<{ programIdIndex?: number; accounts?: number[]; data?: string }> }>;
     preTokenBalances?: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount?: { uiAmount?: number | null; amount?: string } }>;
     postTokenBalances?: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount?: { uiAmount?: number | null; amount?: string } }>;
   } | null;
 }
 
-export interface DecodedTrade extends TradeEvent { signature: string; slot: number | null; sourceTs: number | null }
+export type TradeState = "VERIFIED_SWAP" | "UNVERIFIED_BALANCE_DELTA" | "FAILED_TX" | "NO_TOKEN_CHANGE" | "NO_META";
+export interface DecodedTrade extends TradeEvent {
+  signature: string; slot: number | null; sourceTs: number | null;
+  state: TradeState; tokenAmountRaw: string | null; decimals: number | null;
+  solInclFeesRent: boolean; closedTokenAccount: boolean; openedTokenAccount: boolean;
+  reason?: string;
+}
 
-/** Murni: satu transaksi → trade terdekode per wallet-pemilik-mint (bisa multi). */
-export function decodePumpTx(tx: Rawtx | RawTx, mint: string, observedAt: number): DecodedTrade[] {
-  const meta = (tx as RawTx).meta;
-  const keys = (tx as RawTx).transaction?.message?.accountKeys ?? [];
-  if (!meta || !keys.length) return [];
-  const tokenAmount = (b: { uiTokenAmount?: { uiAmount?: number | null; amount?: string } } | undefined): number | null => {
-    const ui = b?.uiTokenAmount?.uiAmount;
-    if (typeof ui === "number" && Number.isFinite(ui) && ui !== 0) return ui;
-    const raw = b?.uiTokenAmount?.amount;
-    if (typeof raw === "string" && /^\d+$/.test(raw)) return Number(BigInt(raw) / 10n ** 6n) / 1e6; // lamports→unit (presisi mikro utk riset)
-    return null;
+const TRANSFER_DISCRIMINATOR = "3"; // transfer(u64) — discriminator pertama byte transfer SPL
+
+/** Deteksi: apakah ada instruksi transfer token utk mint ini (via perubahan account token mana pun
+ *  dari mint ini) — dan apakah program pump termuat (konteks swap). Murni. */
+/** Normalisasi bentuk lintas-encoding: json (accountKeys string, ix.data base58) vs jsonParsed
+ *  (accountKeys {pubkey}, ix.programId + parsed.type). Evidence hanya butuh: program, parsed type,
+ *  dan accounts-indices yang menyentuh akun token mint. */
+export interface NormIx { program: string | null; type: string | null; accounts: number[]; pubkeysTouched: string[] }
+export function normalizeTx(tx: RawTxLike): { keys: string[]; ixTop: NormIx[]; ixInner: NormIx[] } {
+  const rawKeys = tx.transaction?.message?.accountKeys ?? [];
+  const keys = rawKeys.map((k) => (typeof k === "string" ? k : String((k as unknown as { pubkey?: string })?.pubkey ?? "")));
+  const norm = (ix: Record<string, unknown> | undefined): NormIx => {
+    const parsed = ix?.parsed && typeof ix.parsed === "object" ? (ix.parsed as { type?: string; info?: Record<string, unknown> }) : undefined;
+    // kumpulkan semua nilai pubkey-string dari parsed.info (source/destination/account/...)
+    const pubkeysTouched: string[] = [];
+    for (const v of Object.values(parsed?.info ?? {})) if (typeof v === "string" && v.length >= 32 && v.length <= 44) pubkeysTouched.push(v);
+    return {
+      program: typeof ix?.programId === "string" ? ix.programId
+        : ix?.programIdIndex != null ? (keys[Number(ix.programIdIndex)] ?? null) : null,
+      type: parsed?.type ?? null,
+      accounts: Array.isArray(ix?.accounts) ? (ix.accounts as number[]).map(Number) : [],
+      pubkeysTouched,
+    };
   };
-  const post = new Map<number, { owner?: string; amount: number | null }>();
-  for (const b of meta.postTokenBalances ?? []) {
-    if (b.mint !== mint) continue;
-    post.set(b.accountIndex, { owner: b.owner ?? keys[b.accountIndex], amount: tokenAmount(b) });
+  const ixTop = (tx.transaction?.message?.instructions ?? []).map((i) => norm(i as unknown as Record<string, unknown>));
+  const ixInner = (tx.meta?.innerInstructions ?? []).flatMap((x) => (x.instructions ?? []).map((i) => norm(i as unknown as Record<string, unknown>)));
+  return { keys, ixTop, ixInner };
+}
+
+export function txSwapEvidence(tx: RawTxLike, mint: string): { hasTokenTransfer: boolean; pumpProgramPresent: boolean; closedAccounts: number } {
+  const { keys, ixTop, ixInner } = normalizeTx(tx);
+  // Akun token mint (indeks) → PUBKEY-nya; instruksi jsonParsed tak membawa accounts-idx,
+  // melainkan parsed.info.{source,destination,...} berupa pubkey — cocokkan lewat pubkey.
+  const tokenAccountPubkeys = new Set<string>();
+  for (const b of [...(tx.meta?.preTokenBalances ?? []), ...(tx.meta?.postTokenBalances ?? [])]) if (b.mint === mint) tokenAccountPubkeys.add(keys[b.accountIndex] ?? "");
+  let hasTokenTransfer = false, pumpProgramPresent = false, closedAccounts = 0;
+  for (const ix of [...ixTop, ...ixInner]) {
+    if (ix.program != null && TOKEN_PROGRAMS.has(ix.program)) {
+      if (ix.type === "closeAccount") closedAccounts++;
+      if (ix.type === "transfer" || ix.type === "transferChecked") {
+        const touched = ix.pubkeysTouched.some((pk) => tokenAccountPubkeys.has(pk)) || ix.accounts.some((a) => tokenAccountPubkeys.has(keys[a] ?? "\u0000"));
+        if (touched) hasTokenTransfer = true;
+      }
+    }
+    if (ix.program != null && PUMP_PROGRAMS.has(ix.program)) pumpProgramPresent = true;
   }
-  const pre = new Map<number, number | null>();
-  for (const b of meta.preTokenBalances ?? []) {
-    if (b.mint !== mint) continue;
-    pre.set(b.accountIndex, tokenAmount(b));
-  }
+  return { hasTokenTransfer, pumpProgramPresent, closedAccounts };
+}
+
+/** Murni: satu transaksi → trade per wallet pemilik (multi-wallet didukung). */
+export function decodePumpTx(tx: RawTxLike, mint: string, decimals: number | null, observedAt: number): DecodedTrade[] {
+  const meta = tx.meta;
+  const keys = normalizeTx(tx).keys; // (S9) akun wallet = pubkey owner; token-account ≠ akun SOL
+  const signature = String(tx.signature ?? "");
+  const mk = (p: Partial<DecodedTrade> & { wallet: string; side: "buy" | "sell" }): DecodedTrade => ({
+    dedupeKey: `${signature || "sig?"}:${p.wallet}`, mint, usd: null, ts: p.sourceTs ?? observedAt,
+    signature, slot: tx.slot ?? null, state: "VERIFIED_SWAP", solInclFeesRent: true,
+    closedTokenAccount: false, openedTokenAccount: false, ...p,
+  } as DecodedTrade);
+  if (!meta) return [mk({ wallet: "?", side: "buy", sol: 0, tokenAmountRaw: null, state: "NO_META", reason: "meta null" })].filter((t) => t.state !== "NO_META") as DecodedTrade[];
+  if (meta.err != null) return []; // FAILED_TX: tx gagal = bukan trade (dicatat caller via coverage)
+  const evidence = txSwapEvidence(tx, mint);
+  // SOL index milik wallet: cari idx yang accountKeys-nya == owner (akun sistem wallet), BUKAN token acct.
+  const ownerSolIdx = new Map<string, number>();
+  keys.forEach((k, i) => { if (!ownerSolIdx.has(k)) ownerSolIdx.set(k, i); });
+  const rawAmount = (b: { uiTokenAmount?: { uiAmount?: number | null; amount?: string } } | undefined): bigint | null => {
+    const a = b?.uiTokenAmount?.amount;
+    return typeof a === "string" && /^\d+$/.test(a) ? BigInt(a) : null;
+  };
+  const post = new Map<number, { owner?: string; raw: bigint | null }>();
+  for (const b of meta.postTokenBalances ?? []) if (b.mint === mint) post.set(b.accountIndex, { owner: b.owner ?? keys[b.accountIndex], raw: rawAmount(b) });
+  const pre = new Map<number, { owner?: string; raw: bigint | null }>();
+  for (const b of meta.preTokenBalances ?? []) if (b.mint === mint) pre.set(b.accountIndex, { owner: b.owner ?? keys[b.accountIndex], raw: rawAmount(b) });
   const out: DecodedTrade[] = [];
-  const blockTime = meta ? ((tx as RawTx).blockTime ?? null) : null;
-  const slot = (tx as RawTx).slot ?? null;
-  const signature = String((tx as unknown as { signature?: string }).signature ?? "");
   for (const [idx, p] of post) {
     const owner = p.owner;
+    if (!owner || p.raw == null) continue;
+    const before = pre.get(idx)?.raw ?? 0n;
+    const dRaw = p.raw - before;
+    if (dRaw === 0n) continue;
+    const side: "buy" | "sell" = dRaw > 0n ? "buy" : "sell";
+    // SOL delta dari AKUN WALLET owner (bukan idx token-account):
+    const solIdx = ownerSolIdx.get(owner);
+    const solDeltaLamports = solIdx != null ? (meta.postBalances?.[solIdx] ?? 0) - (meta.preBalances?.[solIdx] ?? 0) : null;
+    const sol = solDeltaLamports != null ? Math.abs(solDeltaLamports) / 1e9 : null;
+    const state: TradeState = evidence.hasTokenTransfer ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA";
+    out.push(mk({
+      wallet: owner, side, sol: sol ?? 0, tokenAmountRaw: (dRaw < 0n ? -dRaw : dRaw).toString(), decimals: decimals ?? null,
+      state, sourceTs: tx.blockTime != null ? tx.blockTime * 1000 : null,
+      closedTokenAccount: side === "sell" && evidence.closedAccounts > 0 && p.raw === 0n,
+      openedTokenAccount: side === "buy" && !pre.has(idx),
+      reason: state === "UNVERIFIED_BALANCE_DELTA" ? "tanpa instruksi transfer mint (transfer biasa/rent?) — bukan bukti swap" : undefined,
+    }));
+  }
+  // akun token hanya-PRE (ditutup di tx ini; saldo post 0 / hilang) → penjualan penuh/keluar:
+  for (const [idx, b] of pre) {
+    if (post.has(idx) || b.raw == null || b.raw === 0n) continue;
+    const owner = b.owner ?? keys[idx];
     if (!owner) continue;
-    const before = pre.get(idx) ?? 0;
-    if (p.amount == null) continue;
-    const dTok = p.amount - before;
-    if (Math.abs(dTok) < 1e-9) continue; // bukan perubahan mint ini utk wallet ini
-    const solBefore = meta.preBalances?.[idx] ?? 0, solAfter = meta.postBalances?.[idx] ?? 0;
-    const dSolLamports = solAfter - solBefore;
-    const dSol = dSolLamports / 1e9;
-    const side: "buy" | "sell" = dTok > 0 ? "buy" : "sell";
-    const sol = Math.abs(dSol);
-    const ts = blockTime != null ? blockTime * 1000 : null;
-    out.push({
-      dedupeKey: `${signature || "sig?"}:${owner}`, mint, wallet: owner, side,
-      sol, usd: null, ts: ts ?? observedAt, // ts sumber blockTime; fallback observedAt diberi tahu via sourceTs
-      signature, slot, sourceTs: ts,
-    });
+    const solIdx = ownerSolIdx.get(owner);
+    const sol = solIdx != null ? Math.abs((meta.postBalances?.[solIdx] ?? 0) - (meta.preBalances?.[solIdx] ?? 0)) / 1e9 : 0;
+    out.push(mk({ wallet: owner, side: "sell", sol, tokenAmountRaw: b.raw.toString(), decimals: decimals ?? null,
+      state: evidence.hasTokenTransfer ? "VERIFIED_SWAP" : "UNVERIFIED_BALANCE_DELTA",
+      sourceTs: tx.blockTime != null ? tx.blockTime * 1000 : null, closedTokenAccount: true }));
   }
   return out;
 }
-type Rawtx = Record<string, unknown>;
 
-/** Ambil tape nyata utk mint (butuh bondingCurveKey dari event launch). Batas kuota ketat. */
-export async function onchainTape(mint: string, bondingCurveKey: string, limit = 10): Promise<DecodedTrade[] | null> {
+/** Desimal mint (cache per proses) dari getAccountInfo — tanpa asumsi. */
+const decimalsCache = new Map<string, number | null>();
+export async function mintDecimals(mint: string): Promise<number | null> {
+  if (decimalsCache.has(mint)) return decimalsCache.get(mint) ?? null;
+  let d: number | null = null;
   try {
-    const sigs = await pooledRpc<{ signature: string }[]>("getSignaturesForAddress", [bondingCurveKey, { limit }]);
-    if (!Array.isArray(sigs) || !sigs.length) return null;
-    const seen = new Set<string>();
-    const out: DecodedTrade[] = [];
-    for (const s of sigs.slice(0, limit)) {
-      const tx = await pooledRpc<RawTx & { signature?: string }>("getTransaction", [s.signature, { maxSupportedTransactionVersion: 0 }]);
-      if (!tx) continue;
-      const decoded = decodePumpTx({ ...tx, signature: s.signature } as RawTx, mint, Date.now());
-      for (const d of decoded) { if (!seen.has(d.dedupeKey)) { seen.add(d.dedupeKey); out.push(d); } }
+    const info = await pooledRpc<{ value?: { data?: [string, string] | { content?: string } } }>("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
+    const raw = info?.value?.data;
+    const hex = Array.isArray(raw) ? raw[0] : raw?.content;
+    if (typeof hex === "string" && hex.startsWith("0x")) d = Number(BigInt(hex.slice(0, 66)).toString(16).slice(-2)); // mint layout: desimal di byte 44
+    if (Array.isArray(raw)) { // base64 jsonParsed: coba field parsed
+      const jp = info?.value?.data as unknown as { parsed?: { info?: { decimals?: number } } };
+      if (jp?.parsed?.info?.decimals != null) d = jp.parsed.info.decimals;
     }
-    out.sort((a, b) => a.ts - b.ts);
-    return out;
-  } catch { return null; }
+  } catch { d = null; }
+  decimalsCache.set(mint, d);
+  return d;
 }
+
+export interface TapePassResult { trades: DecodedTrade[]; coverage: { encountered: number; fetched: number; validatedSwaps: number; unverifiedDeltas: number; failedTx: number; missingTx: number; error: string | null; cursorAdvanced: boolean } }
+
+/** Satu pass tape utk mint (kursor inkremental `until` = signature terbaru sebelumnya; berbatas kuota). */
+export async function onchainTapePass(mint: string, bondingCurveKey: string, prevTopSig: string | null, limit = 12): Promise<TapePassResult | null> {
+  const coverage = { encountered: 0, fetched: 0, validatedSwaps: 0, unverifiedDeltas: 0, failedTx: 0, missingTx: 0, error: null as string | null, cursorAdvanced: false };
+  try {
+    const sigs = await pooledRpc<{ signature: string }[]>("getSignaturesForAddress", [bondingCurveKey, { limit, ...(prevTopSig ? { until: prevTopSig } : {}) }]);
+    if (!Array.isArray(sigs)) return null;
+    coverage.encountered = sigs.length;
+    const decimals = await mintDecimals(mint);
+    const seen = new Set<string>();
+    const trades: DecodedTrade[] = [];
+    for (const s of sigs) {
+      if (prevTopSig && s.signature === prevTopSig) continue;
+      // Pump.fun memakai transaksi VERSION 1 — maxSupportedTransactionVersion:0 ditolak RPC (akar
+      // "failedTx 9/9" S9). Versi 1 menerima v0+v1; tx gagal tetap disaring lewat meta.err.
+      const tx = await pooledRpc<RawTxLike>("getTransaction", [s.signature, { maxSupportedTransactionVersion: 1, encoding: "jsonParsed" }]);
+      if (!tx) { coverage.missingTx++; continue; }
+      coverage.fetched++;
+      if (tx.meta?.err != null) { coverage.failedTx++; continue; }
+      const decoded = decodePumpTx({ ...tx, signature: s.signature }, mint, decimals, Date.now());
+      for (const d of decoded) {
+        if (d.state === "VERIFIED_SWAP") coverage.validatedSwaps++; else coverage.unverifiedDeltas++;
+        if (!seen.has(d.dedupeKey)) { seen.add(d.dedupeKey); trades.push(d); }
+      }
+    }
+    coverage.cursorAdvanced = sigs.length > 0 && sigs[0]!.signature !== prevTopSig;
+    trades.sort((a, b) => a.ts - b.ts);
+    return { trades, coverage, ...(coverage.cursorAdvanced ? { topSig: sigs[0]!.signature } : {}) } as TapePassResult;
+  } catch (e) { coverage.error = (e as Error).message.slice(0, 80); return { trades: [], coverage }; }
+}
+export interface TapePassResultWithCursor extends TapePassResult { topSig?: string }

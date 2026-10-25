@@ -26,14 +26,16 @@ export function resolveOutcome(p: {
   candles: Candle[]; intervalMs: number; asOf: number;
 }): { status: OutcomeStatus; priceAtTarget: number | null; reason?: string; attempts: number } {
   if (p.status !== "PENDING") return { status: p.status, priceAtTarget: null, attempts: p.attempts };
-  const tol = Math.max(30_000, p.horizonMin * 60_000 * 0.5);
-  const done = completedCandles(p.candles, p.intervalMs, p.asOf);
-  // Kandidat = candle SELESAI yang CLOSE-TIME-nya berjarak <= tol dari target (bukan sembarang ts).
-  const c = done.filter((x) => Math.abs((x.ts + p.intervalMs) - p.targetAt) <= tol)
-    .sort((a, b) => Math.abs((a.ts + p.intervalMs) - p.targetAt) - Math.abs((b.ts + p.intervalMs) - p.targetAt))[0];
-  if (c) return { status: "OBSERVED", priceAtTarget: c.close, attempts: p.attempts + 1 };
-  // belum jatuh tempo → tetap PENDING (bukan MISSING); jatuh tempo + kehabisan percobaan → FINAL.
+  // (S9-P0) ANTI-PREMATURE absolut: tak boleh OBSERVED sebelum target jatuh tempo.
   if (p.asOf < p.targetAt) return { status: "PENDING", priceAtTarget: null, attempts: p.attempts, reason: "BELUM_JATUH_TEMPO" };
+  // (S9-P0) toleransi SEMPIT sadar-sumber: SATU interval candle (min 30 dtk) - bukan proporsional
+  // horizon (bug lama 0,5x horizon: candle 1 jam sebelum target 24h dianggap hasil).
+  const tol = Math.max(30_000, p.intervalMs);
+  const done = completedCandles(p.candles, p.intervalMs, p.asOf);
+  // Kandidat = candle SELESAI PERTAMA yang close-time >= target dan <= target+tol.
+  const c = done.filter((x) => x.ts + p.intervalMs >= p.targetAt && x.ts + p.intervalMs <= p.targetAt + tol)
+    .sort((a, b) => (a.ts + p.intervalMs) - (b.ts + p.intervalMs))[0];
+  if (c) return { status: "OBSERVED", priceAtTarget: c.close, attempts: p.attempts + 1 };
   const graceMs = p.horizonMin * 60_000 * GRACE_FACTOR + 5 * 60_000;
   if (p.asOf < p.targetAt + graceMs || p.attempts < MAX_ATTEMPTS) return { status: "PENDING", priceAtTarget: null, attempts: p.attempts + 1, reason: `RETRY (${p.attempts + 1}/${MAX_ATTEMPTS})` };
   return { status: "MISSING_FINAL", priceAtTarget: null, attempts: p.attempts + 1, reason: "CANDLE_TAK_TERSEDIA_SETELAH_GRACE" };
@@ -41,10 +43,12 @@ export function resolveOutcome(p: {
 
 /** Biaya tetap per putaran (S8-P5): fee prioritas SOL — dikurangkan dlm USD bila harga SOL ada. */
 export function netUsdAfterCosts(grossPct: number, costPp: number, fixedSolPerTrip: number, solUsd: number | null): Record<string, number | null> {
-  const fixedUsd = solUsd != null ? fixedSolPerTrip * solUsd : null;
+  // (S9-P1) tanpa harga SOL: biaya tetap TAK DIKETAHUI → netUsd = UNKNOWN (null), BUKAN diasumsikan 0.
+  if (solUsd == null) return { "3": null, "5": null };
+  const fixedUsd = fixedSolPerTrip * solUsd;
   return {
-    "3": Number((((3 * grossPct) / 100) - (3 * costPp) / 100 - (fixedUsd ?? 0)).toFixed(4)),
-    "5": Number((((5 * grossPct) / 100) - (5 * costPp) / 100 - (fixedUsd ?? 0)).toFixed(4)),
+    "3": Number((((3 * grossPct) / 100) - (3 * costPp) / 100 - fixedUsd).toFixed(4)),
+    "5": Number((((5 * grossPct) / 100) - (5 * costPp) / 100 - fixedUsd).toFixed(4)),
   };
 }
 

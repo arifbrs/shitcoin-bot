@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { listenNewTokens } from "../../discovery/pumpportal.js";
 import { swapApiTrades, swapApiCandles, gmgnKlineCandles, gmgnPartialTape } from "./pumpfun-api.js";
-import { onchainTape } from "./onchain-tape.js";
+import { onchainTapePass, type TapePassResultWithCursor } from "./onchain-tape.js";
 import { normalizeTradeTs } from "./timestamps.js";
 import { admit, loadWatchlist, saveWatchlist, policyFromEnv, watchDir, type WatchEntry } from "./watchlist.js";
 import { absorptionView } from "./absorption.js";
@@ -36,6 +36,7 @@ function serializedGmgn<T>(fn: () => Promise<T>): Promise<T> {
   return run as Promise<T>;
 }
 const gmgnCooldown = new Map<string, number>();
+const sigCursors = new Map<string, string | null>(); // (S9-P1) kursor signature per mint
 function gmgnAllowed(mint: string, kind: string): boolean {
   const k = `${mint}:${kind}`; const last = gmgnCooldown.get(k) ?? 0;
   if (Date.now() - last < 60_000) return false;
@@ -123,10 +124,16 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
       // ── Tape trades: swap-api UTAMA; fallback GMGN top-traders PARSIAL (berlabel); keduanya
       // gagal → UNAVAILABLE (dicatat, TIDAK diarang). Timestamp invalid ditolak eksplisit. ──
       let trades: TradeEvent[] = []; let tapeSource = "swap-api"; let tapePartial = false; let tapeFull = false;
-      // (S8-P4) UTAMA: tape on-chain TERDEKODE (signature+slot+wallet+delta saldo; blockTime nyata).
+      // (S9-P0) UTAMA: tape on-chain TERVALIDASI (kursor inkremental + coverage + state per trade).
       if (entry.bondingCurveKey && gmgnAllowed(mint, "onchain")) {
-        const decoded = await onchainTape(mint, entry.bondingCurveKey, 10);
-        if (decoded && decoded.length) { trades = decoded; tapeSource = "solana-rpc-decoded (signature:owner)"; tapeFull = true; }
+        const pass: TapePassResultWithCursor | null = await onchainTapePass(mint, entry.bondingCurveKey, sigCursors.get(mint) ?? null, 12);
+        if (pass) {
+          sigCursors.set(mint, pass.topSig ?? sigCursors.get(mint) ?? null);
+          append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, source: "solana-rpc" });
+          const valid = pass.trades.filter((t) => t.state === "VERIFIED_SWAP");
+          for (const t of pass.trades) append({ type: "trade", ...t, source: "solana-rpc", observedAt: Date.now() }); // UNVERIFIED ikut tersimpan dgn state-nya
+          if (valid.length) { trades = valid; tapeSource = `solana-rpc-validated (${valid.length} swap; coverage tercatat)`; tapeFull = true; }
+        }
       }
       if (!trades.length) {
         const raw = await swapApiTrades(mint, solUsd);
@@ -163,7 +170,11 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
       const store = loadCandles(mint);
       // ── Keputusan: SATU keputusan per mint per sesi admisi (idempoten via decisionId mint:admittedAt) ──
       const decidedAlready = read().rows.some((r) => r.type === "shadow-decision" && r.mint === mint && Number(r.admittedAt) === entry.admittedAt);
-      if (!decidedAlready && (store["1s"].length >= 4 || store["1m"].length >= 2)) {
+      // (S9) gate keputusan memakai candle SELESAI saja — keputusan tanpa harga keputusan valid
+      // (priceAtDecision null) lahir dari gate lama yang menghitung candle in-progress.
+      const doneNow1s = completedCandles(store["1s"], 1_000, Date.now());
+      const doneNow1m = completedCandles(store["1m"], CANDLE_1M_MS, Date.now());
+      if (!decidedAlready && (doneNow1s.length >= 4 || doneNow1m.length >= 2)) {
         const decidedAt = now;
         const abs = trades.length && !tapePartial ? absorptionView(trades, undefined, null, store["1s"]) : null; // parsial bias → tidak dinilai
         const done1m = completedCandles(store["1m"], CANDLE_1M_MS, decidedAt);
@@ -209,9 +220,18 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
   saveWatchlist(wl.map((e) => ({ ...e, lastObservedAt: loadWatchlist().find((x) => x.mint === e.mint)?.lastObservedAt ?? e.lastObservedAt })));
   // ── Outcome pass global (S8-P1: state = reduceOutcomes; tulis hanya saat transisi) ──
   const states = reduceOutcomes(read().rows);
-  const decisions2 = read().rows.filter((r) => r.type === "shadow-decision" && r.marketSource && typeof r.priceAtDecision === "number");
+  // (S9) keputusan dgn priceAtDecision null (belum ada candle selesai saat memutuskan) tetap
+  // dievaluasi: harga keputusan di-BACKFILL hanya dari candle yang SELESAI <= ts keputusan
+  // (tanpa look-ahead); bila tak ada pun, tetap PENDING — tidak diarang.
+  const decisions2 = read().rows.filter((r) => r.type === "shadow-decision" && r.marketSource);
   for (const d of decisions2) {
     const store = loadCandles(String(d.mint));
+    if (typeof d.priceAtDecision !== "number" || !(d.priceAtDecision as number > 0)) {
+      const done = completedCandles(store["1m"], CANDLE_1M_MS, Number(d.ts));
+      const atDecision = [...done].reverse().find((c) => c.ts + CANDLE_1M_MS <= Number(d.ts));
+      if (atDecision) { d.priceAtDecision = atDecision.close; append({ type: "decision-price-backfill", ts: Date.now(), decisionId: d.decisionId, priceAtDecision: atDecision.close, candleTs: atDecision.ts, note: "close candle selesai <= ts keputusan (no look-ahead)" }); }
+      else continue;
+    }
     for (const h of OUTCOME_HORIZONS_MIN) {
       const key = `outcome:${d.decisionId}:${h}`;
       const cur = states.get(key);
