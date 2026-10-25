@@ -374,10 +374,25 @@ test("S11 konfirmasi: PENDING → CONFIRMED (pengikut ≥2, tanpa rapid-sell, ne
   const unknownSell = [...happy, h2Trade("sX", "sell", 0.1, t0 + 50_000, "BIG", null)];
   const c2 = evaluateConfirmation(mkEvent(), unknownSell, t0 + 61_000);
   eq(c2.rapidSell.state, "UNKNOWN", "jual tanpa USD = UNKNOWN (bukan kepastian palsu)");
-  eq(c2.state, "CONFIRMED", "aturan beku: rapid-sell !== true → tetap dinilai; UNKNOWN terlabel");
+  eq(c2.state, "UNKNOWN", "S11.1: rapid-sell UNKNOWN TIDAK mengonfirmasi (bukan CONFIRMED)");
   // jual besar (SOL besar) tetap MENOLAK walau USD-nya null — net-flow SOL adalah bukti kuat
   const bigUnknown = [...happy, h2Trade("sY", "sell", 5.5, t0 + 50_000, "BIG", null)];
   eq(evaluateConfirmation(mkEvent(), bigUnknown, t0 + 61_000).state, "REJECTED", "net-flow SOL ≤ 0 menolak (USD null tak menyembunyikan aliran besar)");
+});
+
+test("S11.1 DATA_COMPLETE ≠ WINDOW_ELAPSED: window lewat tanpa bukti swap → PENDING (bukan REJECTED 0/2); bukti pool-side = cakupan", () => {
+  const admittedAt = 1_000_000, t0 = admittedAt + 10_000;
+  const mkEvent = (): H2Event => buildH2Event({ ...h2Trade("sigG", "buy", 6, t0, "BIG"), signature: "sigG" }, { admittedAt, now: t0 + 1_000 })!;
+  // window 60s SUDAH terlewat, tape trader KOSONG dan tanpa bukti pool → PENDING DATA_INCOMPLETE
+  const c1 = evaluateConfirmation(mkEvent(), [], t0 + 61_000);
+  eq(c1.flowWindow.complete, true, "WINDOW_ELAPSED = true");
+  eq(c1.dataComplete, false, "DATA_COMPLETE = false (tanpa bukti swap)");
+  eq(c1.state, "PENDING", "DATA_INCOMPLETE → PENDING, bukan REJECTED '0 pengikut'");
+  eq(c1.followers.distinctWallets, null, "pengikut TIDAK dihitung 0 tanpa cakupan");
+  // bukti pool-side di window (tiap swap merekam sisi pool) → dataComplete → REJECTED sah
+  const c2 = evaluateConfirmation(mkEvent(), [], t0 + 61_000, [h2Trade("sP", "sell", 6, t0 + 5_000, "VAULT")]);
+  eq(c2.dataComplete, true, "bukti pool-side menetapkan cakupan window");
+  eq(c2.state, "REJECTED", "dengan cakupan: 0 pengikut = penolakan sah");
 });
 
 test("S11 paper per-event: 1s tak tersedia → UNAVAILABLE_1S (bukan gagal-trigger); 4×1m OK; harga keputusan no-look-ahead", () => {

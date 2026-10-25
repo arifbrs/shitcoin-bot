@@ -6,11 +6,11 @@
  * trackCallerPosition / evaluatePolicies / latencyView / absorptionView / analyze.
  */
 import "dotenv/config";
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { listenNewTokens } from "../../discovery/pumpportal.js";
 import { swapApiTrades, swapApiCandles, gmgnKlineCandles, gmgnPartialTape } from "./pumpfun-api.js";
-import { onchainTapePass, type TapePassResultWithCursor } from "./onchain-tape.js";
+import { onchainTapePass, bondingCurvePda, type TapePassResultWithCursor } from "./onchain-tape.js";
 import { normalizeTradeTs } from "./timestamps.js";
 import { admit, loadWatchlist, saveWatchlist, policyFromEnv, watchDir, type WatchEntry } from "./watchlist.js";
 import { absorptionView } from "./absorption.js";
@@ -38,6 +38,25 @@ function serializedGmgn<T>(fn: () => Promise<T>): Promise<T> {
 }
 const gmgnCooldown = new Map<string, number>();
 const sigCursors = new Map<string, string | null>(); // (S9-P1) kursor signature per mint
+const TAPE_PASS_LIMIT = 12;
+
+// ── (S11.1) Kursor signature TERSISTEN lintas restart — restart tanpa kursor = refetch ≤12
+// sig terakhir (duplikat terdedupe, tapi "0 missing" jadi tak bisa dibedakan dari refetch).
+const cursorsFile = (): string => join(watchDir(), "sig-cursors.json");
+let cursorsLoaded = false;
+function loadSigCursors(): void {
+  if (cursorsLoaded) return;
+  cursorsLoaded = true;
+  try {
+    const raw = JSON.parse(readFileSync(cursorsFile(), "utf8")) as Record<string, string>;
+    for (const [mint, sig] of Object.entries(raw)) if (!sigCursors.has(mint)) sigCursors.set(mint, sig);
+  } catch { /* belum ada / rusak → mulai kosong */ }
+}
+function saveSigCursors(): void {
+  const out: Record<string, string> = {};
+  for (const [mint, sig] of sigCursors) if (sig) out[mint] = sig;
+  try { mkdirSync(watchDir(), { recursive: true }); writeFileSync(cursorsFile(), JSON.stringify(out)); } catch { /* best-effort */ }
+}
 function gmgnAllowed(mint: string, kind: string): boolean {
   const k = `${mint}:${kind}`; const last = gmgnCooldown.get(k) ?? 0;
   if (Date.now() - last < 60_000) return false;
@@ -144,10 +163,14 @@ async function observePassInner(fixture: boolean): Promise<ObserveSummary> {
       let trades: TradeEvent[] = []; let tapeSource = "swap-api"; let tapePartial = false; let tapeFull = false;
       // (S9-P0) UTAMA: tape on-chain TERVALIDASI (kursor inkremental + coverage + state per trade).
       if (entry.bondingCurveKey && gmgnAllowed(mint, "onchain")) {
-        const pass: TapePassResultWithCursor | null = await onchainTapePass(mint, entry.bondingCurveKey, sigCursors.get(mint) ?? null, 12);
+        loadSigCursors();
+        const pass: TapePassResultWithCursor | null = await onchainTapePass(mint, entry.bondingCurveKey, sigCursors.get(mint) ?? null, TAPE_PASS_LIMIT);
         if (pass) {
           sigCursors.set(mint, pass.topSig ?? sigCursors.get(mint) ?? null);
-          append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, source: "solana-rpc" });
+          saveSigCursors();
+          // (S11.1) backlogPossible: pass mengembalikan sebanyak limit → BISA JADI ada tx lagi
+          // yang belum terambil; "missing=0" bukan bukti cakupan penuh.
+          append({ type: "tape-coverage", ts: Date.now(), mint, ...pass.coverage, limit: TAPE_PASS_LIMIT, backlogPossible: pass.coverage.encountered >= TAPE_PASS_LIMIT, source: "solana-rpc" });
           // (H2-P0) USD utk ambang beku $500/$5–$100: usd = sol × SOL/USD spot (Jupiter, cache 60s).
           // Derivasi TERLABELI via usdQuality di trade-batch; usd tetap null bila solUsd null →
           // absorptionView tak menilai (bukan menebak). Sisi pool ikut terisi (hanya bukti arah).
@@ -298,21 +321,25 @@ async function h2EvaluationPass(now: number, solUsd: number | null, wl: WatchEnt
   const confs = reduceH2Confirmations(j.rows);
   const decided = reduceH2Decisions(j.rows);
   const watched = new Set(wl.map((e) => e.mint));
-  // Trade VERIFIED trader-side per mint dari jurnal (dedupe read() = observasi pertama; USD
-  // dari enrichment terbaru bila ada — baris pra-patch ber-usd null dihitung UNKNOWN di window).
+  // Trade VERIFIED per mint dari jurnal (dedupe read() = observasi pertama; USD dari enrichment
+  // terbaru bila ada — baris pra-patch ber-usd null dihitung UNKNOWN di window). Sisi POOL
+  // dipisah: (S11.1) bukti cakupan window, BUKAN trade riset.
   const tradesByMint = new Map<string, TradeEvent[]>();
+  const poolTradesByMint = new Map<string, TradeEvent[]>();
   for (const r of j.rows) {
-    if (r.type !== "trade" || r.state !== "VERIFIED_SWAP" || r.poolSide === true) continue;
+    if (r.type !== "trade" || r.state !== "VERIFIED_SWAP") continue;
     const t: TradeEvent = { dedupeKey: String(r.dedupeKey), mint: String(r.mint), wallet: r.wallet ? String(r.wallet) : undefined,
       side: r.side === "sell" ? "sell" : "buy", sol: Number(r.sol ?? 0), usd: r.usd == null ? null : Number(r.usd), ts: Number(r.ts ?? 0) };
+    if (r.poolSide === true) { const a = poolTradesByMint.get(t.mint); if (a) a.push(t); else poolTradesByMint.set(t.mint, [t]); continue; }
     const arr = tradesByMint.get(t.mint);
     if (arr) arr.push(t); else tradesByMint.set(t.mint, [t]);
   }
   for (const ev of events.values()) {
-    const conf = evaluateConfirmation(ev, tradesByMint.get(ev.mint) ?? [], now);
+    const conf = evaluateConfirmation(ev, tradesByMint.get(ev.mint) ?? [], now, poolTradesByMint.get(ev.mint) ?? []);
     const prev = confs.get(ev.h2EventId);
-    if (!prev || prev.state !== conf.state) append({ type: "h2-confirmation", ts: now, ...conf });
+    if (!prev || prev.state !== conf.state || prev.confirmationVersion !== conf.confirmationVersion) append({ type: "h2-confirmation", ts: now, ...conf });
     if (conf.state === "PENDING") { summary.h2Pending++; continue; }
+    if (conf.state === "UNKNOWN") { summary.h2Pending++; continue; } // (S11.1) UNKNOWN ≠ konfirmasi; bukan keputusan
     if (conf.state === "CONFIRMED") summary.h2Confirmed++; else summary.h2Rejected++;
     if (ev.detectionClass !== "REALTIME") continue; // registrasi v2: hanya REALTIME prospektif
     const decisionId = `h2:${ev.h2EventId}:${H2_EVENT_VERSION}`;
@@ -328,7 +355,11 @@ async function h2EvaluationPass(now: number, solUsd: number | null, wl: WatchEnt
       marketSource: `onchain-decoded; solUsd=${solUsd != null ? "OK" : "UNAVAILABLE"}`,
       decision: conf.state === "CONFIRMED" ? "H2_CONFIRMED" : "H2_REJECTED",
       triggerIds: [{ id: "LARGE_BUY_SMALL_SELL_ABSORPTION", fires: conf.state === "CONFIRMED", evidence: conf.reason }],
-      entryPolicies: eventPolicySet(ev.eventTs, store["1s"], store["1m"], now),
+      // (S11.1) DUA kelompok policy — dilaporkan terpisah, tidak dicampur:
+      //  counterfactual: diukur dari eventTs (hipotesis awal; BUKAN actionable)
+      //  actionable: hanya setelah keputusan konfirmasi (triggerTs ≥ decisionTs by construction)
+      entryPoliciesFromEvent: eventPolicySet(ev.eventTs, store["1s"], store["1m"], now),
+      entryPoliciesFromDecision: eventPolicySet(decisionTs, store["1s"], store["1m"], now),
       note: "keputusan riset PER-EVENT (S11) — terpisah dari keputusan admisi token" });
     summary.h2Decisions++;
   }
@@ -352,6 +383,47 @@ async function h2EvaluationPass(now: number, solUsd: number | null, wl: WatchEnt
   }
 }
 
+/**
+ * (S11.1) DISCOVERY FALLBACK BERBATAS — saat feed PumpPortal tidak sehat, admisi kandidat
+ * baru tetap berjalan dari sumber GMGN yang SUDAH diotorisasi (getTrendingSwaps via proxy
+ * bersama, DISERIALKAN + berbatas). Kohor tetap "gmgn-trending" — TIDAK disamakan dengan
+ * discovery launch real-time PumpPortal (dilabel discoveredBy berbeda; laporan memisahkan).
+ */
+const FALLBACK_AFTER_MS = 180_000; // feed dianggap turun setelah segini tanpa tanda hidup
+const FALLBACK_EVERY_MS = 300_000; // maks 1 upaya / 5 menit — jangan banjiri proxy bersama
+const FALLBACK_MAX_AGE_MIN = 30;
+let lastFallbackAt = 0;
+const fallbackTried = new Set<string>();
+
+async function boundedDiscovery(wl: WatchEntry[], policy: ReturnType<typeof policyFromEnv>, onEvent?: (kind: string, info?: string) => void): Promise<number> {
+  if (Date.now() - lastFallbackAt < FALLBACK_EVERY_MS) return 0;
+  lastFallbackAt = Date.now();
+  const { gmgnTrendingSol } = await import("../../discovery/gmgn.js");
+  const rows = await serializedGmgn(() => gmgnTrendingSol("5m", { limit: 20 })).catch(() => null);
+  if (!rows?.length) return 0;
+  const watched = new Set(wl.map((e) => e.mint));
+  const now = Date.now();
+  const fresh = rows
+    .filter((r) => String(r.address ?? "").endsWith("pump") && !watched.has(r.address) && !fallbackTried.has(r.address))
+    .map((r) => ({ r, ageMin: (now - (r.creation_timestamp ?? 0) * 1000) / 60_000 }))
+    .filter((o) => o.ageMin > 0 && o.ageMin <= FALLBACK_MAX_AGE_MIN)
+    .sort((a, b) => b.r.volume - a.r.volume)
+    .slice(0, 2);
+  let entries = wl, admitted = 0;
+  for (const { r } of fresh) {
+    fallbackTried.add(r.address);
+    const res = admit(entries, { mint: r.address, symbol: r.symbol, source: "gmgn-trending", priority: 100, bondingCurveKey: bondingCurvePda(r.address) }, policy, 0, now);
+    entries = res.entries;
+    if (res.admitted) {
+      admitted++;
+      append({ type: "token-observed", ts: now, mint: r.address, symbol: r.symbol, source: "gmgn-trending", discoveredBy: "gmgn-trending-fallback (pumpportal tidak sehat)", ageMinAtDiscovery: Number(((now - (r.creation_timestamp ?? 0) * 1000) / 60_000).toFixed(1)), detectedAt: now });
+      onEvent?.("fallback-admit", `${r.symbol ?? r.address.slice(0, 6)} (umur ${((now - (r.creation_timestamp ?? 0) * 1000) / 60_000).toFixed(0)}m — kohor trending, BUKAN launch real-time)`);
+    }
+  }
+  if (admitted) saveWatchlist(entries);
+  return admitted;
+}
+
 /** Loop kontinu: feed PumpPortal → admission; tick → observePass. Kembalikan stop(). */
 export function startObserver(onEvent?: (kind: string, info?: string) => void): () => void {
   const policy = policyFromEnv();
@@ -359,7 +431,9 @@ export function startObserver(onEvent?: (kind: string, info?: string) => void): 
   mkdirSync(watchDir(), { recursive: true });
   // (S11-P1) Kesehatan feed diekspos eksplisit (jurnal feed-health saat BERUBAH + log operator).
   let lastFeedState = "";
+  let lastFeedOkAt = Date.now(); // (S11.1) tanda hidup terakhir — dasar keputusan fallback
   const feedHealth = (kind: string, detail?: string): void => {
+    if (kind === "open") lastFeedOkAt = Date.now();
     const st = `${kind}`;
     if (st === lastFeedState) return;
     lastFeedState = st;
@@ -368,12 +442,24 @@ export function startObserver(onEvent?: (kind: string, info?: string) => void): 
   };
   const stopFeed = listenNewTokens((c) => {
     seq++;
+    lastFeedOkAt = Date.now(); // kandidat masuk = feed hidup
     const wl = loadWatchlist();
     const res = admit(wl, { mint: c.mint, symbol: c.symbol, source: "pumpportal", priority: Math.round((c.devInitialBuySol ?? 0) * 1000) + Math.round((c.marketCapSol ?? 0) / 10), bondingCurveKey: c.bondingCurveKey }, policy, seq, Date.now());
     saveWatchlist(res.entries);
     if (res.admitted) { append({ type: "token-observed", ts: Date.now(), mint: c.mint, symbol: c.symbol, source: "pumpportal", discoveredBy: "realtime-launch-feed", detectedAt: c.detectedAt, feedLagMs: Date.now() - c.detectedAt }); onEvent?.("admit", `${c.symbol ?? c.mint.slice(0, 6)} (lag ${((Date.now() - c.detectedAt) / 1000).toFixed(1)}s)`); }
   }, (e) => feedHealth(e.kind, e.detail));
-  const timer = setInterval(() => { void observePass().then((s) => onEvent?.("tick", `mints=${s.mints} candles+${s.newCandles} keputusan=${s.decisions} outcome: obs=${s.observed} pend=${s.pending} miss=${s.missingFinal} | H2: event+${s.h2EventsNew} pend=${s.h2Pending} konf=${s.h2Confirmed}/${s.h2Confirmed + s.h2Rejected} keputusan=${s.h2Decisions} caretaker=${s.caretakerMints}`)).catch((e) => onEvent?.("error", (e as Error).message)); }, TICK_MS);
+  const timer = setInterval(() => {
+    void (async () => {
+      const s = await observePass();
+      onEvent?.("tick", `mints=${s.mints} candles+${s.newCandles} keputusan=${s.decisions} outcome: obs=${s.observed} pend=${s.pending} miss=${s.missingFinal} | H2: event+${s.h2EventsNew} pend=${s.h2Pending} konf=${s.h2Confirmed}/${s.h2Confirmed + s.h2Rejected} keputusan=${s.h2Decisions} caretaker=${s.caretakerMints}`);
+      // (S11.1) discovery fallback berbatas hanya saat feed tidak sehat; kohor tetap terpisah.
+      if (Date.now() - lastFeedOkAt > FALLBACK_AFTER_MS) {
+        const wlNow = loadWatchlist();
+        const n = await boundedDiscovery(wlNow, policy, onEvent).catch(() => 0);
+        if (n > 0) onEvent?.("fallback", `${n} kandidat GMGN trending di-admit (feed pumpportal turun)`);
+      }
+    })().catch((e) => onEvent?.("error", (e as Error).message));
+  }, TICK_MS);
   onEvent?.("start", `observer kontinu: feed pumpportal, tick ${TICK_MS / 1000}s, kapasitas ${policy.capacity}, sampling 1/${policy.sampleEvery}`);
   return () => { stopFeed(); clearInterval(timer); };
 }

@@ -92,36 +92,45 @@ export function report(now = Date.now()): void {
     for (const e of h2Events) usdQ[String(e.usdQuality)] = (usdQ[String(e.usdQuality)] ?? 0) + 1;
     const confStates: Record<string, number> = {};
     for (const c of h2Confs.values()) confStates[String(c.state)] = (confStates[String(c.state)] ?? 0) + 1;
+    const confRows = live.filter((r) => r.type === "h2-confirmation");
+    const dataIncomplete = confRows.filter((r) => r.dataComplete === false && r.flowWindow && (r.flowWindow as { complete?: boolean }).complete === true).length;
+    const versions = new Set(confRows.map((r) => String(r.confirmationVersion ?? "h2-conf-v1")));
     lines.push(`event unik: ${h2Events.length} (klasifikasi ${JSON.stringify(byCls)}) - kohor discovery ${JSON.stringify(byCohort)}`,
-      `konfirmasi (state terakhir): ${JSON.stringify(confStates)} - keputusan prospektif: ${h2Decisions.length} (hanya REALTIME)`,
+      `konfirmasi (state terakhir): ${JSON.stringify(confStates)} - window-lewat-tapi-tanpa-data: ${dataIncomplete} - versi konfirmasi: ${[...versions].join(",")} - keputusan prospektif: ${h2Decisions.length} (hanya REALTIME)`,
       `latensi observasi: med=${lat.length ? (med(lat)! / 1000).toFixed(1) + "s" : "?"} max=${lat.length ? (Math.max(...lat) / 1000).toFixed(1) + "s" : "?"} (window registrasi v2 = 90s)`,
       `kualitas USD event: ${JSON.stringify(usdQ)} - kanonik ixIndex ${h2Events.filter((e) => e.canonicalIdQuality === "SIG_IX_TRADER").length}/${h2Events.length}`);
-    for (const d of h2Decisions) {
-      const eps = d.entryPolicies as Record<string, { evaluation: PolicyEvaluation; interval: string; availability: string }> | undefined;
-      const det: string[] = [];
-      for (const pol of POLICIES) { const pe = eps?.[pol]; if (!pe) continue; det.push(`${pol}=${pe.availability}`); }
-      lines.push(`  ${String(d.decisionId).slice(0, 44)}… ${d.decision} usd=$${Number(d.usd).toFixed(0)}(${d.usdQuality}) lat=${((Number(d.observationLatencyMs) ?? 0) / 1000).toFixed(1)}s price=${d.priceAtDecision ?? "?"} [${det.join(" ")}]`);
-    }
-    // Paper per-event per policy (horizon 15m; net setelah biaya model; hanya availability OK)
-    const paperStats = new Map<EntryPolicy, { n: number; nets: number[] }>();
-    for (const d of h2Decisions) {
-      const eps = d.entryPolicies as Record<string, { evaluation: PolicyEvaluation; interval: string; availability: string }> | undefined;
-      if (!eps) continue;
-      const store = loadCandles(String(d.mint));
-      for (const pol of POLICIES) {
-        const pe = eps[pol];
-        if (!pe || pe.availability !== "OK") continue;
-        const intervalMs = pe.interval === "1s" ? 1_000 : CANDLE_1M_MS;
-        const pr = paperForPolicy({ decisionTs: Number(d.ts), priceAtDecision: Number(d.priceAtDecision ?? 0) }, pe.evaluation, 15, store[pe.interval as "1s" | "1m"], intervalMs, now);
-        const st = paperStats.get(pol) ?? { n: 0, nets: [] };
-        if (pr.triggered && pr.netPct != null) { st.n++; st.nets.push(pr.netPct); }
-        paperStats.set(pol, st);
+    // (S11.1) DUA kelompok paper — dilaporkan TERPISAH, tidak pernah dicampur:
+    //   counterfactual = policy diukur dari eventTs (hipotetis awal; BUKAN actionable)
+    //   actionable     = policy dari entryPoliciesFromDecision (setelah keputusan konfirmasi);
+    //                    guard tambahan: entryTs < decisionTs tidak pernah dihitung actionable.
+    const paperGroup = (label: string, field: "entryPoliciesFromEvent" | "entryPoliciesFromDecision", actionable: boolean): void => {
+      const stats = new Map<EntryPolicy, { n: number; nets: number[]; guard: number }>();
+      for (const d of h2Decisions) {
+        const eps = d[field] as Record<string, { evaluation: PolicyEvaluation; interval: string; availability: string }> | undefined;
+        if (!eps) continue;
+        const store = loadCandles(String(d.mint));
+        for (const pol of POLICIES) {
+          const pe = eps[pol];
+          if (!pe || pe.availability !== "OK") continue;
+          const intervalMs = pe.interval === "1s" ? 1_000 : CANDLE_1M_MS;
+          const pr = paperForPolicy({ decisionTs: Number(d.ts), priceAtDecision: Number(d.priceAtDecision ?? 0) }, pe.evaluation, 15, store[pe.interval as "1s" | "1m"], intervalMs, now);
+          const st = stats.get(pol) ?? { n: 0, nets: [], guard: 0 };
+          if (pr.triggered && pr.netPct != null) {
+            if (actionable && pr.entryTs != null && pr.entryTs < Number(d.ts)) st.guard++; // tak mungkin: guard defensif
+            else { st.n++; st.nets.push(pr.netPct); }
+          }
+          stats.set(pol, st);
+        }
       }
-    }
-    for (const [pol, st] of paperStats) {
-      const mean = st.nets.length ? st.nets.reduce((a, b) => a + b, 0) / st.nets.length : null;
-      lines.push(`  paper ${pol}: selesai=${st.n}${mean != null ? ` net mean=${mean.toFixed(2)}% (horizon 15m, biaya model)` : ""}`);
-    }
+      lines.push(`  ${label}:`);
+      for (const [pol, st] of stats) {
+        const mean = st.nets.length ? st.nets.reduce((a, b) => a + b, 0) / st.nets.length : null;
+        lines.push(`    ${pol}: selesai=${st.n}${st.guard ? ` guard-kerja=${st.guard}` : ""}${mean != null ? ` net mean=${mean.toFixed(2)}% (horizon 15m, biaya model)` : ""}`);
+      }
+      if (!stats.size) lines.push(`    (belum ada policy OK utk dievaluasi)`);
+    };
+    paperGroup("paper COUNTERFACTUAL (diukur dari eventTs — HIPOTETIS, bukan actionable)", "entryPoliciesFromEvent", false);
+    paperGroup("paper ACTIONABLE (entry hanya SETELAH keputusan konfirmasi)", "entryPoliciesFromDecision", true);
   }
 
   // (S11-P1) Kesehatan feed + celah sampling tape (kuota RPC dilaporkan, bukan disembunyikan)
@@ -130,9 +139,10 @@ export function report(now = Date.now()): void {
   const cov = live.filter((r) => r.type === "tape-coverage");
   const missTx = cov.reduce((s2, r) => s2 + Number(r.missingTx ?? 0), 0);
   const covErr = cov.filter((r) => r.error != null).length;
+  const backlog = cov.filter((r) => r.backlogPossible === true).length;
   lines.push("", "-- Kesehatan feed & celah sampling --",
     `pumpportal feed terakhir: ${lastFeed ? `${lastFeed.state} @${new Date(Number(lastFeed.ts)).toISOString().slice(11, 19)}${lastFeed.detail ? ` (${lastFeed.detail})` : ""}` : "tidak ada catatan"} - kohor discovery: pumpportal(real-time launch) ${live.filter((r) => r.type === "token-observed" && r.source === "pumpportal").length} vs gmgn-trending(backfill) ${live.filter((r) => r.type === "token-observed" && (r.source === "gmgn-trending" || r.source === "manual")).length} - KOHOR TERPISAH, tidak dicampur`,
-    `celah tape on-chain: tx missing=${missTx} dari ${cov.length} pass; pass dgn error RPC=${covErr}`);
+    `celah tape on-chain: tx missing=${missTx} dari ${cov.length} pass; pass dgn error RPC=${covErr}; pass dgn BACKLOG MUNGKIN (encountered≥limit)=${backlog} - cakupan per-pass terbatas limit ${cov[0]?.limit ?? 12} sig; missing=0 BUKAN bukti cakupan penuh${backlog ? " - ada pass yang mungkin meninggalkan sig tak terambil" : ""}`);
 
   lines.push("", "-- Kualitas data --",
     `trades ditolak (timestamp invalid): ${live.filter((r) => r.type === "trade-rejected").length}`,

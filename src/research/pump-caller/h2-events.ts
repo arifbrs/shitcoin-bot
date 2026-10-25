@@ -24,6 +24,12 @@ import { completedCandles } from "./results.js";
 import { evaluatePolicies } from "./wicks.js";
 
 export const H2_EVENT_VERSION = "h2-event-v2";
+/**
+ * (S11.1) Versi konfirmasi: v2 membedakan WINDOW_ELAPSED vs DATA_COMPLETE — waktu dinding
+ * berlalu TIDAK membuktikan tape window tercakup. Penilaian ulang event lama dicatat sbg
+ * baris konfirmasi BERVERSI BARU (jurnal append-only — riwayat asli tak tertimpa).
+ */
+export const CONFIRMATION_VERSION = "h2-conf-v2";
 /** Window deteksi real-time (registrasi v2): 90 dtk ≈ 2–3 tick observer (35s). */
 export const REALTIME_WINDOW_MS = 90_000;
 /** Window konfirmasi per-event: rapid-sell 60s (pengikut 30s berada di dalamnya). */
@@ -55,13 +61,21 @@ export interface H2Event {
 
 export interface H2Confirmation {
   h2EventId: string;
-  state: "PENDING" | "CONFIRMED" | "REJECTED";
+  state: "PENDING" | "CONFIRMED" | "REJECTED" | "UNKNOWN";
   asOf: number;
   eventTs: number;
   flowWindow: { startTs: number; endTs: number; complete: boolean; netFlowSol: number | null };
   followers: { windowMs: number; distinctWallets: number | null; complete: boolean };
   rapidSell: { ratio: number | null; unknownUsdSells: number; state: "NO" | "YES" | "UNKNOWN" | "PENDING" };
-  smallSellsInWindow: number; // $5–$100 (ambang beku)
+  smallSellsInWindow: number; // $5–$100 (ambang beku); USD null tidak dihitung (lihat unknown)
+  smallSellsUnknown: number; // (S11.1) trade dlm window tanpa USD — tidak dihitung sbg 0
+  // (S11.1) DATA_COMPLETE ≠ WINDOW_ELAPSED: bukti swap terverifikasi (sisi trader ATAU pool)
+  // di DALAM window menetapkan tape window benar-benar tercakup; tanpa itu, "0 pengikut"
+  // TIDAK boleh dibaca sbg nol pembeli (bisa jadi celah tape).
+  dataComplete: boolean;
+  verifiedTradesInWindow: number;
+  poolSideInWindow: number;
+  confirmationVersion: string;
   reason: string;
 }
 
@@ -119,22 +133,31 @@ function windowTrades(trades: TradeEvent[], eventTs: number, endTs: number): Tra
 }
 
 /**
- * Konfirmasi H2 per-event (komponen beku absorption.ts; window belum selesai = PENDING;
- * jual tanpa USD di window dilabel UNKNOWN — bukan kepastian palsu).
+ * Konfirmasi H2 per-event (S11.1): WINDOW_ELAPSED ≠ DATA_COMPLETE.
+ *   - Data lengkap = ada bukti swap terverifikasi (sisi trader ATAU pool) DI DALAM window —
+ *     sisi pool direkam utk SETIAP swap, jadi kehadirannya menetapkan tape window tercakup.
+ *   - Tanpa itu: PENDING (retry — tape bisa datang belakangan), "0 pengikut" tidak dibaca
+ *     sbg nol pembeli.
+ *   - rapid-sell UNKNOWN TIDAK mengonfirmasi → state UNKNOWN (bukan CONFIRMED).
+ *   - `poolTrades` = swap sisi pool terverifikasi utk mint (bukti cakupan, bukan trade riset).
  */
 export function evaluateConfirmation(
-  event: H2Event, trades: TradeEvent[], asOf: number,
+  event: H2Event, trades: TradeEvent[], asOf: number, poolTrades: TradeEvent[] = [],
 ): H2Confirmation {
   const t0 = event.eventTs, endTs = t0 + CONFIRM_WINDOW_MS;
   const flowComplete = asOf >= endTs;
   const w = windowTrades(trades, t0, endTs);
+  const poolW = poolTrades.filter((t) => t.ts > t0 && t.ts <= endTs);
+  const verifiedTradesInWindow = w.length, poolSideInWindow = poolW.length;
+  const dataComplete = flowComplete && (verifiedTradesInWindow > 0 || poolSideInWindow > 0);
   const buys = w.filter((t) => t.side === "buy"), sells = w.filter((t) => t.side === "sell");
   const netFlowSol = flowComplete
     ? Number((buys.reduce((s, x) => s + x.sol, 0) - sells.reduce((s, x) => s + x.sol, 0)).toFixed(6))
     : null;
   const followersComplete = asOf >= t0 + FOLLOW_WINDOW_MS;
   const followers = buys.filter((b) => b.wallet && b.wallet !== event.wallet && b.ts <= t0 + FOLLOW_WINDOW_MS);
-  const distinctWallets = followersComplete ? new Set(followers.map((f) => f.wallet)).size : null;
+  // (S11.1) tanpa cakupan data: distinctWallets tetap null — TIDAK dihitung sbg 0 pembeli.
+  const distinctWallets = followersComplete && dataComplete ? new Set(followers.map((f) => f.wallet)).size : null;
   const rapid = sells.filter((s) => s.wallet === event.wallet);
   const rapidKnownUsd = rapid.reduce((s, x) => s + (x.usd ?? 0), 0);
   const unknownUsdSells = rapid.filter((x) => x.usd == null).length;
@@ -142,18 +165,22 @@ export function evaluateConfirmation(
     : rapidKnownUsd >= event.usd * RAPID_SELL_RATIO ? "YES"
       : unknownUsdSells > 0 ? "UNKNOWN" : "NO";
   const smallSellsInWindow = sells.filter((s) => s.usd != null && s.usd >= DEFAULT_ABSORPTION.smallSellUsdMin && s.usd <= DEFAULT_ABSORPTION.smallSellUsdMax).length;
+  const smallSellsUnknown = sells.filter((s) => s.usd == null).length;
   let state: H2Confirmation["state"], reason: string;
-  if (!flowComplete) { state = "PENDING"; reason = `WINDOW_BELUM_LENGKAP (${Math.max(0, endTs - asOf)}ms tersisa)`; }
-  else if (distinctWallets == null) { state = "PENDING"; reason = "WINDOW_PENGIKUT_BELUM_LENGKAP"; }
+  if (!flowComplete) { state = "PENDING"; reason = `WINDOW_ELAPSED=false (${Math.max(0, endTs - asOf)}ms tersisa)`; }
+  else if (!dataComplete) { state = "PENDING"; reason = `DATA_INCOMPLETE — window terlewat tapi tanpa swap terverifikasi (trader ${verifiedTradesInWindow}, pool ${poolSideInWindow}); "0 pengikut" tidak disimpulkan`; }
   else if (rapidState === "YES") { state = "REJECTED"; reason = `rapid-sell ≥70% (ratio ${rapids(rapidKnownUsd, event.usd)}) oleh wallet pembeli — bukan absorpsi`; }
-  else if (distinctWallets < 2) { state = "REJECTED"; reason = `pengikut ${distinctWallets}/2 wallet independen dlm 30s`; }
-  else if (netFlowSol == null || netFlowSol <= 0) { state = "REJECTED"; reason = `net-flow ${netFlowSol ?? "?"} SOL ≤ 0 dlm 60s`; }
-  else { state = "CONFIRMED"; reason = `pengikut ${distinctWallets} wallet, rapid-sell ${rapidState}, net-flow +${netFlowSol} SOL, small-sell ${smallSellsInWindow}`; }
+  else if (distinctWallets == null) { state = "PENDING"; reason = "WINDOW_PENGIKUT_BELUM_LENGKAP"; }
+  else if (distinctWallets < 2) { state = "REJECTED"; reason = `pengikut ${distinctWallets}/2 wallet independen dlm 30s (tape window terverifikasi)`; }
+  else if (netFlowSol == null || netFlowSol <= 0) { state = "REJECTED"; reason = `net-flow ${netFlowSol ?? "?"} SOL ≤ 0 dlm 60s (berbasis SOL — robust thd USD null)`; }
+  else if (rapidState === "UNKNOWN") { state = "UNKNOWN"; reason = `rapid-sell tak terverifikasi (${unknownUsdSells} jual tanpa USD) — TIDAK BOLEH mengonfirmasi`; }
+  else { state = "CONFIRMED"; reason = `pengikut ${distinctWallets} wallet, rapid-sell NO, net-flow +${netFlowSol} SOL, small-sell ${smallSellsInWindow}${smallSellsUnknown ? ` (+${smallSellsUnknown} tanpa USD)` : ""}`; }
   return { h2EventId: event.h2EventId, state, asOf, eventTs: t0,
     flowWindow: { startTs: t0, endTs, complete: flowComplete, netFlowSol },
     followers: { windowMs: FOLLOW_WINDOW_MS, distinctWallets, complete: followersComplete },
     rapidSell: { ratio: flowComplete ? Number((rapidKnownUsd / (event.usd || 1)).toFixed(4)) : null, unknownUsdSells, state: rapidState },
-    smallSellsInWindow, reason };
+    smallSellsInWindow, smallSellsUnknown, dataComplete, verifiedTradesInWindow, poolSideInWindow,
+    confirmationVersion: CONFIRMATION_VERSION, reason };
 }
 const rapids = (usd: number, ref: number): string => `${((usd / (ref || 1)) * 100).toFixed(0)}%`;
 

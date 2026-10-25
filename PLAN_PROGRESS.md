@@ -658,3 +658,27 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
 - Masih menunggu: large-buy REALTIME pertama utk bukti keputusan prospektif di data nyata;
   lane terus berjalan. PROFITABILITY NOT YET VALIDATED. Robinhood RPC tetap BLOCKED_EXTERNAL
   (dokumen terpisah; penyebab kebijakan TIDAK diasumsikan).
+
+## S11.1 PATCH INTEGRITAS RISET (2026-10-25)
+- (1) WINDOW_ELAPSED ≠ DATA_COMPLETE: konfirmasi kini menuntut bukti swap terverifikasi DI
+  DALAM window (sisi trader ATAU pool — pool direkam utk tiap swap = bukti cakupan); tanpa itu
+  → PENDING DATA_INCOMPLETE, "0 pengikut" TIDAK disimpulkan. rapid-sell UNKNOWN TIDAK mengonfirmasi
+  → state UNKNOWN (penolakan berbasis SOL tetap otoritatif — robust thd USD null). Reassessment
+  berversi: CONFIRMATION_VERSION=h2-conf-v2; jurnal append-only — 5 baris v1 (REJECTED) utk
+  launch-buy tetap, 5 baris v2 menilai ulang jadi PENDING DATA_INCOMPLETE (fakta: window tanpa
+  bukti swap; penolakan lama tak didukung cakupan). Klasifikasi event asli tak diubah.
+- (2) COUNTERFACTUAL vs ACTIONABLE: policy diukur dari eventTs = HIPOTETIS (entryPoliciesFrom-
+  Event); policy dari entryPoliciesFromDecision = actionable (setelah keputusan konfirmasi;
+  triggerTs ≥ decisionTs by construction + guard defensif entryTs < decisionTs di laporan).
+  Laporan menampilkan kedua kelompok TERPISAH; entry pra-keputusan tak pernah dihitung
+  paper confirmed-H2.
+- (3) Discovery fallback BERBATAS saat feed turun (>3m): GMGN getTrendingSwaps via proxy
+  bersama (serialized, maks 1 upaya/5m, umur ≤30m, maks 2 kandidat) — kohor TETAP
+  "gmgn-trending" + discoveredBy "gmgn-trending-fallback"; TIDAK disamakan dgn launch
+  real-time PumpPortal.
+- (4) Kursor signature TERSISTEN (sig-cursors.json) — restart tak lagi refetch dan tak
+  mengaburkan cakupan; tape-coverage membawa backlogPossible (encountered≥limit); laporan:
+  "missing=0 BUKAN bukti cakupan penuh" + jumlah pass ber-backlog.
+- Tes 225→226 ✓ · gate ✓. Selanjutnya: KEMBALI KE PENGUMPULAN — target = large-buy REALTIME
+  dgn window konfirmasi cukup-lengkap → outcome matang → paper cost-adjusted. Ambang beku tak
+  disentuh. PROFITABILITY NOT YET VALIDATED.
