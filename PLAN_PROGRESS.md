@@ -609,3 +609,20 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
   16 tape-coverage), 111 candle, 6 keputusan bayangan, 104 outcome-mark; solUsd OK (Jupiter,
   ~$100,7; usdQuality OK). Buy awal 0,3–1,1 SOL (ritel) — menunggu large-buy ≥$500 (≈5 SOL)
   utk evaluasi H2 ambang beku.
+
+## H2-P0 CELAH USD DITUTUP + SNAPSHOT PROSPEKTIF PERTAMA (2026-10-25) — commit 8472ba3, Actions GREEN
+- CELAH (ditemukan saat evaluasi pertama): dekoder on-chain menulis usd=null utk SEMUA trade →
+  absorptionView (isLarge/smallSells membaca t.usd) tak PERNAH terpicu dari sumber utama — H2
+  mustahil terpicu secara diam-diam. Fix: enrichOnchainUsd (usd = sol × SOL/USD spot Jupiter,
+  cache 60s) di observer; usd tetap null bila solUsd null (tak menebak). Tes 219→220 ✓.
+- SNAPSHOT ±35m (8 token hidup, admisi GMGN trending): 81 trade trader-side VERIFIED unik
+  ber-USD (dedupe sig last-wins), 5 large-buy ≥$500 — SEMUA konfound peluncuran (ts SEBELUM
+  admisi; 5 wallet beda ~$8,4–8,7k ≈ pola bundler/dev pump.fun pada token umur 1–4m).
+  H2 KETAT (large-buy organik >5m pasca-admisi): n=0. Small-sell $5–$100: 22 ($648) — sisi
+  denominator H2 hidup, numerator belum muncul.
+- Outcome matang (dedupe decisionId, harga = close candle selesai ≤ ts keputusan): 1m n=5 rata
+  −7,7%; 5m n=4 rata −2,8%; 15m n=4 rata −19,3% (ekstrem −97,2% = rug-like). 8 keputusan bayangan
+  (6 SKIP, 2 WATCH); belum ada trigger H2 yang fires — konsisten dgn nol large-buy organik.
+- Interpretasi jujur: infrastruktur H2 SELESAI & terbukti live; event of interest (large-buy
+  organik) belum terjadi pada sampel kecil ini. Ambang beku TIDAK diubah. Lane terus berjalan —
+  snapshot berikut dievaluasi saat sampel membesar (bukan refit).
