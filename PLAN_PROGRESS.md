@@ -578,3 +578,17 @@ KNOWN_WALLET_EARLY_BUY (file operator opsional). PROFITABILITY NOT YET VALIDATED
   slot 461215465 BUY+SELL 21.714.631.489.466 raw / 0,70 SOL; asQSi3t… SELL 0,995 SOL.
 - H2 kini punya tape tervalidasi — evaluasi menunggu sampel prospektif lebih besar.
 - 219 tes / 33 berkas ✓ · gate ✓ · Actions success c3e047e. PROFITABILITY NOT YET VALIDATED.
+
+## S10 KLASIFIKASI SWAP TERVERIFIKASI (2026-10-25) — commit 3711c33, Actions GREEN
+- P0: program-ID RESMI docs.pump.fun (6EF8rrecth… curve; pAMMBay6oce… AMM) menggantikan tebakan;
+  bukti swap = instruksi program-pump (jsonParsed tak mem-parse IDL pump — didokumen), BUKAN
+  transfer token; trader vs POOL-side dipisah via signer-set (PDA vault non-signer) — bukti nyata:
+  wallet 3xTjuvzn… di 6 sig = VAULT bonding-curve, sebelumnya salah dihitung sbg ritel.
+- Rekonsiliasi S9: 62 swap/124 sisi → dikarantina & direklasifikasi (bukan dihapus): run final
+  48/48 sig → 36 trader-side VERIFIED (9 unik), 18 pool-side (bukti arah), 26 UNVERIFIED, 16 failed.
+- PDA bonding-curve derived client-side → mint manual (GMGN trending fallback saat PumpPortal 502)
+  tetap dapat tape on-chain.
+- P1: biaya $3/$5 = persen 5pp + 0,001 SOL tetap (UNKNOWN bila SOL/USD null); gross vs net terpisah.
+- HASIL RUN NYATA (trending dead-coins GMGN): keputusan 2 SKIP; outcome 1m run sebelumnya
+  (B9Jc/6ekF/2yrb): −61,1% / −34,3% / −84,6% — konsisten rundown; H2 menunggu token hidup.
+- 219 tes ✓ · gate ✓ · Actions success. H1/H3 tetap BLOCKED_DATA. PROFITABILITY NOT YET VALIDATED.
